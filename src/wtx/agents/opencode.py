@@ -124,7 +124,8 @@ class OpencodeAgent:
         flags = f" -m {model}" if model else ""
         if brief:
             variant = f" --variant {ctx.cfg.agent.effort}" if ctx.cfg.agent.effort else ""
-            agent = ctx.cfg.agent.opencode.plan_agent
+            oc = ctx.cfg.agent.opencode
+            agent = oc.build_agent if ctx.phase == "build" else oc.plan_agent
             agent_flag = f" --agent {agent}" if agent else ""
             return (
                 f"mv {PROMPT_FILE} {PROMPT_SENT} && "

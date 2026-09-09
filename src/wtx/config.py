@@ -110,6 +110,33 @@ class OpencodeCfg:
     build_agent: str = "build"
 
 
+# The permission modes an agent may be started in. A typo here is a launch
+# that fails after the pane is already respawned, so it is checked up front.
+PERMISSION_MODES = (
+    "default",
+    "acceptEdits",
+    "plan",
+    "auto",
+    "dontAsk",
+    "bypassPermissions",
+)
+
+
+@dataclass(frozen=True)
+class OrchestrationCfg:
+    """Plan on one model, implement on another.
+
+    Off by default: it changes what a brief does. See docs/schema.md.
+    """
+
+    enabled: bool = False
+    plan_model: str = "fable"
+    build_model: str = "opus"
+    small_model: str = "sonnet"
+    build_permission_mode: str = "acceptEdits"
+    small_words: int = 350
+
+
 @dataclass(frozen=True)
 class AgentCfg:
     tool: str = "claude"
@@ -120,6 +147,7 @@ class AgentCfg:
     auto_compact_window: int = 0
     disabled_mcp_servers: tuple[str, ...] = ()
     explore_agent_model: str = ""
+    orchestration: OrchestrationCfg = field(default_factory=OrchestrationCfg)
     opencode: OpencodeCfg = field(default_factory=OpencodeCfg)
 
 
@@ -345,6 +373,7 @@ def parse(
 
     agent_t = _table(data, "agent")
     oc_t = _table(agent_t, "opencode")
+    orch_t = _table(agent_t, "orchestration")
     agent = AgentCfg(
         tool=agent_t.get("tool", "claude"),
         llm=agent_t.get("llm", ""),
@@ -356,6 +385,14 @@ def parse(
             agent_t.get("disabled_mcp_servers"), "[agent].disabled_mcp_servers"
         ),
         explore_agent_model=agent_t.get("explore_agent_model", ""),
+        orchestration=OrchestrationCfg(
+            enabled=bool(orch_t.get("enabled", False)),
+            plan_model=orch_t.get("plan_model", "fable"),
+            build_model=orch_t.get("build_model", "opus"),
+            small_model=orch_t.get("small_model", "sonnet"),
+            build_permission_mode=orch_t.get("build_permission_mode", "acceptEdits"),
+            small_words=int(orch_t.get("small_words", 350)),
+        ),
         opencode=OpencodeCfg(
             provider=oc_t.get("provider", ""),
             small_model=oc_t.get("small_model", ""),
@@ -516,6 +553,38 @@ def validate(cfg: WtxConfig) -> list[str]:
         errs.append("[ports].slots must be positive")
     if cfg.agent.tool not in ("claude", "opencode"):
         errs.append(f"[agent].tool '{cfg.agent.tool}' is not claude or opencode")
+    for key, mode in (
+        ("[agent].brief_permission_mode", cfg.agent.brief_permission_mode),
+        (
+            "[agent.orchestration].build_permission_mode",
+            cfg.agent.orchestration.build_permission_mode,
+        ),
+    ):
+        if mode and mode not in PERMISSION_MODES:
+            errs.append(f"{key} '{mode}' is not one of {', '.join(PERMISSION_MODES)}")
+    orch = cfg.agent.orchestration
+    if orch.enabled:
+        missing = [
+            name
+            for name, value in (
+                ("plan_model", orch.plan_model),
+                ("build_model", orch.build_model),
+                ("small_model", orch.small_model),
+            )
+            if not value
+        ]
+        if missing:
+            errs.append(
+                "[agent.orchestration] is enabled but "
+                f"{', '.join(missing)} is empty, there is nothing to hand the plan to"
+            )
+        if orch.small_words < 0:
+            errs.append("[agent.orchestration].small_words must not be negative")
+        if cfg.agent.tool != "claude":
+            errs.append(
+                f"[agent.orchestration] needs [agent].tool = \"claude\", "
+                f"'{cfg.agent.tool}' has no accepted-plan hook to fire it"
+            )
     agent_panes = cfg.panes.by_role("agent")
     if cfg.panes.panes and not agent_panes:
         errs.append("no pane has role = \"agent\", the coding agent has nowhere to run")

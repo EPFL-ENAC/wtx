@@ -48,6 +48,23 @@ wtx land feat/thing                 # rebase, PR, squash merge, clean up
 wtdone feat/thing                   # close the worktree, keep the branch
 ```
 
+## Plan on one model, build on another
+
+Turn `[agent.orchestration]` on in `wtx.toml` and a brief plans on the model you
+name, in plan mode. Accept the plan and wtx restarts the agent on the model the
+work asks for: the small one for a small plan, the strong one for the rest. You
+read the plan and press accept. Nothing else.
+
+```toml
+[agent.orchestration]
+enabled = true
+plan_model = "fable"     # writes the plan
+build_model = "opus"     # implements a large one
+small_model = "sonnet"   # implements a small one
+```
+
+Every key is in `docs/schema.md`.
+
 ## Why
 
 Read `docs/traps.md`. Every rule in this tool is there because something went

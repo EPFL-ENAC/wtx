@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import json
 import subprocess
+from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
-from wtx import config, envfile, guard
+from wtx import config, envfile, guard, orchestrate
+from wtx.agents.base import RenderContext
 from wtx.agents.claude import ClaudeAgent, protected_branch_rules
 from wtx.config import parse, validate
 from wtx.context import session_name
@@ -316,3 +319,109 @@ def test_install_machine_comments_out_the_old_bashrc_line(tmp_path) -> None:
     text = rc.read_text()
     assert "# replaced by wtx: source ~/code/resslab-hub/scripts/wt-go.bash" in text
     assert "export A=1" in text
+
+
+# -- orchestration -----------------------------------------------------------
+
+
+def _orchestrated(**over) -> config.WtxConfig:
+    orch = {"enabled": True, **over}
+    return parse(
+        {
+            "repo": {"name": "app", "base_branch": "dev", "protected_branches": ["dev"]},
+            "agent": {"llm": "opus", "orchestration": orch},
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    "line",
+    ["wtx-size: small", "- wtx-size: small", "**wtx-size:** small", "WTX-SIZE: Small"],
+)
+def test_the_planner_sizes_its_own_plan(line: str) -> None:
+    plan = f"step one\nstep two\n\n{line}\n"
+    assert orchestrate.size_of(plan, small_words=1) == "small"
+
+
+def test_a_plan_with_no_marker_is_sized_by_its_length() -> None:
+    """A plan written outside a wtx brief, or by a model that dropped the line."""
+    assert orchestrate.size_of("one two three", small_words=10) == "small"
+    assert orchestrate.size_of("one two three", small_words=2) == "large"
+
+
+def test_the_marker_is_only_read_from_a_line_of_its_own() -> None:
+    """A plan that quotes the instruction must not be read as sizing itself."""
+    plan = "I will end with the wtx-size: small line.\n" + "word " * 50
+    assert orchestrate.size_of(plan, small_words=10) == "large"
+
+
+def test_a_size_picks_the_model_that_implements_the_plan() -> None:
+    cfg = _orchestrated(small_model="sonnet", build_model="opus")
+    assert orchestrate.model_for(cfg, "small") == "sonnet"
+    assert orchestrate.model_for(cfg, "large") == "opus"
+
+
+def test_the_build_brief_carries_the_task_without_wtx_own_instruction() -> None:
+    sent = "Add a health endpoint." + orchestrate.plan_instruction()
+    brief = orchestrate.build_brief(
+        task=orchestrate.strip_instruction(sent), plan="1. do it"
+    )
+    assert "Add a health endpoint." in brief
+    assert "1. do it" in brief
+    assert orchestrate.SIZE_MARKER not in brief
+
+
+def test_a_plan_brief_runs_on_the_planning_model_the_settings_do_not() -> None:
+    """The worktree keeps its own model. Only the plan phase is redirected, or
+    a later `claude --continue` would come back on the planner."""
+    cfg = _orchestrated(plan_model="fable")
+    ctx = RenderContext(
+        root=Path("/w"), main=Path("/m"), branch="feat/x", session="app/feat-x", cfg=cfg
+    )
+    assert ctx.model == "opus"
+    assert replace(ctx, phase="plan").model == "fable"
+    assert replace(ctx, phase="build", llm="sonnet").model == "sonnet"
+    assert ClaudeAgent().build_settings(ctx)["model"] == "opus"
+
+
+def test_each_phase_starts_in_its_own_permission_mode() -> None:
+    cfg = _orchestrated(build_permission_mode="acceptEdits")
+    base = RenderContext(
+        root=Path("/w"), main=Path("/m"), branch="feat/x", session="app/feat-x", cfg=cfg
+    )
+    agent = ClaudeAgent()
+    plan = agent.launch_cmd(replace(base, phase="plan"), brief=True)
+    build = agent.launch_cmd(replace(base, phase="build", llm="opus"), brief=True)
+    assert "--model fable --permission-mode plan" in plan
+    assert "--model opus --permission-mode acceptEdits" in build
+
+
+def test_the_accepted_plan_hook_is_part_of_the_machine_setup() -> None:
+    """Without it nothing ever hands a plan over."""
+    fragment = ClaudeAgent().hook_fragment()
+    entry = fragment["PostToolUse"][0]
+    assert entry["matcher"] == "ExitPlanMode"
+    assert entry["hooks"][0]["command"] == "wtx handoff"
+
+
+def test_validate_catches_a_permission_mode_that_does_not_exist() -> None:
+    cfg = parse({"agent": {"brief_permission_mode": "planning"}})
+    assert any("brief_permission_mode" in e for e in validate(cfg))
+
+
+def test_validate_catches_orchestration_with_nothing_to_hand_to() -> None:
+    cfg = _orchestrated(build_model="")
+    assert any("orchestration" in e for e in validate(cfg))
+
+
+def test_orchestration_needs_the_agent_that_has_the_hook() -> None:
+    """opencode has no ExitPlanMode hook, so nothing would ever fire."""
+    cfg = _orchestrated()
+    assert validate(cfg) == []
+    cfg = parse(
+        {
+            "repo": {"name": "app", "base_branch": "dev", "protected_branches": ["dev"]},
+            "agent": {"tool": "opencode", "orchestration": {"enabled": True}},
+        }
+    )
+    assert any("orchestration" in e for e in validate(cfg))

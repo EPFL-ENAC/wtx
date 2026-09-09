@@ -102,8 +102,42 @@ in the order they are listed.
 | `disabled_mcp_servers` | none | Servers a worker never needs. |
 | `explore_agent_model` | none | Writes a project Explore agent on that model. The built-in one inherits the main model. |
 
+`brief_permission_mode` and `build_permission_mode` take the modes the agent
+knows: `default`, `acceptEdits`, `plan`, `auto`, `dontAsk`, `bypassPermissions`.
+
 `[agent.opencode]`: `provider` (prefix for `provider/model`), `small_model`,
 `plan_agent`, `build_agent`.
+
+## `[agent.orchestration]`
+
+Plan on one model, implement on another, with no dance in between. Off unless
+you turn it on.
+
+A brief starts the agent on `plan_model`, in plan mode, and asks it to end the
+plan with a `wtx-size:` line. When you accept the plan, wtx hands it to
+`small_model` or `build_model` and the agent pane restarts there, briefed with
+the plan. Reading the plan stays your job; the model switching stops being one.
+
+| Key | Default | What |
+| --- | --- | --- |
+| `enabled` | `false` | Turns the whole thing on. |
+| `plan_model` | `fable` | Writes the plan. The strongest model you have: a plan is cheap and a bad one is not. |
+| `build_model` | `opus` | Implements a plan the planner called `large`. |
+| `small_model` | `sonnet` | Implements a plan it called `small`. |
+| `build_permission_mode` | `acceptEdits` | What the implementation starts in. The plan is already agreed. |
+| `small_words` | `350` | A plan with no `wtx-size:` line is small below this many words. |
+
+The implementation is a new conversation, not the planning one continued. A
+planning conversation is mostly the reading that produced the plan and it is
+re-sent whole on every later turn; the plan is the part worth keeping, so the
+plan is what is handed over. Anything the implementer needs has to be in it.
+
+It needs the `ExitPlanMode` hook from `wtx install-machine`. Without it nothing
+ever fires and a brief simply runs on `plan_model`.
+
+Subagents are a separate dial, and one that already exists: `subagent_model`
+covers every subagent, `explore_agent_model` the search agent, which should be
+the smallest model that can read.
 
 ## `[permissions]`
 

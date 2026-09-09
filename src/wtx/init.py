@@ -423,6 +423,12 @@ def scan(main: Path) -> dict[str, Any]:
             "auto_compact_window": 200000,
             "explore_agent_model": "haiku",
             "disabled_mcp_servers": [],
+            "orchestration": {
+                "enabled": False,
+                "plan_model": "fable",
+                "build_model": "opus",
+                "small_model": "sonnet",
+            },
         },
         "permissions": {"allow": allow, "deny": deny, "allowed_domains": []},
         "checks": {"lint": checks_lint, "test": checks_test},
@@ -561,6 +567,18 @@ def render_toml(answers: dict[str, Any]) -> str:
             lines.append(f"{key} = {_v(agent[key])}")
     if agent.get("disabled_mcp_servers"):
         lines.append(f"disabled_mcp_servers = {_v(agent['disabled_mcp_servers'])}")
+    orch = agent.get("orchestration", {})
+    if orch:
+        lines += [
+            "",
+            "# Plan on one model, implement on another. A brief starts on",
+            "# plan_model in plan mode; when you accept the plan wtx hands it to",
+            "# small_model or build_model, going by how the planner sized it.",
+            "[agent.orchestration]",
+        ]
+        for key, value in orch.items():
+            lines.append(f"{key} = {_v(value)}")
+
     oc = agent.get("opencode", {})
     if oc:
         lines += ["", "[agent.opencode]"]

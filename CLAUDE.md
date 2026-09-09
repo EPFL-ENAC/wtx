@@ -21,11 +21,15 @@ The short version:
 - `wtx.toml` can only add to the permission baseline, never remove from it.
 - An `ask` rule beats everything. No bare interpreters in it.
 - Setup is idempotent. wt fires its hooks more than once.
+- A hook never restarts its own pane. It records what it wants and a detached
+  process does it, or the restart kills the hook halfway through.
 
 ## Layout
 
 - `src/wtx/` the package. `config` and `context` are read by everything else.
 - `src/wtx/agents/` one module per coding agent, behind the protocol in `base.py`.
+- `src/wtx/orchestrate.py` the plan-then-build handoff, driven by the agent's
+  ExitPlanMode hook.
 - `src/wtx/templates/` the permission baselines, shipped as package data.
 - `src/wtx/skills/wtx-init/` the guided setup skill, installed by `install-machine`.
 - `tests/` real temp git repos, with wt, tmux and the agents faked. A test must

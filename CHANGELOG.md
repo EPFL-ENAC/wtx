@@ -2,6 +2,18 @@
 
 ## unreleased
 
+New:
+
+- `[agent.orchestration]`: plan on one model, implement on another. A brief
+  starts the agent on `plan_model` in plan mode; accepting the plan hands it to
+  `small_model` or `build_model`, going by how the planner sized it, and the
+  agent pane restarts there briefed with the plan. Off unless a repo turns it
+  on. Needs the new `ExitPlanMode` hook, so re-run `wtx install-machine
+  --apply`.
+- `wtx handoff`, the command that hook calls.
+- `brief_permission_mode` and `build_permission_mode` are checked against the
+  modes the agent actually knows.
+
 Review fixes:
 
 - `{repo}` in a `[[repos]]` path was expanded to nothing when `[repo].name`

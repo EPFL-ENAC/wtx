@@ -16,7 +16,7 @@ from . import envfile
 from .agents.base import PROMPT_FILE, Agent, RenderContext
 from .config import Pane
 from .context import Ctx
-from .proc import capture, capture_code, run, warn
+from .proc import capture, capture_code, run, say, warn
 
 STATE_OPTION = "@wtx_state"
 ROLE_OPTION = "@wt_role"
@@ -156,7 +156,10 @@ def _split_percent(position: int, total: int) -> int:
     return round(100 * remaining / (remaining + 1))
 
 
-def _render_ctx(ctx: Ctx, resolved: list) -> RenderContext:
+def render_ctx(
+    ctx: Ctx, resolved: list, *, llm: str = "", phase: str = ""
+) -> RenderContext:
+    """What a backend needs to write settings and start, from a live context."""
     return RenderContext(
         root=ctx.root,
         main=ctx.main,
@@ -164,7 +167,8 @@ def _render_ctx(ctx: Ctx, resolved: list) -> RenderContext:
         session=ctx.session,
         cfg=ctx.cfg,
         repos=resolved,
-        llm=ctx.llm,
+        llm=llm or ctx.llm,
+        phase=phase,
     )
 
 
@@ -213,6 +217,7 @@ def send_brief(ctx: Ctx, agent: Agent, rctx: RenderContext) -> bool:
         return False
     load = envfile.load_snippet(ctx.cfg.owned_env_keys)
     cmd = agent.launch_cmd(rctx, brief=True)
+    say(f"briefing {ctx.session} on {rctx.model or 'the default model'}")
     _tmux(["respawn-pane", "-k", "-t", pane, "-c", str(ctx.root)])
     _tmux(["send-keys", "-t", pane, f"{load}; {cmd}", "C-m"])
     _tmux(["select-pane", "-t", pane])
@@ -245,7 +250,7 @@ def ensure_session(
 
     scrub_environment(ctx.cfg.owned_env_keys)
     server_options()
-    rctx = _render_ctx(ctx, resolved)
+    rctx = render_ctx(ctx, resolved, phase="plan" if brief else "")
 
     if has_session(ctx.session):
         if brief and (ctx.root / PROMPT_FILE).is_file():

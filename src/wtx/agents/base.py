@@ -27,6 +27,9 @@ class RenderContext:
     repos: list[Resolved] = field(default_factory=list)
     llm: str = ""
     brief: bool = False
+    # Which side of the plan/build handoff this launch is on. Empty means a
+    # plain session, which is neither. See orchestrate.py.
+    phase: str = ""
 
     @property
     def read_repos(self) -> list[Resolved]:
@@ -38,7 +41,24 @@ class RenderContext:
 
     @property
     def model(self) -> str:
+        """The model this launch runs on.
+
+        A plan brief runs on the planning model whatever the worktree's own
+        model is: that is the point of the handoff. Everything else, the
+        settings file included, keeps the worktree's model.
+        """
+        orch = self.cfg.agent.orchestration
+        if self.phase == "plan" and orch.enabled and orch.plan_model:
+            return orch.plan_model
         return self.llm or self.cfg.agent.llm
+
+    @property
+    def permission_mode(self) -> str:
+        """The mode a brief starts in. A build brief is past the plan."""
+        cfg = self.cfg.agent
+        if self.phase == "build":
+            return cfg.orchestration.build_permission_mode
+        return cfg.brief_permission_mode
 
 
 class Agent(Protocol):

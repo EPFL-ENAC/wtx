@@ -99,6 +99,14 @@ def _is_old_bashrc(line: str) -> bool:
     return not s.startswith("#") and any(old in s for old in OLD_BASHRC)
 
 
+def _is_wtx_hook(entry: dict) -> bool:
+    """A hook entry wtx wrote. Everything it installs is a `wtx ...` command."""
+    return any(
+        isinstance(h, dict) and str(h.get("command", "")).startswith("wtx ")
+        for h in entry.get("hooks", [])
+    )
+
+
 def _is_old_tmux(line: str) -> bool:
     s = line.strip()
     return s.startswith("bind s choose-tree") and "wtx_state" not in s
@@ -204,7 +212,8 @@ def planned(agent_tool: str = "claude") -> list[Change]:
         changes.append(
             Change(
                 home / ".claude" / "settings.json",
-                "notify hooks, so tmux knows which session is waiting",
+                "notify and handoff hooks: which session is waiting, and which "
+                "model implements an accepted plan",
                 json.dumps({"hooks": get_agent("claude").hook_fragment()}, indent=2),
                 kind="merge-json",
             )
@@ -251,10 +260,7 @@ def _merge_hooks(path: Path, fragment: dict) -> bool:
             current[:] = [
                 e
                 for e in current
-                if not (
-                    e.get("matcher") == entry.get("matcher")
-                    and "wtx notify" in json.dumps(e.get("hooks", []))
-                )
+                if not (e.get("matcher") == entry.get("matcher") and _is_wtx_hook(e))
             ]
             current.append(entry)
             changed = True

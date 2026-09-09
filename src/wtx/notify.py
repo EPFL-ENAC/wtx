@@ -55,12 +55,12 @@ def state_dir() -> Path:
     return d
 
 
-def _safe(name: str) -> str:
+def safe_name(name: str) -> str:
     return "".join(c if c.isalnum() or c in "-._" else "-" for c in name)
 
 
 def state_file(session: str) -> Path:
-    return state_dir() / f"{_safe(session)}.json"
+    return state_dir() / f"{safe_name(session)}.json"
 
 
 def read_state(session: str) -> dict:
@@ -109,6 +109,23 @@ def clear_state(session: str) -> None:
 # resolving which session a hook came from
 
 
+def repo_name_for(main: Path) -> str:
+    """The name the session was built from: wtx.toml's, or the origin URL's.
+
+    Guessing from the URL alone gives a different session name in a repo that
+    sets [repo].name, and then a hook cannot find its own session.
+    """
+    from . import config as config_mod
+
+    path = main / config_mod.CONFIG_NAME
+    if path.is_file():
+        try:
+            return config_mod.load(path).repo.name or git.repo_name(main)
+        except config_mod.ConfigError:
+            pass
+    return git.repo_name(main)
+
+
 def session_for(cwd: Path) -> str:
     """The session name for the directory a hook reported.
 
@@ -120,7 +137,7 @@ def session_for(cwd: Path) -> str:
     if main is not None:
         if not branch:
             branch = git.current_branch(cwd)
-        name = session_name(git.repo_name(main), branch)
+        name = session_name(repo_name_for(main), branch)
         if tmux.available() and tmux.has_session(name):
             return name
     if not tmux.available():
@@ -136,7 +153,7 @@ def session_for(cwd: Path) -> str:
     return ""
 
 
-def _payload_from_stdin() -> dict:
+def payload_from_stdin() -> dict:
     if sys.stdin is None or sys.stdin.isatty():
         return {}
     try:
@@ -155,7 +172,7 @@ def handle(state: str, *, cwd: Path | None = None) -> int:
     """Called by the agent's hook. Reads the hook payload on stdin."""
     if state not in STATES:
         return 2
-    payload = _payload_from_stdin()
+    payload = payload_from_stdin()
     where = Path(payload.get("cwd") or cwd or Path.cwd())
     session = session_for(where)
     message = str(payload.get("message", ""))
@@ -166,6 +183,17 @@ def handle(state: str, *, cwd: Path | None = None) -> int:
             if tmux.available():
                 tmux.set_session_option(session, tmux.STATE_OPTION, "")
         return 0
+
+    if session and state in ("stop", "idle"):
+        # An accepted plan waiting for its implementation model: the session is
+        # not waiting on the human, it is about to start work.
+        from . import orchestrate
+
+        if orchestrate.drain(session):
+            clear_state(session)
+            if tmux.available():
+                tmux.set_session_option(session, tmux.STATE_OPTION, "")
+            return 0
 
     if session:
         write_state(session, state, message)
@@ -208,7 +236,7 @@ def worker(session: str, state: str, message: str, cwd: str = "") -> int:
         "stop": "finished",
     }.get(state, state)
 
-    id_file = state_dir() / f"{_safe(session)}.id"
+    id_file = state_dir() / f"{safe_name(session)}.id"
     args = ["notify-send", "-p", "-A", "default=Open session", title, body]
     previous = ""
     with contextlib.suppress(OSError):

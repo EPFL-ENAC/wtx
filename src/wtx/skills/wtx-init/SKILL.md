@@ -51,9 +51,11 @@ topic the scan settled beyond doubt:
 3. **Dependencies.** The install steps, and the Python pin if uv is used.
 4. **Panes.** Which servers run in the session, and the command for each.
 5. **Agent and models.** Tool (Claude Code or opencode), the worker model, the
-   subagent model, the context cap. Explain the trade: a big context window
-   costs on every turn, and a cheaper subagent model costs nothing in quality
-   for searching.
+   subagent model, the context cap, and whether to plan on one model and build
+   on another (`[agent.orchestration]`). Explain the trade: a big context window
+   costs on every turn, a cheaper subagent model costs nothing in quality for
+   searching, and planning on the strongest model is cheap because a plan is
+   short.
 6. **Extra deny rules.** Propose from the repo: `git tag` and `--tags` when a
    workflow publishes on `v*` tags, database migration commands when a shared
    database exists.

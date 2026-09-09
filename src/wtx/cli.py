@@ -18,6 +18,7 @@ from . import (
     machine,
     monitor,
     notify,
+    orchestrate,
     repos,
     tmux,
     wt,
@@ -38,7 +39,7 @@ from . import (
     teardown as teardown_mod,
 )
 from .agents import base as agents
-from .agents.base import PROMPT_FILE, RenderContext
+from .agents.base import PROMPT_FILE
 from .hooks import GO_AGENT_ENV, GO_DRIVING_ENV, GO_LLM_ENV, run_hook
 from .proc import CommandError, is_dry_run, say, set_dry_run, warn
 
@@ -92,23 +93,18 @@ def _require_valid(cfg: config_mod.WtxConfig) -> None:
         )
 
 
-def _render_ctx(ctx: context.Ctx, resolved: list) -> RenderContext:
-    return RenderContext(
-        root=ctx.root,
-        main=ctx.main,
-        branch=ctx.branch,
-        session=ctx.session,
-        cfg=ctx.cfg,
-        repos=resolved,
-        llm=ctx.llm,
-    )
+def _write_prompt(path: Path, prompt: str, cfg: config_mod.WtxConfig) -> None:
+    """A brief is a file at the checkout root. The agent pane starts on it.
 
-
-def _write_prompt(path: Path, prompt: str) -> None:
-    """A brief is a file at the checkout root. The agent pane starts on it."""
+    With orchestration on, the planner is also told to size the plan, so wtx
+    knows which model to hand it to.
+    """
     candidate = Path(prompt).expanduser()
     text = candidate.read_text() if candidate.is_file() else prompt
-    (path / PROMPT_FILE).write_text(text.rstrip() + "\n")
+    text = text.rstrip() + "\n"
+    if cfg.agent.orchestration.enabled:
+        text += orchestrate.plan_instruction()
+    (path / PROMPT_FILE).write_text(text)
 
 
 # ---------------------------------------------------------------------------
@@ -220,7 +216,7 @@ def cmd_go(args: argparse.Namespace) -> int:
     )
 
     if args.prompt:
-        _write_prompt(path, args.prompt)
+        _write_prompt(path, args.prompt, cfg)
 
     ctx.reload_env()
     resolved = repos.resolve_all(ctx)
@@ -439,14 +435,14 @@ def cmd_brief(args: argparse.Namespace) -> int:
     path = git.worktree_path_for(main, branch)
     if path is None:
         raise UserError(f"no worktree for {branch}")
-    _write_prompt(path, args.prompt)
+    _write_prompt(path, args.prompt, cfg)
     ctx = context.for_worktree(main, path, branch, cfg)
     resolved = repos.resolve_all(ctx)
     agent = agents.get(ctx.agent_tool)
     if not tmux.has_session(ctx.session):
         tmux.ensure_session(ctx, agent, resolved, attach_after=False, brief=True)
     else:
-        tmux.send_brief(ctx, agent, _render_ctx(ctx, resolved))
+        tmux.send_brief(ctx, agent, tmux.render_ctx(ctx, resolved, phase="plan"))
     say(f"brief sent to {ctx.session}")
     return 0
 
@@ -457,6 +453,14 @@ def cmd_hook(args: argparse.Namespace) -> int:
 
 def cmd_notify(args: argparse.Namespace) -> int:
     return notify.handle(args.state)
+
+
+def cmd_handoff(args: argparse.Namespace) -> int:
+    """PostToolUse on ExitPlanMode: hand an accepted plan to its model."""
+    answer = orchestrate.capture(notify.payload_from_stdin())
+    if answer:
+        print(answer)
+    return 0
 
 
 def cmd_tmux_status(args: argparse.Namespace) -> int:
@@ -610,6 +614,9 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("notify", help="called by the agent's hooks")
     s.add_argument("state", choices=list(notify.STATES))
     s.set_defaults(func=cmd_notify)
+
+    s = sub.add_parser("handoff", help="called by the agent's ExitPlanMode hook")
+    s.set_defaults(func=cmd_handoff)
 
     s = sub.add_parser("tmux-status", help="one line for tmux status-right")
     s.set_defaults(func=cmd_tmux_status)

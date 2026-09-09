@@ -135,18 +135,27 @@ def run(cwd: Path | None = None) -> Report:
     )
 
     settings = Path("~/.claude/settings.json").expanduser()
-    hooks_ok = False
+    text = ""
     if settings.is_file():
         try:
-            hooks_ok = "wtx notify" in settings.read_text()
+            text = settings.read_text()
         except OSError:
-            hooks_ok = False
+            text = ""
     checks.append(
         Check(
             "agent notify hooks",
-            hooks_ok,
+            "wtx notify" in text,
             str(settings),
             "wtx install-machine --apply (project settings cannot carry hooks)",
+            hard=False,
+        )
+    )
+    checks.append(
+        Check(
+            "agent handoff hook",
+            "wtx handoff" in text,
+            str(settings),
+            "wtx install-machine --apply ([agent.orchestration] does nothing without it)",
             hard=False,
         )
     )

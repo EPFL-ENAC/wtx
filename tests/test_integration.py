@@ -600,3 +600,221 @@ def test_help_is_a_word_too(capsys) -> None:
         run(["help", "go"])
     assert exc.value.code == 0
     assert "--with" in capsys.readouterr().out
+
+
+# -- orchestration ------------------------------------------------------------
+
+
+def _enable_orchestration(root: Path, **over) -> None:
+    """Replace the block `wtx init` writes, which is there but switched off."""
+    keys = {"enabled": "true", **over}
+    body = "\n".join(f"{k} = {v}" for k, v in keys.items())
+    kept, skipping = [], False
+    for line in (root / "wtx.toml").read_text().splitlines():
+        if line.startswith("["):
+            skipping = line.strip() == "[agent.orchestration]"
+        if not skipping:
+            kept.append(line)
+    (root / "wtx.toml").write_text(
+        "\n".join(kept) + f"\n\n[agent.orchestration]\n{body}\n"
+    )
+
+
+def _accept(path: Path, plan: str) -> str:
+    from wtx import orchestrate
+
+    return orchestrate.capture(
+        {"cwd": str(path), "tool_name": "ExitPlanMode", "tool_input": {"plan": plan}}
+    )
+
+
+def test_an_accepted_plan_is_handed_to_the_implementation_model(
+    wtx_repo: Path, fake_bin: Path
+) -> None:
+    """The whole point: plan on fable, accept, implement on opus, no typing."""
+    from wtx import orchestrate
+
+    _enable_orchestration(wtx_repo, plan_model='"fable"', build_model='"opus"')
+    path = make_worktree(wtx_repo, "feat/plan")
+    setup_mod.run_setup(context.load(root=path), start_tmux=True)
+    ctx = context.load(root=path)
+    (path / "PROMPT.sent.md").write_text(
+        "Add a health endpoint." + orchestrate.plan_instruction()
+    )
+
+    answer = json.loads(_accept(path, "1. write it\n2. test it\n\nwtx-size: large\n"))
+    assert answer["continue"] is False
+    assert "opus" in answer["stopReason"]
+
+    claimed = orchestrate.claim(ctx.session)
+    assert claimed is not None
+    orchestrate.run(claimed)
+
+    brief = (path / "PROMPT.md").read_text()
+    assert "Add a health endpoint." in brief
+    assert "1. write it" in brief
+    sent = [c for c in calls_of(fake_bin, "tmux") if "send-keys" in c]
+    assert any("--model opus --permission-mode acceptEdits" in c for c in sent)
+
+
+def test_a_small_plan_goes_to_the_small_model(wtx_repo: Path, fake_bin: Path) -> None:
+    from wtx import orchestrate
+
+    _enable_orchestration(wtx_repo, small_model='"sonnet"')
+    path = make_worktree(wtx_repo, "feat/small")
+    setup_mod.run_setup(context.load(root=path), start_tmux=True)
+    ctx = context.load(root=path)
+
+    _accept(path, "1. rename it\n\nwtx-size: small\n")
+    record = json.loads(orchestrate.record_file(ctx.session).read_text())
+    assert record["model"] == "sonnet"
+
+
+def test_a_repo_without_orchestration_is_left_alone(
+    wtx_repo: Path, fake_bin: Path
+) -> None:
+    """Every repo that has not opted in must see no change at all."""
+    from wtx import orchestrate
+
+    path = make_worktree(wtx_repo, "feat/plain")
+    setup_mod.run_setup(context.load(root=path), start_tmux=True)
+    ctx = context.load(root=path)
+
+    assert _accept(path, "1. do it\n\nwtx-size: large\n") == ""
+    assert not orchestrate.record_file(ctx.session).exists()
+
+
+def test_a_plan_the_planner_can_implement_itself_is_not_handed_over(
+    wtx_repo: Path, fake_bin: Path
+) -> None:
+
+    _enable_orchestration(wtx_repo, plan_model='"opus"', build_model='"opus"')
+    path = make_worktree(wtx_repo, "feat/same-model")
+    setup_mod.run_setup(context.load(root=path), start_tmux=True)
+
+    assert _accept(path, "1. do it\n\nwtx-size: large\n") == ""
+
+
+def test_a_handoff_fires_once_however_often_the_agent_stops(
+    wtx_repo: Path, fake_bin: Path, monkeypatch
+) -> None:
+    """The Stop hook fires on every turn and must not re-brief the agent."""
+    from wtx import orchestrate
+
+    _enable_orchestration(wtx_repo)
+    path = make_worktree(wtx_repo, "feat/once")
+    setup_mod.run_setup(context.load(root=path), start_tmux=True)
+    ctx = context.load(root=path)
+    fired: list[Path] = []
+    monkeypatch.setattr(orchestrate, "_spawn", lambda record: fired.append(record) or True)
+
+    _accept(path, "1. do it\n\nwtx-size: large\n")
+    assert orchestrate.drain(ctx.session) is True
+    assert orchestrate.drain(ctx.session) is False
+    assert len(fired) == 1
+
+
+def test_a_brief_asks_the_planner_to_size_the_plan(
+    wtx_repo: Path, fake_bin: Path, monkeypatch
+) -> None:
+    from wtx import orchestrate
+
+    _enable_orchestration(wtx_repo)
+    path = make_worktree(wtx_repo, "feat/brief")
+    setup_mod.run_setup(context.load(root=path), start_tmux=True)
+
+    monkeypatch.chdir(wtx_repo)
+    run(["brief", "feat/brief", "--prompt", "Add a health endpoint."])
+    text = (path / "PROMPT.md").read_text()
+    assert "Add a health endpoint." in text
+    assert orchestrate.SIZE_MARKER in text
+
+
+def test_a_briefed_session_starts_on_the_planning_model(
+    wtx_repo: Path, fake_bin: Path, monkeypatch
+) -> None:
+    _enable_orchestration(wtx_repo, plan_model='"fable"')
+    path = make_worktree(wtx_repo, "feat/planner")
+    setup_mod.run_setup(context.load(root=path), start_tmux=True)
+
+    monkeypatch.chdir(wtx_repo)
+    run(["brief", "feat/planner", "--prompt", "Add a health endpoint."])
+    sent = [c for c in calls_of(fake_bin, "tmux") if "send-keys" in c]
+    assert any("--model fable --permission-mode plan" in c for c in sent)
+
+
+def test_the_stop_hook_is_what_fires_the_handoff(
+    wtx_repo: Path, fake_bin: Path, monkeypatch
+) -> None:
+    """A pending handoff must not sit there waiting to be noticed, and the
+    session must not be reported as waiting on a human while it does."""
+    from wtx import notify, orchestrate
+
+    _enable_orchestration(wtx_repo)
+    path = make_worktree(wtx_repo, "feat/stop")
+    setup_mod.run_setup(context.load(root=path), start_tmux=True)
+    ctx = context.load(root=path)
+    fired: list[Path] = []
+    monkeypatch.setattr(orchestrate, "_spawn", lambda record: fired.append(record) or True)
+    monkeypatch.setattr(notify, "session_for", lambda cwd: ctx.session)
+    monkeypatch.setattr(notify, "_spawn_desktop", lambda *a, **k: None)
+    monkeypatch.setattr("sys.stdin", type("S", (), {"isatty": lambda s: True})())
+
+    _accept(path, "1. do it\n\nwtx-size: large\n")
+    notify.handle("stop", cwd=path)
+
+    assert len(fired) == 1
+    assert notify.read_state(ctx.session) == {}
+
+
+def test_the_handoff_command_answers_the_hook(
+    wtx_repo: Path, fake_bin: Path, monkeypatch, capsys
+) -> None:
+    from wtx import notify
+
+    _enable_orchestration(wtx_repo)
+    path = make_worktree(wtx_repo, "feat/cmd")
+    setup_mod.run_setup(context.load(root=path), start_tmux=True)
+    monkeypatch.setattr(
+        notify,
+        "payload_from_stdin",
+        lambda: {"cwd": str(path), "tool_input": {"plan": "1. do it\n\nwtx-size: large"}},
+    )
+
+    capsys.readouterr()
+    assert run(["handoff"]) == 0
+    assert json.loads(capsys.readouterr().out)["continue"] is False
+
+
+def test_an_agent_outside_a_session_is_never_stopped(
+    wtx_repo: Path, fake_bin: Path, monkeypatch
+) -> None:
+    """continue: false with no pane to respawn would leave a human holding a
+    plan and no way to start on it."""
+    from wtx import tmux
+
+    _enable_orchestration(wtx_repo)
+    path = make_worktree(wtx_repo, "figure/no-session")
+    setup_mod.run_setup(context.load(root=path), start_tmux=False)
+    monkeypatch.setattr(tmux, "has_session", lambda name: False)
+
+    assert _accept(path, "1. do it\n\nwtx-size: large\n") == ""
+
+
+def test_a_hook_finds_the_session_of_a_repo_that_renamed_itself(
+    wtx_repo: Path, fake_bin: Path
+) -> None:
+    """The session is named from [repo].name. A hook guessing from the origin
+    URL instead would record a handoff nothing ever drains."""
+    from wtx import notify
+
+    text = (wtx_repo / "wtx.toml").read_text().replace(
+        'name = "remote"', 'name = "renamed-app"', 1
+    )
+    (wtx_repo / "wtx.toml").write_text(text)
+    path = make_worktree(wtx_repo, "feat/renamed")
+    setup_mod.run_setup(context.load(root=path), start_tmux=True)
+    ctx = context.load(root=path)
+
+    assert ctx.session == "renamed-app/feat/renamed"
+    assert notify.session_for(path) == ctx.session

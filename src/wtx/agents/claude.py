@@ -187,7 +187,7 @@ class ClaudeAgent:
             flags = ""
             if ctx.model:
                 flags += f" --model {ctx.model}"
-            mode = ctx.cfg.agent.brief_permission_mode
+            mode = ctx.permission_mode
             if mode:
                 flags += f" --permission-mode {mode}"
             if ctx.cfg.agent.effort:
@@ -201,19 +201,25 @@ class ClaudeAgent:
 
     def hook_fragment(self) -> dict:
         """Machine-level hooks. Project settings files cannot carry hooks, and
-        these must run outside the Bash sandbox to reach tmux anyway."""
-        def entry(matcher: str, arg: str) -> dict:
+        these must run outside the Bash sandbox to reach tmux anyway.
+
+        ExitPlanMode fires once the human has accepted the plan, which is the
+        one moment wtx can swap the model without losing anything. See
+        orchestrate.py.
+        """
+        def entry(matcher: str, command: str) -> dict:
             return {
                 "matcher": matcher,
-                "hooks": [{"type": "command", "command": f"wtx notify {arg}"}],
+                "hooks": [{"type": "command", "command": command}],
             }
 
         return {
             "Notification": [
-                entry("permission_prompt", "permission"),
-                entry("idle_prompt", "idle"),
+                entry("permission_prompt", "wtx notify permission"),
+                entry("idle_prompt", "wtx notify idle"),
             ],
-            "Stop": [entry("*", "stop")],
-            "SessionStart": [entry("*", "start")],
-            "UserPromptSubmit": [entry("*", "running")],
+            "Stop": [entry("*", "wtx notify stop")],
+            "SessionStart": [entry("*", "wtx notify start")],
+            "UserPromptSubmit": [entry("*", "wtx notify running")],
+            "PostToolUse": [entry("ExitPlanMode", "wtx handoff")],
         }

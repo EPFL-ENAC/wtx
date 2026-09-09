@@ -112,6 +112,27 @@ directory at key time.
 **Closing the session you are sitting in kills the command doing the closing.**
 `wtx done` hands the job to the tmux server with `run-shell -b`.
 
+## the plan handoff
+
+**A hook cannot respawn its own pane.** `wtx handoff` runs inside the agent
+process, in the agent pane. Restarting that pane kills whatever is running in
+it, the hook included, halfway through. The handoff is recorded and a detached
+process does the restart, the same trick the desktop notification uses.
+
+**The Stop hook fires on every turn.** More than one of them can see the same
+pending handoff, and briefing an agent twice throws away the first run. The
+record is claimed by renaming it, so exactly one wins.
+
+**A handoff record must not look like a state file.** `wtx tmux-status` and the
+monitor read every `*.json` in the runtime directory and key them by session. A
+record named `<session>.handoff.json` would sit in that list with no state. It
+is `<session>.handoff`.
+
+**A plan brief must not change the worktree's model.** The plan phase runs on
+`plan_model`, but `.claude/settings.local.json` and a later `claude --continue`
+keep the worktree's own model. Writing the planner into the settings file would
+leave every later session on it.
+
 ## landing
 
 **Refusing when the base moved on makes the rebase dead code.** The old script
