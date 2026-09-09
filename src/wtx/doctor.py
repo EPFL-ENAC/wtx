@@ -7,7 +7,7 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import git, guard
+from . import git, guard, tmux
 from .config import CONFIG_NAME
 from .proc import capture, which
 

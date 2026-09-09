@@ -59,6 +59,17 @@ def _main_checkout(cwd: Path | None = None) -> Path:
     return main
 
 
+def _load_cfg(main: Path) -> config_mod.WtxConfig:
+    """The repo's config, or a message the user can act on."""
+    path = main / config_mod.CONFIG_NAME
+    if not path.is_file():
+        raise UserError(f"no {config_mod.CONFIG_NAME} in {main}. Run `wtx init` there first.")
+    try:
+        return config_mod.load(path)
+    except config_mod.ConfigError as exc:
+        raise UserError(str(exc)) from exc
+
+
 def _load(cwd: Path | None = None) -> context.Ctx:
     try:
         return context.load(cwd=cwd)
@@ -131,10 +142,7 @@ def cmd_init(args: argparse.Namespace) -> int:
 def cmd_config(args: argparse.Namespace) -> int:
     main = _main_checkout()
     path = main / config_mod.CONFIG_NAME
-    try:
-        cfg = config_mod.load(path)
-    except config_mod.ConfigError as exc:
-        raise UserError(str(exc)) from exc
+    cfg = _load_cfg(main)
     problems = config_mod.validate(cfg)
     if args.json:
         print(json.dumps({"ok": not problems, "problems": problems}, indent=2))
@@ -149,10 +157,7 @@ def cmd_config(args: argparse.Namespace) -> int:
 
 def cmd_go(args: argparse.Namespace) -> int:
     main = _main_checkout()
-    cfg_path = main / config_mod.CONFIG_NAME
-    if not cfg_path.is_file():
-        raise UserError(f"no {config_mod.CONFIG_NAME} in {main}. Run `wtx init` first.")
-    cfg = config_mod.load(cfg_path)
+    cfg = _load_cfg(main)
     _require_valid(cfg)
 
     if args.branch == "all":
@@ -246,7 +251,7 @@ def _go_all(main: Path, cfg: config_mod.WtxConfig) -> int:
 
 def cmd_done(args: argparse.Namespace) -> int:
     main = _main_checkout()
-    cfg = config_mod.load(main / config_mod.CONFIG_NAME)
+    cfg = _load_cfg(main)
 
     if args.path:
         target = Path(args.path).resolve()
@@ -336,7 +341,7 @@ def cmd_open(args: argparse.Namespace) -> int:
 
 def cmd_status(args: argparse.Namespace) -> int:
     main = _main_checkout()
-    cfg = config_mod.load(main / config_mod.CONFIG_NAME)
+    cfg = _load_cfg(main)
     states = notify.all_states()
     rows = []
     for info in git.list_worktrees(main):
@@ -418,7 +423,7 @@ def cmd_tmux(args: argparse.Namespace) -> int:
 
 def cmd_brief(args: argparse.Namespace) -> int:
     main = _main_checkout()
-    cfg = config_mod.load(main / config_mod.CONFIG_NAME)
+    cfg = _load_cfg(main)
     branch = args.branch or git.current_branch(Path.cwd())
     path = git.worktree_path_for(main, branch)
     if path is None:
@@ -480,7 +485,7 @@ def cmd_shell_init(args: argparse.Namespace) -> int:
 
 def cmd_guard(args: argparse.Namespace) -> int:
     main = _main_checkout()
-    cfg = config_mod.load(main / config_mod.CONFIG_NAME)
+    cfg = _load_cfg(main)
     if args.show:
         print(guard.render_hook(cfg))
         return 0
