@@ -591,3 +591,12 @@ def test_a_setup_error_is_a_message_not_a_traceback(
     err = capsys.readouterr().err
     assert "backend/.env" in err
     assert "Traceback" not in err
+
+
+def test_help_is_a_word_too(capsys) -> None:
+    assert run([]) == 0
+    assert "go" in capsys.readouterr().out
+    with pytest.raises(SystemExit) as exc:
+        run(["help", "go"])
+    assert exc.value.code == 0
+    assert "--with" in capsys.readouterr().out

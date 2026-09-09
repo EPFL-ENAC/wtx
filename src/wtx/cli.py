@@ -642,6 +642,15 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
+    argv = list(sys.argv[1:] if argv is None else argv)
+    # `wtx` and `wtx help [command]` print help. argparse alone answers both
+    # with an error, which is a poor first contact.
+    if not argv:
+        parser.print_help()
+        return 0
+    if argv[0] == "help":
+        parser.parse_args([*argv[1:], "--help"] if argv[1:] else ["--help"])
+        return 0
     args = parser.parse_args(argv)
     set_dry_run(bool(getattr(args, "dry_run", False)))
     try:
