@@ -1,0 +1,22 @@
+__pycache__/
+*.py[cod]
+.venv/
+dist/
+build/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.claude/
+
+# placeholders the agent sandbox drops in the working directory
+/.mcp.json
+/.claude/skills
+/.claude/workflows
+/.claude/settings.local.json
+/.claude/output-styles
+/.claude/loop.md
+/.claude/launch.json
+/.claude/scheduled_tasks.json
+/.claude/hooks
+/.claude/routines
+/.claude/settings.json

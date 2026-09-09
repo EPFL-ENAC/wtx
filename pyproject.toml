@@ -1,0 +1,40 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "wtx"
+version = "0.1.0"
+description = "One branch, one worktree, one tmux session, one coding agent."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "EPFL ENAC IT4R" }]
+keywords = ["git", "worktree", "tmux", "claude", "opencode", "agent"]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/EPFL-ENAC/wtx"
+
+[project.scripts]
+wtx = "wtx.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/wtx"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/wtx", "tests", "docs", "README.md"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+  "tmux: needs a real tmux server, skipped by default",
+]

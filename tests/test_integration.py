@@ -1,0 +1,480 @@
+"""End to end against a real temp git repo, with faked wt, tmux and agents."""
+
+from __future__ import annotations
+
+import json
+import subprocess
+from pathlib import Path
+
+import pytest
+from conftest import calls_of
+
+from wtx import config as config_mod
+from wtx import context, envfile, git, guard
+from wtx import init as init_mod
+from wtx import setup as setup_mod
+from wtx.cli import main
+
+
+def run(args: list[str]) -> int:
+    return main(args)
+
+
+def git_out(args: list[str], cwd: Path) -> str:
+    return subprocess.run(
+        ["git", *args], cwd=cwd, capture_output=True, text=True, check=False
+    ).stdout.strip()
+
+
+def make_worktree(repo: Path, branch: str) -> Path:
+    """A worktree in the layout wt would make, without needing wt installed."""
+    path = repo / ".claude" / "worktrees" / branch.replace("/", "-")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["git", "worktree", "add", "-q", "-b", branch, str(path), "origin/dev"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    return path
+
+
+# -- init ---------------------------------------------------------------------
+
+
+def test_init_writes_a_config_that_validates(repo: Path) -> None:
+    answers = init_mod.scan(repo)
+    answers.pop("_notes")
+    init_mod.write_all(repo, answers)
+    cfg = config_mod.load(repo / "wtx.toml")
+    assert config_mod.validate(cfg) == []
+    assert cfg.repo.base_branch == "dev"
+    assert [f.name for f in cfg.ports.families] == ["backend", "frontend"]
+    assert cfg.ports.families[0].main == 8000
+    assert cfg.ports.families[1].main == 5173
+
+
+def test_init_finds_the_python_pin_and_the_install_steps(repo: Path) -> None:
+    answers = init_mod.scan(repo)
+    assert answers["deps"]["python_version_file"] == ".python-version"
+    runs = [s["run"] for s in answers["deps"]["step"]]
+    assert "npm ci" in runs
+    assert any("uv sync" in r and "{python_version}" in r for r in runs)
+
+
+def test_init_writes_a_three_line_wt_toml(wtx_repo: Path) -> None:
+    body = (wtx_repo / ".wt.toml").read_text()
+    for event in ("post-create", "post-checkout", "pre-remove"):
+        assert f"wtx hook {event}" in body
+
+
+def test_init_does_not_overwrite_without_force(wtx_repo: Path) -> None:
+    with pytest.raises(FileExistsError):
+        init_mod.write_all(wtx_repo, init_mod.scan(wtx_repo))
+
+
+# -- setup --------------------------------------------------------------------
+
+
+def test_setup_writes_ports_settings_and_the_guard(wtx_repo: Path, fake_bin: Path) -> None:
+    path = make_worktree(wtx_repo, "feat/one")
+    ctx = context.load(root=path)
+    setup_mod.run_setup(ctx, start_tmux=False)
+
+    values = envfile.read_worktree(path)
+    assert values["WT_BRANCH"] == "feat/one"
+    assert values["WT_SLUG"] == "feat-one"
+    assert 18000 <= int(values["BACKEND_PORT"]) < 18500
+    assert 19000 <= int(values["FRONTEND_PORT"]) < 19500
+
+    settings = json.loads((path / ".claude/settings.local.json").read_text())
+    assert settings["autoCompactWindow"] == 200000
+    assert settings["env"]["CLAUDE_CODE_SUBAGENT_MODEL"] == "sonnet"
+    assert "Bash(git push * dev)" in settings["permissions"]["deny"]
+    assert guard.is_installed(wtx_repo)
+
+
+def test_setup_is_idempotent(wtx_repo: Path, fake_bin: Path) -> None:
+    """wt fires post_create and post_checkout, and some builds fire both."""
+    path = make_worktree(wtx_repo, "feat/twice")
+    ctx = context.load(root=path)
+    setup_mod.run_setup(ctx, start_tmux=False)
+    first = (path / ".env.worktree").read_text()
+    setup_mod.run_setup(context.load(root=path), start_tmux=False)
+    setup_mod.run_setup(context.load(root=path), start_tmux=False)
+    assert (path / ".env.worktree").read_text() == first
+
+
+def test_two_worktrees_never_share_a_port(wtx_repo: Path, fake_bin: Path) -> None:
+    ports: list[set[str]] = []
+    for branch in ("feat/a", "feat/b", "feat/c"):
+        path = make_worktree(wtx_repo, branch)
+        setup_mod.run_setup(context.load(root=path), start_tmux=False)
+        values = envfile.read_worktree(path)
+        ports.append({values["BACKEND_PORT"], values["FRONTEND_PORT"]})
+    assert ports[0] & ports[1] == set()
+    assert ports[0] & ports[2] == set()
+    assert ports[1] & ports[2] == set()
+
+
+def test_setup_repairs_a_branch_that_tracks_its_base(wtx_repo: Path, fake_bin: Path) -> None:
+    """wt create leaves the new branch tracking origin/dev. Then git pull
+    rebases the work onto dev and the next push is refused."""
+    path = make_worktree(wtx_repo, "feat/tracked")
+    subprocess.run(
+        ["git", "branch", "--set-upstream-to", "origin/dev"],
+        cwd=path,
+        check=True,
+        capture_output=True,
+    )
+    setup_mod.run_setup(context.load(root=path), start_tmux=False)
+    upstream = git_out(
+        ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], path
+    )
+    assert upstream != "origin/dev"
+
+
+def test_setup_keeps_a_key_a_hook_wrote(wtx_repo: Path, fake_bin: Path) -> None:
+    path = make_worktree(wtx_repo, "feat/keep")
+    setup_mod.run_setup(context.load(root=path), start_tmux=False)
+    f = path / ".env.worktree"
+    f.write_text(f.read_text() + "\n# set by hand\nMODEL_PROFILE=tcaf\n")
+    setup_mod.run_setup(context.load(root=path), start_tmux=False)
+    assert envfile.read(f)["MODEL_PROFILE"] == "tcaf"
+    assert "# set by hand" in f.read_text()
+
+
+def test_seeded_file_is_not_overwritten(wtx_repo: Path, fake_bin: Path) -> None:
+    (wtx_repo / "CLAUDE.md").write_text("from main\n")
+    path = make_worktree(wtx_repo, "feat/seed")
+    ctx = context.load(root=path)
+    ctx.cfg = config_mod.parse(
+        {**{"seed": {"copy": ["CLAUDE.md"]}}, "repo": {"base_branch": "dev"}}
+    )
+    setup_mod.run_setup(ctx, start_tmux=False)
+    assert (path / "CLAUDE.md").read_text() == "from main\n"
+    (path / "CLAUDE.md").write_text("changed here\n")
+    setup_mod.run_setup(ctx, start_tmux=False)
+    assert (path / "CLAUDE.md").read_text() == "changed here\n"
+
+
+# -- the guard ----------------------------------------------------------------
+
+
+@pytest.fixture
+def guarded(wtx_repo: Path, fake_bin: Path) -> Path:
+    path = make_worktree(wtx_repo, "feat/guard")
+    setup_mod.run_setup(context.load(root=path), start_tmux=False)
+    subprocess.run(
+        ["git", "commit", "-q", "--allow-empty", "-m", "work"],
+        cwd=path,
+        check=True,
+        capture_output=True,
+    )
+    return path
+
+
+def push(cwd: Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["git", "push", *args], cwd=cwd, capture_output=True, text=True, check=False
+    )
+
+
+def test_worktree_may_push_its_own_branch(guarded: Path) -> None:
+    assert push(guarded, "origin", "HEAD:refs/heads/feat/guard").returncode == 0
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ("origin", "HEAD:dev"),
+        ("origin", "HEAD:main"),
+        ("--dry-run", "origin", "HEAD:dev"),
+        ("--force", "origin", "HEAD:dev"),
+        ("origin", "HEAD:refs/heads/other"),
+    ],
+)
+def test_worktree_may_not_push_anything_else(guarded: Path, args) -> None:
+    """The --dry-run case is the one the old lefthook guard let through."""
+    result = push(guarded, *args)
+    assert result.returncode != 0
+    assert "push-guard" in result.stderr
+
+
+def test_main_checkout_is_unrestricted(guarded: Path, wtx_repo: Path) -> None:
+    subprocess.run(
+        ["git", "commit", "-q", "--allow-empty", "-m", "on dev"],
+        cwd=wtx_repo,
+        check=True,
+        capture_output=True,
+    )
+    assert push(wtx_repo, "origin", "dev").returncode == 0
+
+
+def test_an_existing_pre_push_hook_still_runs(wtx_repo: Path, fake_bin: Path) -> None:
+    hooks = guard.hooks_dir(wtx_repo)
+    hooks.mkdir(parents=True, exist_ok=True)
+    (hooks / "pre-push").write_text("#!/bin/sh\necho CHAINED >&2\nexit 0\n")
+    (hooks / "pre-push").chmod(0o755)
+    cfg = config_mod.load(wtx_repo / "wtx.toml")
+    guard.install(cfg, wtx_repo)
+    assert (hooks / "pre-push.before-wt").is_file()
+
+    path = make_worktree(wtx_repo, "feat/chain")
+    subprocess.run(
+        ["git", "commit", "-q", "--allow-empty", "-m", "w"],
+        cwd=path,
+        check=True,
+        capture_output=True,
+    )
+    result = push(path, "origin", "HEAD:refs/heads/feat/chain")
+    assert result.returncode == 0
+    assert "CHAINED" in result.stderr
+
+
+def test_installing_twice_does_not_chain_the_guard_to_itself(
+    wtx_repo: Path, fake_bin: Path
+) -> None:
+    cfg = config_mod.load(wtx_repo / "wtx.toml")
+    guard.install(cfg, wtx_repo)
+    guard.install(cfg, wtx_repo)
+    hooks = guard.hooks_dir(wtx_repo)
+    assert not (hooks / "pre-push.before-wt").is_file()
+
+
+# -- external repos -----------------------------------------------------------
+
+
+def _add_repos_block(root: Path, sibling: Path) -> None:
+    (root / "wtx.toml").write_text(
+        (root / "wtx.toml").read_text()
+        + f'''
+[[repos]]
+name = "model"
+path = "{sibling}"
+access = "pair"
+base_branch = "main"
+env_prefix = "TCM"
+editable_install = {{ cwd = "backend", run = "uv pip install -e {{path}}" }}
+
+[[repos]]
+name = "conf"
+path = "{sibling.parent / "conf"}"
+access = "read"
+'''
+    )
+    (sibling.parent / "conf").mkdir(exist_ok=True)
+    (sibling.parent / "conf" / "app.yaml").write_text("kind: Deployment\n")
+
+
+def test_a_read_repo_is_readable_and_never_writable(
+    wtx_repo: Path, sibling: Path, fake_bin: Path
+) -> None:
+    _add_repos_block(wtx_repo, sibling)
+    path = make_worktree(wtx_repo, "feat/read")
+    setup_mod.run_setup(context.load(root=path), start_tmux=False)
+    settings = json.loads((path / ".claude/settings.local.json").read_text())
+    conf = str(sibling.parent / "conf")
+    assert conf in settings["permissions"]["additionalDirectories"]
+    assert f"Edit(//{conf.lstrip('/')}/**)" in settings["permissions"]["deny"]
+    assert f"{conf}/**" in settings["sandbox"]["filesystem"]["denyWrite"]
+
+
+def test_pairing_makes_a_worktree_in_the_other_repo(
+    wtx_repo: Path, sibling: Path, fake_bin: Path
+) -> None:
+    _add_repos_block(wtx_repo, sibling)
+    path = make_worktree(wtx_repo, "feat/pair")
+    ctx = context.load(root=path)
+    setup_mod.run_setup(ctx, with_repos={"model": "feat/pair-model"}, start_tmux=False)
+
+    values = envfile.read_worktree(path)
+    assert values["TCM_BRANCH"] == "feat/pair-model"
+    assert Path(values["TCM_PATH"]).is_dir()
+    assert values["UV_NO_SYNC"] == "1"
+    branches = [w.branch for w in git.list_worktrees(sibling)]
+    assert "feat/pair-model" in branches
+
+    settings = json.loads((path / ".claude/settings.local.json").read_text())
+    paired = values["TCM_PATH"]
+    assert paired in settings["permissions"]["additionalDirectories"]
+    assert f"Edit(//{paired.lstrip('/')}/**)" in settings["permissions"]["allow"]
+    assert paired in settings["sandbox"]["filesystem"]["allowWrite"]
+    assert str(path) in settings["sandbox"]["filesystem"]["allowWrite"]
+
+
+def test_a_pairing_is_remembered_on_the_next_setup(
+    wtx_repo: Path, sibling: Path, fake_bin: Path
+) -> None:
+    """A plain `wtx go` must never quietly un-pair a worktree."""
+    _add_repos_block(wtx_repo, sibling)
+    path = make_worktree(wtx_repo, "feat/sticky")
+    setup_mod.run_setup(
+        context.load(root=path), with_repos={"model": "feat/sticky-model"}, start_tmux=False
+    )
+    setup_mod.run_setup(context.load(root=path), start_tmux=False)
+    assert envfile.read_worktree(path)["TCM_BRANCH"] == "feat/sticky-model"
+
+
+def test_an_unpaired_pair_repo_is_read_only(
+    wtx_repo: Path, sibling: Path, fake_bin: Path
+) -> None:
+    _add_repos_block(wtx_repo, sibling)
+    path = make_worktree(wtx_repo, "feat/unpaired")
+    setup_mod.run_setup(context.load(root=path), start_tmux=False)
+    settings = json.loads((path / ".claude/settings.local.json").read_text())
+    main_path = str(sibling)
+    assert main_path in settings["permissions"]["additionalDirectories"]
+    assert f"Edit(//{main_path.lstrip('/')}/**)" in settings["permissions"]["deny"]
+
+
+def test_teardown_keeps_the_paired_worktree(
+    wtx_repo: Path, sibling: Path, fake_bin: Path
+) -> None:
+    from wtx.teardown import run_teardown
+
+    _add_repos_block(wtx_repo, sibling)
+    path = make_worktree(wtx_repo, "feat/keeppair")
+    setup_mod.run_setup(
+        context.load(root=path), with_repos={"model": "feat/keep-model"}, start_tmux=False
+    )
+    run_teardown(context.load(root=path))
+    assert "feat/keep-model" in [w.branch for w in git.list_worktrees(sibling)]
+
+
+# -- opencode -----------------------------------------------------------------
+
+
+def test_opencode_backend_writes_its_own_config(wtx_repo: Path, fake_bin: Path) -> None:
+    path = make_worktree(wtx_repo, "feat/oc")
+    setup_mod.run_setup(
+        context.load(root=path), agent_tool="opencode", llm="qwen", start_tmux=False
+    )
+    data = json.loads((path / "opencode.json").read_text())
+    assert data["model"] == "qwen"
+    assert data["permission"]["bash"]["git push * dev"] == "deny"
+    assert data["permission"]["*"] == "ask"
+    assert envfile.read_worktree(path)["WTX_AGENT"] == "opencode"
+
+
+# -- tmux ---------------------------------------------------------------------
+
+
+def test_a_session_is_built_with_one_pane_per_config_entry(
+    wtx_repo: Path, fake_bin: Path
+) -> None:
+    path = make_worktree(wtx_repo, "feat/tmux")
+    setup_mod.run_setup(context.load(root=path), start_tmux=True)
+    roles = [c for c in calls_of(fake_bin, "tmux") if "@wt_role" in c]
+    assert len(roles) == 4
+    assert any(c.endswith("@wt_role agent") for c in roles)
+    scrub = [c for c in calls_of(fake_bin, "tmux") if "set-environment -gu" in c]
+    assert any("ROOT" in c for c in scrub)
+    assert any("BACKEND_PORT" in c for c in scrub)
+
+
+def test_the_session_name_has_no_dots(wtx_repo: Path, fake_bin: Path) -> None:
+    path = make_worktree(wtx_repo, "release/1.2")
+    ctx = context.load(root=path)
+    assert ctx.session.endswith("release/1-2")
+
+
+# -- cli ----------------------------------------------------------------------
+
+
+def test_status_reports_ports_and_pairings(
+    wtx_repo: Path, sibling: Path, fake_bin: Path, capsys, monkeypatch
+) -> None:
+    _add_repos_block(wtx_repo, sibling)
+    path = make_worktree(wtx_repo, "feat/status")
+    setup_mod.run_setup(
+        context.load(root=path), with_repos={"model": "feat/status-model"}, start_tmux=False
+    )
+    monkeypatch.chdir(wtx_repo)
+    assert run(["status", "--json"]) == 0
+    rows = json.loads(capsys.readouterr().out)
+    row = next(r for r in rows if r["branch"] == "feat/status")
+    assert row["ports"]["backend"].isdigit()
+    assert row["repos"]["model"]["branch"] == "feat/status-model"
+
+
+def test_go_refuses_a_protected_branch(wtx_repo: Path, fake_bin: Path, monkeypatch, capsys) -> None:
+    monkeypatch.chdir(wtx_repo)
+    assert run(["go", "dev"]) == 1
+    assert "protected" in capsys.readouterr().err
+
+
+def test_land_refuses_from_a_worktree(wtx_repo: Path, fake_bin: Path, monkeypatch, capsys) -> None:
+    path = make_worktree(wtx_repo, "feat/land")
+    setup_mod.run_setup(context.load(root=path), start_tmux=False)
+    monkeypatch.chdir(path)
+    assert run(["land", "feat/land"]) == 1
+    assert "main checkout" in capsys.readouterr().err
+
+
+def test_dry_run_changes_nothing(wtx_repo: Path, fake_bin: Path, monkeypatch, capsys) -> None:
+    path = make_worktree(wtx_repo, "feat/dry")
+    setup_mod.run_setup(context.load(root=path), start_tmux=False)
+    subprocess.run(
+        ["git", "commit", "-q", "--allow-empty", "-m", "w"], cwd=path, check=True
+    )
+    before = git_out(["rev-parse", "dev"], wtx_repo)
+    monkeypatch.chdir(wtx_repo)
+    run(["--dry-run", "land", "feat/dry", "--local"])
+    out = capsys.readouterr().out
+    assert "would run" in out
+    assert git_out(["rev-parse", "dev"], wtx_repo) == before
+    assert git.worktree_path_for(wtx_repo, "feat/dry") is not None
+
+
+def test_config_validate_reports_a_problem(wtx_repo: Path, monkeypatch, capsys) -> None:
+    (wtx_repo / "wtx.toml").write_text(
+        '[repo]\nname = "x"\nbase_branch = "dev"\nprotected_branches = ["main"]\n'
+    )
+    monkeypatch.chdir(wtx_repo)
+    assert run(["config", "validate", "--json"]) == 1
+    assert "base branch" in capsys.readouterr().out
+
+
+def test_doctor_runs_and_reports(wtx_repo: Path, fake_bin: Path, monkeypatch, capsys) -> None:
+    from wtx import doctor
+
+    monkeypatch.chdir(wtx_repo)
+    report = doctor.run(wtx_repo)
+    names = {c.name for c in report.checks}
+    assert "push guard installed" in names
+    assert "config is valid" in names
+
+
+def test_go_refuses_an_invalid_config(wtx_repo: Path, fake_bin: Path, monkeypatch, capsys) -> None:
+    """Setting a worktree up wrong is worse than not setting it up: it writes
+    permissions, installs a guard and starts servers from unchecked values."""
+    (wtx_repo / "wtx.toml").write_text(
+        (wtx_repo / "wtx.toml").read_text()
+        + '\n[[repos]]\nname = "a"\npath = "../x"\n\n[[repos]]\nname = "a"\npath = "../y"\n'
+    )
+    monkeypatch.chdir(wtx_repo)
+    assert run(["go", "feat/bad"]) == 1
+    err = capsys.readouterr().err
+    assert "has problems" in err
+    assert git.worktree_path_for(wtx_repo, "feat/bad") is None
+
+
+def test_notify_writes_a_state_and_the_status_line(
+    wtx_repo: Path, fake_bin: Path, monkeypatch
+) -> None:
+    from wtx import notify
+
+    path = make_worktree(wtx_repo, "feat/notify")
+    setup_mod.run_setup(context.load(root=path), start_tmux=True)
+    ctx = context.load(root=path)
+    monkeypatch.setattr(notify, "session_for", lambda cwd: ctx.session)
+    monkeypatch.setattr(notify, "_spawn_desktop", lambda *a: None)
+    monkeypatch.setattr("sys.stdin", type("S", (), {"isatty": lambda s: True})())
+    notify.handle("permission", cwd=path)
+
+    assert notify.read_state(ctx.session)["state"] == "permission"
+    assert ctx.session in notify.status_line()
+    notify.handle("running", cwd=path)
+    assert notify.read_state(ctx.session) == {}
+    assert notify.status_line() == ""
