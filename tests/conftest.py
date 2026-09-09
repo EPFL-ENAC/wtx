@@ -16,6 +16,24 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+
+def pytest_addoption(parser) -> None:
+    parser.addoption(
+        "--run-tmux",
+        action="store_true",
+        default=False,
+        help="run the tests that need a real tmux server",
+    )
+
+
+def pytest_collection_modifyitems(config, items) -> None:
+    if config.getoption("--run-tmux"):
+        return
+    skip = pytest.mark.skip(reason="needs a real tmux server, pass --run-tmux")
+    for item in items:
+        if "tmux" in item.keywords:
+            item.add_marker(skip)
+
 FAKE = """#!/bin/sh
 printf '%s\\t%s\\n' "{name}" "$*" >> "$WTX_TEST_CALLS"
 {body}

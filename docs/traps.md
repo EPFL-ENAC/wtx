@@ -19,6 +19,10 @@ only the first, because a branch can predate the fix.
 that ref pointed at last time it was fetched. `wtx go` defaults to
 `origin/<base>` and fetches first.
 
+**A hook must be a list in `.wt.toml`.** `post_create = "wtx hook post-create"`
+parses fine and then never runs, so a repo looks set up and has no ports, no
+settings and no guard. It has to be `["wtx hook post-create"]`.
+
 **`post_checkout` fires on create too**, in some wt builds. Every setup step
 checks whether its work is already done.
 
