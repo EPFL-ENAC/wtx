@@ -226,6 +226,19 @@ def _merge_hooks(path: Path, fragment: dict) -> bool:
     for event, entries in fragment.items():
         current = hooks.setdefault(event, [])
         for entry in entries:
+            # First drop the old claude-notify hook on this matcher, even when
+            # ours is already there: an earlier run may have added ours next
+            # to it, and then every event notified twice. Keep anyone else's.
+            before = len(current)
+            current[:] = [
+                e
+                for e in current
+                if not (
+                    e.get("matcher") == entry.get("matcher")
+                    and any(old in json.dumps(e.get("hooks", [])) for old in OLD_NOTIFY)
+                )
+            ]
+            changed = changed or len(current) != before
             same = [
                 e
                 for e in current
@@ -234,18 +247,13 @@ def _merge_hooks(path: Path, fragment: dict) -> bool:
             ]
             if same:
                 continue
-            # Replace a hook of ours on the same matcher, and the old
-            # claude-notify one wtx replaces, or every event would notify
-            # twice. Keep anyone else's.
+            # Replace an older wtx hook on the same matcher.
             current[:] = [
                 e
                 for e in current
                 if not (
                     e.get("matcher") == entry.get("matcher")
-                    and any(
-                        old in json.dumps(e.get("hooks", []))
-                        for old in ("wtx notify", *OLD_NOTIFY)
-                    )
+                    and "wtx notify" in json.dumps(e.get("hooks", []))
                 )
             ]
             current.append(entry)

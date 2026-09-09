@@ -121,6 +121,13 @@ a no-op and everyone rebased by hand. `wtx land` rebases, aborts cleanly on a
 conflict, and refuses only the case that check was for: a branch cut from a
 newer protected branch (stage while dev lags) that would drag stage into dev.
 
+## installing
+
+**`uv tool install --force <path>` does not rebuild.** uv caches the built
+wheel by version and reuses it, so the machine keeps running the first build
+whatever the checkout says. For a local checkout use `--editable`, which
+follows the working tree, or `--reinstall` to force a rebuild.
+
 ## everything else
 
 **`.env.worktree` used to be rewritten whole**, so a key a human or a repo hook

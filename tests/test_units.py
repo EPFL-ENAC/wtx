@@ -286,6 +286,25 @@ def test_install_machine_replaces_the_old_notify_hooks_and_keeps_others(tmp_path
     assert machine._merge_hooks(settings, fragment) is False  # second run: nothing to do
 
 
+def test_install_machine_drops_an_old_hook_sitting_next_to_ours(tmp_path) -> None:
+    """The first wtx build appended its hooks next to claude-notify's. A later
+    run must still remove the old ones, even though ours are already there."""
+    from wtx import machine
+
+    settings = tmp_path / "settings.json"
+    settings.write_text(json.dumps({"hooks": {
+        "Stop": [
+            {"matcher": "*", "hooks": [{"type": "command", "command": "/x/claude-notify stop"}]},
+            {"matcher": "*", "hooks": [{"type": "command", "command": "wtx notify stop"}]},
+        ],
+    }}))
+    fragment = json.loads(machine.planned("claude")[-1].body)["hooks"]
+    assert machine._merge_hooks(settings, fragment)
+    text = json.dumps(json.loads(settings.read_text()))
+    assert "claude-notify" not in text
+    assert text.count("wtx notify stop") == 1
+
+
 def test_install_machine_comments_out_the_old_bashrc_line(tmp_path) -> None:
     from wtx import machine
 

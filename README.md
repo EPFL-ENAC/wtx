@@ -18,6 +18,13 @@ wtx install-machine --apply     # from a real terminal, not from an agent
 wtx doctor
 ```
 
+From a local checkout, install it editable so the tool follows the working
+tree (`--force` alone reuses uv's cached build and changes nothing):
+
+```sh
+uv tool install --reinstall --editable ~/code/wtx
+```
+
 ## Add it to a repo
 
 ```sh
