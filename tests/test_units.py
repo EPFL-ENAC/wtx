@@ -334,50 +334,55 @@ def _orchestrated(**over) -> config.WtxConfig:
     )
 
 
+def _rctx(cfg: config.WtxConfig) -> RenderContext:
+    return RenderContext(
+        root=Path("/w"), main=Path("/m"), branch="feat/x", session="app/feat-x", cfg=cfg
+    )
+
+
 @pytest.mark.parametrize(
     "line",
     ["wtx-size: small", "- wtx-size: small", "**wtx-size:** small", "WTX-SIZE: Small"],
 )
 def test_the_planner_sizes_its_own_plan(line: str) -> None:
-    plan = f"step one\nstep two\n\n{line}\n"
-    assert orchestrate.size_of(plan, small_words=1) == "small"
+    assert orchestrate.size_of(f"step one\nstep two\n\n{line}\n") == "small"
 
 
-def test_a_plan_with_no_marker_is_sized_by_its_length() -> None:
-    """A plan written outside a wtx brief, or by a model that dropped the line."""
-    assert orchestrate.size_of("one two three", small_words=10) == "small"
-    assert orchestrate.size_of("one two three", small_words=2) == "large"
+def test_a_plan_with_no_marker_is_large() -> None:
+    """Guessing from the length is a guess, and guessing low costs quality
+    where guessing high only costs money."""
+    assert orchestrate.size_of("one two three") == "large"
 
 
 def test_the_marker_is_only_read_from_a_line_of_its_own() -> None:
     """A plan that quotes the instruction must not be read as sizing itself."""
-    plan = "I will end with the wtx-size: small line.\n" + "word " * 50
-    assert orchestrate.size_of(plan, small_words=10) == "large"
+    assert orchestrate.size_of("I will end with the wtx-size: small line.") == "large"
 
 
-def test_a_size_picks_the_model_that_implements_the_plan() -> None:
-    cfg = _orchestrated(small_model="sonnet", build_model="opus")
-    assert orchestrate.model_for(cfg, "small") == "sonnet"
+def test_the_size_routes_effort_and_leaves_the_model_alone() -> None:
+    """Anthropic's guidance: effort is usually the better lever, so a smaller
+    model stays opt-in."""
+    cfg = _orchestrated(build_model="opus", small_effort="medium", large_effort="xhigh")
+    assert orchestrate.model_for(cfg, "small") == "opus"
     assert orchestrate.model_for(cfg, "large") == "opus"
 
+    def effort(size: str) -> str:
+        return replace(_rctx(cfg), phase="build", size=size, llm="opus").effort
 
-def test_the_build_brief_carries_the_task_without_wtx_own_instruction() -> None:
-    sent = "Add a health endpoint." + orchestrate.plan_instruction()
-    brief = orchestrate.build_brief(
-        task=orchestrate.strip_instruction(sent), plan="1. do it"
-    )
-    assert "Add a health endpoint." in brief
-    assert "1. do it" in brief
-    assert orchestrate.SIZE_MARKER not in brief
+    assert effort("small") == "medium"
+    assert effort("large") == "xhigh"
+
+
+def test_a_repo_can_still_opt_into_a_smaller_model() -> None:
+    cfg = _orchestrated(small_model="sonnet")
+    assert orchestrate.model_for(cfg, "small") == "sonnet"
+    assert orchestrate.model_for(cfg, "large") == "opus"
 
 
 def test_a_plan_brief_runs_on_the_planning_model_the_settings_do_not() -> None:
     """The worktree keeps its own model. Only the plan phase is redirected, or
     a later `claude --continue` would come back on the planner."""
-    cfg = _orchestrated(plan_model="fable")
-    ctx = RenderContext(
-        root=Path("/w"), main=Path("/m"), branch="feat/x", session="app/feat-x", cfg=cfg
-    )
+    ctx = _rctx(_orchestrated(plan_model="fable"))
     assert ctx.model == "opus"
     assert replace(ctx, phase="plan").model == "fable"
     assert replace(ctx, phase="build", llm="sonnet").model == "sonnet"
@@ -385,15 +390,35 @@ def test_a_plan_brief_runs_on_the_planning_model_the_settings_do_not() -> None:
 
 
 def test_each_phase_starts_in_its_own_permission_mode() -> None:
-    cfg = _orchestrated(build_permission_mode="acceptEdits")
-    base = RenderContext(
-        root=Path("/w"), main=Path("/m"), branch="feat/x", session="app/feat-x", cfg=cfg
-    )
+    base = _rctx(_orchestrated(build_permission_mode="acceptEdits"))
     agent = ClaudeAgent()
     plan = agent.launch_cmd(replace(base, phase="plan"), brief=True)
-    build = agent.launch_cmd(replace(base, phase="build", llm="opus"), brief=True)
+    build = agent.handoff_cmd(
+        replace(base, phase="build", llm="opus", size="large"),
+        session="abc-123",
+        prompt="go",
+    )
     assert "--model fable --permission-mode plan" in plan
-    assert "--model opus --permission-mode acceptEdits" in build
+    assert "--model opus --permission-mode acceptEdits --effort xhigh" in build
+
+
+def test_the_handoff_resumes_the_planning_conversation() -> None:
+    """Not a fresh one: everything the planner read is most of what the
+    implementation needs, and Claude Code's own opusplan switches this way."""
+    cmd = ClaudeAgent().handoff_cmd(
+        replace(_rctx(_orchestrated()), phase="build", llm="opus", size="large"),
+        session="abc 123",
+        prompt="Implement it.",
+    )
+    assert cmd.startswith("claude -r 'abc 123' ")
+    assert cmd.endswith("'Implement it.'")
+
+
+def test_opencode_cannot_be_handed_a_conversation() -> None:
+    from wtx.agents.opencode import OpencodeAgent
+
+    ctx = _rctx(_orchestrated())
+    assert OpencodeAgent().handoff_cmd(ctx, session="x", prompt="go") == ""
 
 
 def test_the_accepted_plan_hook_is_part_of_the_machine_setup() -> None:
@@ -412,6 +437,12 @@ def test_validate_catches_a_permission_mode_that_does_not_exist() -> None:
 def test_validate_catches_orchestration_with_nothing_to_hand_to() -> None:
     cfg = _orchestrated(build_model="")
     assert any("orchestration" in e for e in validate(cfg))
+
+
+def test_validate_catches_an_effort_level_that_does_not_exist() -> None:
+    cfg = _orchestrated(large_effort="maximum")
+    assert any("large_effort" in e for e in validate(cfg))
+    assert any("effort" in e for e in validate(parse({"agent": {"effort": "huge"}})))
 
 
 def test_orchestration_needs_the_agent_that_has_the_hook() -> None:

@@ -122,19 +122,28 @@ PERMISSION_MODES = (
 )
 
 
+# The effort levels the agent accepts. Same reason as the permission modes.
+EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max", "ultracode")
+
+
 @dataclass(frozen=True)
 class OrchestrationCfg:
     """Plan on one model, implement on another.
 
     Off by default: it changes what a brief does. See docs/schema.md.
+
+    A plan the planner called small gets less effort, not a smaller model.
+    Anthropic's own guidance is that effort is usually the better lever, so
+    small_model is empty until someone has measured that it is enough here.
     """
 
     enabled: bool = False
     plan_model: str = "fable"
     build_model: str = "opus"
-    small_model: str = "sonnet"
+    small_model: str = ""
+    small_effort: str = "medium"
+    large_effort: str = "xhigh"
     build_permission_mode: str = "acceptEdits"
-    small_words: int = 350
 
 
 @dataclass(frozen=True)
@@ -389,9 +398,10 @@ def parse(
             enabled=bool(orch_t.get("enabled", False)),
             plan_model=orch_t.get("plan_model", "fable"),
             build_model=orch_t.get("build_model", "opus"),
-            small_model=orch_t.get("small_model", "sonnet"),
+            small_model=orch_t.get("small_model", ""),
+            small_effort=orch_t.get("small_effort", "medium"),
+            large_effort=orch_t.get("large_effort", "xhigh"),
             build_permission_mode=orch_t.get("build_permission_mode", "acceptEdits"),
-            small_words=int(orch_t.get("small_words", 350)),
         ),
         opencode=OpencodeCfg(
             provider=oc_t.get("provider", ""),
@@ -563,23 +573,23 @@ def validate(cfg: WtxConfig) -> list[str]:
         if mode and mode not in PERMISSION_MODES:
             errs.append(f"{key} '{mode}' is not one of {', '.join(PERMISSION_MODES)}")
     orch = cfg.agent.orchestration
+    for key, effort in (
+        ("[agent].effort", cfg.agent.effort),
+        ("[agent.orchestration].small_effort", orch.small_effort),
+        ("[agent.orchestration].large_effort", orch.large_effort),
+    ):
+        if effort and effort not in EFFORT_LEVELS:
+            errs.append(f"{key} '{effort}' is not one of {', '.join(EFFORT_LEVELS)}")
     if orch.enabled:
-        missing = [
-            name
-            for name, value in (
-                ("plan_model", orch.plan_model),
-                ("build_model", orch.build_model),
-                ("small_model", orch.small_model),
-            )
-            if not value
-        ]
-        if missing:
-            errs.append(
-                "[agent.orchestration] is enabled but "
-                f"{', '.join(missing)} is empty, there is nothing to hand the plan to"
-            )
-        if orch.small_words < 0:
-            errs.append("[agent.orchestration].small_words must not be negative")
+        for name, value in (
+            ("plan_model", orch.plan_model),
+            ("build_model", orch.build_model),
+        ):
+            if not value:
+                errs.append(
+                    f"[agent.orchestration] is enabled but {name} is empty, "
+                    "there is nothing to hand the plan to"
+                )
         if cfg.agent.tool != "claude":
             errs.append(
                 f"[agent.orchestration] needs [agent].tool = \"claude\", "

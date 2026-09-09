@@ -216,6 +216,13 @@ def cmd_go(args: argparse.Namespace) -> int:
     )
 
     if args.prompt:
+        if args.llm and cfg.agent.orchestration.enabled:
+            orch = cfg.agent.orchestration
+            warn(
+                f"--llm {args.llm} names the model for a plain session. This brief "
+                f"plans on {orch.plan_model} and implements on {orch.build_model}: "
+                "see [agent.orchestration]"
+            )
         _write_prompt(path, args.prompt, cfg)
 
     ctx.reload_env()
@@ -371,6 +378,7 @@ def cmd_status(args: argparse.Namespace) -> int:
                 },
                 "agent": values.get("WTX_AGENT", cfg.agent.tool),
                 "llm": values.get("WTX_LLM", cfg.agent.llm),
+                "handoff": orchestrate.pending(session),
                 "repos": {
                     spec.name: {
                         "path": values.get(spec.path_key, ""),
@@ -389,6 +397,12 @@ def cmd_status(args: argparse.Namespace) -> int:
         state = f" {row['state']}" if row["state"] else ""
         ports = " ".join(f"{k}={v}" for k, v in row["ports"].items() if v)
         print(f"{row['branch']}{tag}  [{live}{state}]  {ports}")
+        handoff = row["handoff"]
+        if handoff:
+            print(
+                f"    handoff pending: {handoff.get('size', '')} plan "
+                f"-> {handoff.get('model', '')}"
+            )
         for name, info in row["repos"].items():
             if info["branch"]:
                 print(f"    {name}: {info['branch']} at {info['path']}")

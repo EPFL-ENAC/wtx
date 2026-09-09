@@ -11,6 +11,7 @@ permissions the agent working on it runs under.
 from __future__ import annotations
 
 import json
+import shlex
 from importlib import resources
 from pathlib import Path
 
@@ -184,20 +185,31 @@ class ClaudeAgent:
         exits nonzero, so a new conversation starts.
         """
         if brief:
-            flags = ""
-            if ctx.model:
-                flags += f" --model {ctx.model}"
-            mode = ctx.permission_mode
-            if mode:
-                flags += f" --permission-mode {mode}"
-            if ctx.cfg.agent.effort:
-                flags += f" --effort {ctx.cfg.agent.effort}"
             return (
                 f"mv {PROMPT_FILE} {PROMPT_SENT} && "
-                f'claude{flags} "$(cat {PROMPT_SENT})"'
+                f'claude{self._flags(ctx)} "$(cat {PROMPT_SENT})"'
             )
         flags = f" --model {ctx.model}" if ctx.model else ""
         return f"claude{flags} --continue || claude{flags}"
+
+    def _flags(self, ctx: RenderContext) -> str:
+        flags = ""
+        if ctx.model:
+            flags += f" --model {ctx.model}"
+        if ctx.permission_mode:
+            flags += f" --permission-mode {ctx.permission_mode}"
+        if ctx.effort:
+            flags += f" --effort {ctx.effort}"
+        return flags
+
+    def handoff_cmd(self, ctx: RenderContext, *, session: str, prompt: str) -> str:
+        """Carry on the planning conversation on the implementation model.
+
+        Resuming keeps everything the planner read while writing the plan, so
+        the implementation does not pay to read it again. --model and
+        --permission-mode override what a resumed session would restore.
+        """
+        return f"claude -r {shlex.quote(session)}{self._flags(ctx)} {shlex.quote(prompt)}"
 
     def hook_fragment(self) -> dict:
         """Machine-level hooks. Project settings files cannot carry hooks, and

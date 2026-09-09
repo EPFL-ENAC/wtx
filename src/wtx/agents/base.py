@@ -30,6 +30,8 @@ class RenderContext:
     # Which side of the plan/build handoff this launch is on. Empty means a
     # plain session, which is neither. See orchestrate.py.
     phase: str = ""
+    # What the planner called the job, on a build launch: small or large.
+    size: str = ""
 
     @property
     def read_repos(self) -> list[Resolved]:
@@ -60,6 +62,19 @@ class RenderContext:
             return cfg.orchestration.build_permission_mode
         return cfg.brief_permission_mode
 
+    @property
+    def effort(self) -> str:
+        """How hard the agent works.
+
+        Implementing an accepted plan takes the effort its size asks for. This
+        is the lever the size routes, not the model: a smaller model is the
+        bigger bet and stays opt-in.
+        """
+        orch = self.cfg.agent.orchestration
+        if self.phase == "build" and orch.enabled and self.size:
+            return orch.small_effort if self.size == "small" else orch.large_effort
+        return self.cfg.agent.effort
+
 
 class Agent(Protocol):
     name: str
@@ -71,6 +86,14 @@ class Agent(Protocol):
 
     def launch_cmd(self, ctx: RenderContext, *, brief: bool) -> str:
         """The shell line the agent pane runs."""
+        ...
+
+    def handoff_cmd(self, ctx: RenderContext, *, session: str, prompt: str) -> str:
+        """The shell line that continues conversation `session` on this ctx.
+
+        Empty when the backend cannot resume a conversation by id, which is
+        what orchestration is built on.
+        """
         ...
 
     def hook_fragment(self) -> dict:

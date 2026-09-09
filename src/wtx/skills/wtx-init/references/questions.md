@@ -30,11 +30,13 @@ keeps, so a developer not using worktrees sees no change.
 - **Explore agent model.** The built-in search agent inherits the main model.
   A small model override makes searching much cheaper.
 - **Plan then build** (`[agent.orchestration]`). Off by default. On, a brief
-  plans on `plan_model` and, once the human accepts the plan, wtx restarts the
-  agent on `small_model` or `build_model` to implement it. It suits a repo where
-  work usually starts from a brief, and costs nothing in a repo where it does
-  not: the planning model is only strong for the plan, and small changes never
-  reach the expensive one. It needs `wtx install-machine --apply` to have run.
+  plans on `plan_model` and, once the human accepts the plan, wtx carries the
+  same conversation on to `build_model` to implement it, at the effort the
+  plan's size asks for. It suits a repo where work usually starts from a brief,
+  and costs nothing in a repo where it does not: the planning model is only
+  strong for the plan. Note that the size routes effort, not the model, which
+  is the lever Anthropic recommends reaching for first. It needs
+  `wtx install-machine --apply` to have run.
 
 ## read or pair
 

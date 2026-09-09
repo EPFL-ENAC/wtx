@@ -11,16 +11,23 @@ How it runs:
    `[agent.orchestration].plan_model`, in plan mode. The brief carries one extra
    instruction: end the plan with a `wtx-size:` line.
 2. The human accepts the plan. Claude Code fires PostToolUse on ExitPlanMode,
-   which runs `wtx handoff`. That records the approved plan and the model the
-   work asks for, and answers `continue: false` so the planning model stops
-   there instead of starting to implement.
+   which runs `wtx handoff`. That records which conversation is holding the
+   accepted plan and how it was sized, then answers `continue: false` so the
+   planning model stops there instead of starting to implement.
 3. The Stop hook fires `wtx notify stop`, which drains the record: the agent
-   pane is respawned on the implementation model with the plan as its brief.
+   pane is respawned on `claude -r <that conversation>`, on the implementation
+   model, at the effort the plan's size asks for.
 
-The build phase is a new conversation, not a resumed one. A planning
-conversation is mostly the reading that produced the plan, it is re-sent whole
-on every later turn, and the plan is the part that matters. So the plan is the
-handover, and it is written into PROMPT.md like any other brief.
+The implementation carries on the same conversation. Everything the planner
+read to write the plan is still there, which is most of what implementing it
+needs, and Claude Code's own opusplan switches models this way. The prompt
+cache is lost across the switch either way, so the transcript is re-read once
+and cached again.
+
+The size routes effort, not the model. Anthropic's guidance is that effort is
+usually the better lever and that model choice suits the kind of work rather
+than the individual task, so `small_model` is empty until a repo has measured
+that a smaller one is enough.
 
 Nothing here happens unless a repo sets `[agent.orchestration].enabled`.
 """
@@ -36,14 +43,14 @@ from pathlib import Path
 from . import config as config_mod
 from . import context, notify, repos, tmux
 from .agents import base as agents
-from .agents.base import PROMPT_FILE, PROMPT_SENT
 from .config import WtxConfig
+from .proc import warn
 
 SIZES = ("small", "large")
 SIZE_MARKER = "wtx-size:"
 
-# Marks the block wtx appends to a brief, so the build brief can quote the
-# human's task without wtx's own instructions to the planner.
+# Marks the block wtx appends to a brief, so a reader can tell wtx's
+# instructions to the planner from the human's own task.
 INSTRUCTION_MARK = "<!-- wtx -->"
 
 PLAN_INSTRUCTION = f"""
@@ -53,39 +60,28 @@ Added by wtx. End your plan with this line, on its own, and nothing after it:
     {SIZE_MARKER} small
 
 Say `small` when the plan is a handful of steps in code you have already read,
-and `large` when it is not. wtx reads that line to pick the model that
-implements the plan, so answer for the work, not for the writing.
+and `large` when it is not. wtx reads that line to decide how much effort the
+implementation gets, so answer for the work, not for the writing.
 """
 
-BUILD_BRIEF = """The plan below was written in plan mode and accepted. Implement it.
-
-Work through it in order. If a step turns out to be wrong, say so and stop
-rather than quietly doing something else.
-
-## The task
-
-{task}
-
-## The accepted plan
-
-{plan}
-"""
+HANDOFF_PROMPT = (
+    "The plan is accepted. Implement it, working through it in order. "
+    "If a step turns out to be wrong, say so and stop rather than quietly "
+    "doing something else."
+)
 
 
 def plan_instruction() -> str:
     return PLAN_INSTRUCTION
 
 
-def strip_instruction(text: str) -> str:
-    """The human's half of a brief wtx added to."""
-    return text.split(INSTRUCTION_MARK, 1)[0].strip()
-
-
-def size_of(plan: str, *, small_words: int) -> str:
-    """What the planner called the job, or, failing that, how long the plan is.
+def size_of(plan: str) -> str:
+    """What the planner called the job.
 
     The marker is read from the end of the plan, and tolerates the list bullets
-    and bold markers a model wraps a line in.
+    and bold markers a model wraps a line in. No marker means large: guessing
+    from the length of the plan is a guess, and guessing low costs quality
+    where guessing high only costs money.
     """
     for line in reversed(plan.strip().splitlines()):
         head, marker, rest = line.strip().lower().partition(SIZE_MARKER)
@@ -93,16 +89,19 @@ def size_of(plan: str, *, small_words: int) -> str:
             word = rest.strip(" `*_.")
             if word in SIZES:
                 return word
-    return "small" if len(plan.split()) < small_words else "large"
+    return "large"
 
 
 def model_for(cfg: WtxConfig, size: str) -> str:
+    """The model that implements a plan of this size.
+
+    Normally build_model whatever the size, with the size going to effort
+    instead. A repo that has set small_model has opted into the other bet.
+    """
     orch = cfg.agent.orchestration
-    return orch.small_model if size == "small" else orch.build_model
-
-
-def build_brief(*, task: str, plan: str) -> str:
-    return BUILD_BRIEF.format(task=task or "See the plan.", plan=plan.strip())
+    if size == "small" and orch.small_model:
+        return orch.small_model
+    return orch.build_model
 
 
 # ---------------------------------------------------------------------------
@@ -119,16 +118,30 @@ def write_record(session: str, payload: dict) -> None:
         record_file(session).write_text(json.dumps(payload))
 
 
+def pending(session: str) -> dict:
+    """A handoff waiting to fire, or one in flight. For `wtx status`."""
+    for path in (record_file(session), _running_name(record_file(session))):
+        try:
+            return json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+    return {}
+
+
+def _running_name(pending_path: Path) -> Path:
+    return pending_path.with_name(pending_path.name + ".running")
+
+
 def claim(session: str) -> Path | None:
     """Take the pending record, atomically, or return None.
 
     The Stop hook fires on every turn and more than one may see the same
     record. A rename means exactly one of them acts on it.
     """
-    pending = record_file(session)
-    running = pending.with_name(pending.name + ".running")
+    path = record_file(session)
+    running = _running_name(path)
     try:
-        pending.rename(running)
+        path.rename(running)
     except OSError:
         return None
     return running
@@ -153,34 +166,35 @@ def capture(payload: dict, *, cwd: Path | None = None) -> str:
     if not orch.enabled:
         return ""
     plan = str(payload.get("tool_input", {}).get("plan", "")).strip()
-    if not plan:
+    conversation = str(payload.get("session_id", ""))
+    if not plan or not conversation:
+        # With no conversation to resume there is no handoff to make, and
+        # stopping the agent would only take the plan away.
         return ""
     if not (tmux.available() and tmux.has_session(ctx.session)):
-        # Nothing to respawn: an agent in a plain terminal. Stopping it here
-        # would leave the human with a plan and no way to start on it.
+        # Nothing to respawn: an agent in a plain terminal.
         return ""
 
-    size = size_of(plan, small_words=orch.small_words)
+    size = size_of(plan)
     model = model_for(ctx.cfg, size)
-    if model == orch.plan_model:
-        return ""  # the planner is already the right model for the job
+    effort = orch.small_effort if size == "small" else orch.large_effort
+    if model == orch.plan_model and effort == ctx.cfg.agent.effort:
+        return ""  # already the right model at the right effort, carry on
 
-    sent = ctx.root / PROMPT_SENT
-    task = strip_instruction(sent.read_text()) if sent.is_file() else ""
     write_record(
         ctx.session,
         {
             "session": ctx.session,
             "root": str(ctx.root),
+            "conversation": conversation,
             "model": model,
             "size": size,
-            "brief": build_brief(task=task, plan=plan),
         },
     )
     return json.dumps(
         {
             "continue": False,
-            "stopReason": f"wtx: {size} plan, handing it to {model}",
+            "stopReason": f"wtx: {size} plan, continuing on {model} at {effort}",
         }
     )
 
@@ -198,8 +212,8 @@ def drain(session: str) -> bool:
     running = claim(session)
     if running is None:
         return False
-    started = _spawn(running)
-    if not started:  # no way to fork: do it here and hope the pane waits
+    if not _spawn(running):
+        warn("could not fork the handoff, running it in the hook's own pane")
         run(running)
     return True
 
@@ -220,25 +234,34 @@ def _spawn(record: Path) -> bool:
 
 
 def run(record: Path) -> int:
-    """Respawn the agent pane on the implementation model, briefed with the plan."""
+    """Respawn the agent pane on the planning conversation, on the build model."""
     try:
         data = json.loads(record.read_text())
     except (OSError, json.JSONDecodeError):
         return 0
     record.unlink(missing_ok=True)
-    root = Path(data["root"])
     try:
-        ctx = context.load(root=root)
+        ctx = context.load(root=Path(data["root"]))
         agent = agents.get(ctx.agent_tool)
     except (context.ContextError, config_mod.ConfigError, KeyError):
         return 0
-    try:
-        (root / PROMPT_FILE).write_text(data["brief"])
-    except OSError:
+    rctx = tmux.render_ctx(
+        ctx,
+        repos.resolve_all(ctx),
+        llm=data["model"],
+        phase="build",
+        size=data["size"],
+    )
+    cmd = agent.handoff_cmd(rctx, session=data["conversation"], prompt=HANDOFF_PROMPT)
+    if not cmd:
+        warn(f"{agent.name} cannot resume a conversation, no handoff made")
         return 0
-    resolved = repos.resolve_all(ctx)
-    rctx = tmux.render_ctx(ctx, resolved, llm=data["model"], phase="build")
-    tmux.send_brief(ctx, agent, rctx)
+    tmux.respawn_agent(
+        ctx,
+        cmd,
+        note=f"{ctx.session}: {data['size']} plan, continuing on "
+        f"{rctx.model} at {rctx.effort or 'the default effort'}",
+    )
     return 0
 
 

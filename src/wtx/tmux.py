@@ -157,7 +157,7 @@ def _split_percent(position: int, total: int) -> int:
 
 
 def render_ctx(
-    ctx: Ctx, resolved: list, *, llm: str = "", phase: str = ""
+    ctx: Ctx, resolved: list, *, llm: str = "", phase: str = "", size: str = ""
 ) -> RenderContext:
     """What a backend needs to write settings and start, from a live context."""
     return RenderContext(
@@ -169,6 +169,7 @@ def render_ctx(
         repos=resolved,
         llm=llm or ctx.llm,
         phase=phase,
+        size=size,
     )
 
 
@@ -202,26 +203,36 @@ def attach(session: str) -> None:
         run(["tmux", "attach-session", "-t", f"={session}"], check=False)
 
 
-def send_brief(ctx: Ctx, agent: Agent, rctx: RenderContext) -> bool:
-    """Restart the agent pane on the checkout's PROMPT.md.
+def respawn_agent(ctx: Ctx, cmd: str, *, note: str = "") -> bool:
+    """Restart the agent pane on a new command line.
 
-    A brief cannot reach an agent that is already running, so the pane is
-    respawned. Nothing is lost, the conversation it replaces stays resumable.
+    Nothing reaches an agent that is already running, so the pane is respawned.
+    Nothing is lost either: the conversation it replaces stays resumable, and
+    the handoff resumes exactly that one.
     """
     pane = agent_pane_id(ctx.session)
     if not pane:
         warn(
-            f"no agent pane in {ctx.session} (older session?). {PROMPT_FILE} kept, "
-            "kill the session and run wtx go again"
+            f"no agent pane in {ctx.session} (older session?). Kill the session "
+            "and run wtx go again"
         )
         return False
     load = envfile.load_snippet(ctx.cfg.owned_env_keys)
-    cmd = agent.launch_cmd(rctx, brief=True)
-    say(f"briefing {ctx.session} on {rctx.model or 'the default model'}")
+    if note:
+        say(note)
     _tmux(["respawn-pane", "-k", "-t", pane, "-c", str(ctx.root)])
     _tmux(["send-keys", "-t", pane, f"{load}; {cmd}", "C-m"])
     _tmux(["select-pane", "-t", pane])
     return True
+
+
+def send_brief(ctx: Ctx, agent: Agent, rctx: RenderContext) -> bool:
+    """Restart the agent pane on the checkout's PROMPT.md."""
+    return respawn_agent(
+        ctx,
+        agent.launch_cmd(rctx, brief=True),
+        note=f"briefing {ctx.session} on {rctx.model or 'the default model'}",
+    )
 
 
 def ensure_session(

@@ -133,6 +133,18 @@ is `<session>.handoff`.
 keep the worktree's own model. Writing the planner into the settings file would
 leave every later session on it.
 
+**"PostToolUse cannot block" is about the tool, not the turn.** The hooks
+reference lists `PostToolUse` as non-blocking, because the tool has already run
+by then. A `{"continue": false, "stopReason": ...}` answer still ends the turn,
+which is the whole handoff: checked against Claude Code 2.1.266 with a hook on
+`Read`, where the hooked run stopped after the tool call and the same run
+without the hook answered normally.
+
+**The handoff resumes, it does not re-brief.** `claude -r <id>` continues the
+conversation that wrote the plan, so the implementation still has everything the
+planner read. A resumed session restores its own model and permission mode, so
+`--model` and `--permission-mode` are passed explicitly to override them.
+
 ## landing
 
 **Refusing when the base moved on makes the rebase dead code.** The old script

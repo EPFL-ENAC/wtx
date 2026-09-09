@@ -51,16 +51,17 @@ wtdone feat/thing                   # close the worktree, keep the branch
 ## Plan on one model, build on another
 
 Turn `[agent.orchestration]` on in `wtx.toml` and a brief plans on the model you
-name, in plan mode. Accept the plan and wtx restarts the agent on the model the
-work asks for: the small one for a small plan, the strong one for the rest. You
-read the plan and press accept. Nothing else.
+name, in plan mode. Accept the plan and wtx carries that same conversation on to
+the implementation model, at the effort the plan's size asks for. You read the
+plan and press accept. Nothing else.
 
 ```toml
 [agent.orchestration]
 enabled = true
 plan_model = "fable"     # writes the plan
-build_model = "opus"     # implements a large one
-small_model = "sonnet"   # implements a small one
+build_model = "opus"     # implements it
+small_effort = "medium"  # a small plan: same model, working less hard
+large_effort = "xhigh"   # everything else
 ```
 
 Every key is in `docs/schema.md`.

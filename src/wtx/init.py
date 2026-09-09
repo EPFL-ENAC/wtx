@@ -427,7 +427,8 @@ def scan(main: Path) -> dict[str, Any]:
                 "enabled": False,
                 "plan_model": "fable",
                 "build_model": "opus",
-                "small_model": "sonnet",
+                "small_effort": "medium",
+                "large_effort": "xhigh",
             },
         },
         "permissions": {"allow": allow, "deny": deny, "allowed_domains": []},
@@ -572,8 +573,8 @@ def render_toml(answers: dict[str, Any]) -> str:
         lines += [
             "",
             "# Plan on one model, implement on another. A brief starts on",
-            "# plan_model in plan mode; when you accept the plan wtx hands it to",
-            "# small_model or build_model, going by how the planner sized it.",
+            "# plan_model in plan mode; accepting the plan carries the same",
+            "# conversation on to build_model, at the effort its size asks for.",
             "[agent.orchestration]",
         ]
         for key, value in orch.items():

@@ -5,14 +5,14 @@
 New:
 
 - `[agent.orchestration]`: plan on one model, implement on another. A brief
-  starts the agent on `plan_model` in plan mode; accepting the plan hands it to
-  `small_model` or `build_model`, going by how the planner sized it, and the
-  agent pane restarts there briefed with the plan. Off unless a repo turns it
-  on. Needs the new `ExitPlanMode` hook, so re-run `wtx install-machine
-  --apply`.
-- `wtx handoff`, the command that hook calls.
-- `brief_permission_mode` and `build_permission_mode` are checked against the
-  modes the agent actually knows.
+  starts the agent on `plan_model` in plan mode; accepting the plan carries the
+  same conversation on to `build_model` with `claude -r`, at the effort the
+  plan's size asks for. Off unless a repo turns it on. Needs the new
+  `ExitPlanMode` hook, so re-run `wtx install-machine --apply`.
+- `wtx handoff`, the command that hook calls. A pending handoff shows in
+  `wtx status`.
+- Permission modes and effort levels in `wtx.toml` are checked against the ones
+  the agent actually knows.
 
 Review fixes:
 

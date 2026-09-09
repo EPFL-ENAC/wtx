@@ -114,23 +114,36 @@ Plan on one model, implement on another, with no dance in between. Off unless
 you turn it on.
 
 A brief starts the agent on `plan_model`, in plan mode, and asks it to end the
-plan with a `wtx-size:` line. When you accept the plan, wtx hands it to
-`small_model` or `build_model` and the agent pane restarts there, briefed with
-the plan. Reading the plan stays your job; the model switching stops being one.
+plan with a `wtx-size:` line. When you accept the plan, wtx restarts the agent
+pane on `claude -r <that conversation>`, on `build_model`, at the effort the
+size asks for. Reading the plan stays your job; the model switching stops being
+one.
 
 | Key | Default | What |
 | --- | --- | --- |
 | `enabled` | `false` | Turns the whole thing on. |
 | `plan_model` | `fable` | Writes the plan. The strongest model you have: a plan is cheap and a bad one is not. |
-| `build_model` | `opus` | Implements a plan the planner called `large`. |
-| `small_model` | `sonnet` | Implements a plan it called `small`. |
+| `build_model` | `opus` | Implements it. |
+| `small_effort` | `medium` | Effort for a plan the planner called `small`. |
+| `large_effort` | `xhigh` | Effort for everything else. A plan with no `wtx-size:` line counts as large. |
+| `small_model` | none | A different model for a small plan. Opt-in, see below. |
 | `build_permission_mode` | `acceptEdits` | What the implementation starts in. The plan is already agreed. |
-| `small_words` | `350` | A plan with no `wtx-size:` line is small below this many words. |
 
-The implementation is a new conversation, not the planning one continued. A
-planning conversation is mostly the reading that produced the plan and it is
-re-sent whole on every later turn; the plan is the part worth keeping, so the
-plan is what is handed over. Anything the implementer needs has to be in it.
+**The size routes effort, not the model.** Anthropic's guidance is that tuning
+effort is usually a better lever than switching models, and that model choice
+suits the kind of work you do rather than the task in front of you. So a small
+plan gets the same model working less hard. `small_model` is there for a repo
+that has measured that a smaller model is enough, and is empty until then.
+
+**The implementation continues the planning conversation**, it does not start a
+new one, which is how Claude Code's own `opusplan` switches models. Everything
+the planner read while writing the plan is still there. The prompt cache is lost
+across a model switch either way, so the transcript is re-read once and cached
+again.
+
+`[agent].llm` and `wtx go --llm` name the model for a plain session. A brief
+takes its models from this block instead, and `wtx go` says so when both are
+given.
 
 It needs the `ExitPlanMode` hook from `wtx install-machine`. Without it nothing
 ever fires and a brief simply runs on `plan_model`.

@@ -620,29 +620,37 @@ def _enable_orchestration(root: Path, **over) -> None:
     )
 
 
-def _accept(path: Path, plan: str) -> str:
+def _accept(path: Path, plan: str, *, conversation: str = "conv-1") -> str:
     from wtx import orchestrate
 
     return orchestrate.capture(
-        {"cwd": str(path), "tool_name": "ExitPlanMode", "tool_input": {"plan": plan}}
+        {
+            "cwd": str(path),
+            "session_id": conversation,
+            "tool_name": "ExitPlanMode",
+            "tool_input": {"plan": plan},
+        }
     )
 
 
-def test_an_accepted_plan_is_handed_to_the_implementation_model(
+def test_an_accepted_plan_continues_on_the_implementation_model(
     wtx_repo: Path, fake_bin: Path
 ) -> None:
-    """The whole point: plan on fable, accept, implement on opus, no typing."""
+    """The whole point: plan on fable, accept, implement on opus, no typing.
+
+    And in the same conversation, so the implementation still has everything
+    the planner read.
+    """
     from wtx import orchestrate
 
     _enable_orchestration(wtx_repo, plan_model='"fable"', build_model='"opus"')
     path = make_worktree(wtx_repo, "feat/plan")
     setup_mod.run_setup(context.load(root=path), start_tmux=True)
     ctx = context.load(root=path)
-    (path / "PROMPT.sent.md").write_text(
-        "Add a health endpoint." + orchestrate.plan_instruction()
-    )
 
-    answer = json.loads(_accept(path, "1. write it\n2. test it\n\nwtx-size: large\n"))
+    answer = json.loads(
+        _accept(path, "1. write it\n\nwtx-size: large\n", conversation="conv-abc")
+    )
     assert answer["continue"] is False
     assert "opus" in answer["stopReason"]
 
@@ -650,24 +658,42 @@ def test_an_accepted_plan_is_handed_to_the_implementation_model(
     assert claimed is not None
     orchestrate.run(claimed)
 
-    brief = (path / "PROMPT.md").read_text()
-    assert "Add a health endpoint." in brief
-    assert "1. write it" in brief
     sent = [c for c in calls_of(fake_bin, "tmux") if "send-keys" in c]
-    assert any("--model opus --permission-mode acceptEdits" in c for c in sent)
+    assert any(
+        "claude -r conv-abc --model opus --permission-mode acceptEdits "
+        "--effort xhigh" in c
+        for c in sent
+    )
 
 
-def test_a_small_plan_goes_to_the_small_model(wtx_repo: Path, fake_bin: Path) -> None:
+def test_a_small_plan_lowers_the_effort_not_the_model(
+    wtx_repo: Path, fake_bin: Path
+) -> None:
     from wtx import orchestrate
 
-    _enable_orchestration(wtx_repo, small_model='"sonnet"')
+    _enable_orchestration(wtx_repo, build_model='"opus"', small_effort='"medium"')
     path = make_worktree(wtx_repo, "feat/small")
     setup_mod.run_setup(context.load(root=path), start_tmux=True)
     ctx = context.load(root=path)
 
     _accept(path, "1. rename it\n\nwtx-size: small\n")
     record = json.loads(orchestrate.record_file(ctx.session).read_text())
-    assert record["model"] == "sonnet"
+    assert record["model"] == "opus"
+
+    orchestrate.run(orchestrate.claim(ctx.session))
+    sent = [c for c in calls_of(fake_bin, "tmux") if "send-keys" in c]
+    assert any("--model opus" in c and "--effort medium" in c for c in sent)
+
+
+def test_a_plan_with_no_conversation_to_resume_is_not_stopped(
+    wtx_repo: Path, fake_bin: Path
+) -> None:
+    """Stopping the agent with nothing to resume would take the plan away."""
+    _enable_orchestration(wtx_repo)
+    path = make_worktree(wtx_repo, "feat/no-conv")
+    setup_mod.run_setup(context.load(root=path), start_tmux=True)
+
+    assert _accept(path, "1. do it\n\nwtx-size: large\n", conversation="") == ''
 
 
 def test_a_repo_without_orchestration_is_left_alone(
@@ -688,7 +714,9 @@ def test_a_plan_the_planner_can_implement_itself_is_not_handed_over(
     wtx_repo: Path, fake_bin: Path
 ) -> None:
 
-    _enable_orchestration(wtx_repo, plan_model='"opus"', build_model='"opus"')
+    _enable_orchestration(
+        wtx_repo, plan_model='"opus"', build_model='"opus"', large_effort='""'
+    )
     path = make_worktree(wtx_repo, "feat/same-model")
     setup_mod.run_setup(context.load(root=path), start_tmux=True)
 
@@ -778,7 +806,11 @@ def test_the_handoff_command_answers_the_hook(
     monkeypatch.setattr(
         notify,
         "payload_from_stdin",
-        lambda: {"cwd": str(path), "tool_input": {"plan": "1. do it\n\nwtx-size: large"}},
+        lambda: {
+            "cwd": str(path),
+            "session_id": "conv-1",
+            "tool_input": {"plan": "1. do it\n\nwtx-size: large"},
+        },
     )
 
     capsys.readouterr()
@@ -818,3 +850,31 @@ def test_a_hook_finds_the_session_of_a_repo_that_renamed_itself(
 
     assert ctx.session == "renamed-app/feat/renamed"
     assert notify.session_for(path) == ctx.session
+
+
+def test_a_pending_handoff_shows_in_status(
+    wtx_repo: Path, fake_bin: Path, monkeypatch, capsys
+) -> None:
+    """A handoff that never fires must not be invisible."""
+    _enable_orchestration(wtx_repo, build_model='"opus"')
+    path = make_worktree(wtx_repo, "feat/visible")
+    setup_mod.run_setup(context.load(root=path), start_tmux=True)
+
+    _accept(path, "1. do it\n\nwtx-size: large\n")
+    monkeypatch.chdir(wtx_repo)
+    capsys.readouterr()
+    run(["status", "feat/visible"])
+    assert "handoff pending: large plan -> opus" in capsys.readouterr().out
+
+
+def test_go_says_when_llm_is_not_what_a_brief_will_use(
+    wtx_repo: Path, fake_bin: Path, monkeypatch, capsys
+) -> None:
+    """--llm names the model for a plain session; a brief takes its models from
+    the orchestration block. Silently ignoring the flag is worse than saying so."""
+    _enable_orchestration(wtx_repo, plan_model='"fable"', build_model='"opus"')
+    make_worktree(wtx_repo, "feat/llm-note")
+    monkeypatch.chdir(wtx_repo)
+    capsys.readouterr()
+    run(["go", "feat/llm-note", "--llm", "haiku", "--prompt", "Do a thing.", "--no-attach"])
+    assert "plans on fable and implements on opus" in capsys.readouterr().err

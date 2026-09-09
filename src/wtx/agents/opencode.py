@@ -134,6 +134,11 @@ class OpencodeAgent:
             )
         return f"opencode{flags} -c || opencode{flags}"
 
+    def handoff_cmd(self, ctx: RenderContext, *, session: str, prompt: str) -> str:
+        """opencode has no accepted-plan hook to hand off from, and wtx.toml
+        validation refuses orchestration for it. See docs/opencode.md."""
+        return ""
+
     def hook_fragment(self) -> dict:
         """opencode signals its state through a plugin, not a settings hook.
         That plugin is the next piece of work, see docs/opencode.md."""
