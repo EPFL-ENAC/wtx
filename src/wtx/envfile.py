@@ -61,11 +61,11 @@ def render(owned: Mapping[str, str], foreign_lines: Sequence[str]) -> str:
     lines = [HEADER]
     for key, value in owned.items():
         lines.append(_fmt(key, str(value)))
-    kept = [ln for ln in foreign_lines if ln.strip()]
-    if kept:
-        lines.append("")
-        lines.append(FOREIGN_MARKER)
-        lines.extend(kept)
+    # The marker is always there, even with nothing under it, so the header
+    # is true and a human knows where to add a key that survives a rerun.
+    lines.append("")
+    lines.append(FOREIGN_MARKER)
+    lines.extend(ln for ln in foreign_lines if ln.strip())
     return "\n".join(lines) + "\n"
 
 

@@ -87,6 +87,13 @@ explicitly.
 
 **A session name cannot contain `.` or `:`.** They become dashes.
 
+**A pane's exported values leak into the next worktree.** Every pane exports
+`.env.worktree`, so a `wtx go` run from inside a session hands `WTX_LLM` and
+`WTX_AGENT` to the hook that sets up the new worktree, and the new one quietly
+gets the old one's model. What `wtx go` passes to its hook travels under
+`WTX_GO_*` names that no pane ever exports, and those are dropped before any
+tmux server starts.
+
 **Exported values leak into the tmux server.** If the command that starts the
 server had a worktree's ports exported, every later pane in every session
 inherits them, including the main checkout's. wtx scrubs them on every run.
@@ -104,6 +111,15 @@ directory at key time.
 
 **Closing the session you are sitting in kills the command doing the closing.**
 `wtx done` hands the job to the tmux server with `run-shell -b`.
+
+## landing
+
+**Refusing when the base moved on makes the rebase dead code.** The old script
+refused to land a branch unless `origin/dev` was already an ancestor of it,
+which is false the moment dev gets a commit, so its own rebase only ever ran as
+a no-op and everyone rebased by hand. `wtx land` rebases, aborts cleanly on a
+conflict, and refuses only the case that check was for: a branch cut from a
+newer protected branch (stage while dev lags) that would drag stage into dev.
 
 ## everything else
 

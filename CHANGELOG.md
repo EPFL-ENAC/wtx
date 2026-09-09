@@ -1,5 +1,31 @@
 # Changelog
 
+## unreleased
+
+Review fixes:
+
+- `{repo}` in a `[[repos]]` path was expanded to nothing when `[repo].name`
+  was missing, so the k8s entry pointed at the whole lab folder. The default
+  name now comes from the origin URL before any expansion.
+- `wtx go` run from inside another worktree's session handed that worktree's
+  `WTX_LLM` and `WTX_AGENT` to the new one. The hook now reads `WTX_GO_*`
+  names no pane exports, and they are scrubbed from the tmux server.
+- `wtx land` refused any branch whose base had moved on, so its rebase never
+  did anything. It now rebases, aborts on conflicts with a message, and only
+  refuses a branch cut from a newer protected branch.
+- `--with <name>` alone pairs on a branch named like the app branch, as
+  planned. It was a no-op.
+- A `SetupError`, `CommandError` or `WtError` printed a traceback instead of
+  a message.
+- Claude sessions outside any wtx session got no desktop notification at all.
+  They get one again, titled with the directory, and one click wakes one
+  worker.
+- `.env.worktree` always carries the "yours" marker, so a key added under it
+  survives the next run and the header is true.
+- `min_wtx_version` is checked. Shell completion for `--with` lists only the
+  `[[repos]]` names. `python -m wtx` works. The tests no longer need `wt`
+  installed.
+
 ## 0.1.0
 
 First release. Replaces the bash scripts copied into resslab-hub, bluecity-viz

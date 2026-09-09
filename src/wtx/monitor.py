@@ -7,7 +7,6 @@ session called wtx-monitor.
 
 from __future__ import annotations
 
-import os
 import shutil
 import sys
 import time
@@ -193,8 +192,6 @@ def _build_grid(limit: int = 6) -> None:
         GRID_WINDOW
     ):
         tmux._tmux(["kill-window", "-t", f"={SESSION}:{GRID_WINDOW}"])
-    env = dict(os.environ)
-    env.pop("TMUX", None)
     first = sessions[0]
     tmux._tmux(
         [

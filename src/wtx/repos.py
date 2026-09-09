@@ -48,7 +48,8 @@ class Resolved:
 def parse_with(values: list[str]) -> dict[str, str]:
     """Turn --with name / --with name=branch into {name: branch}.
 
-    An empty branch means "give me access, do not make a worktree".
+    An empty branch means "pair it on a branch named like mine": resolve_all
+    fills in the app branch. Reading needs no --with at all.
     """
     out: dict[str, str] = {}
     for raw in values:
@@ -96,6 +97,8 @@ def resolve_all(
             continue
 
         want = requested.get(spec.name, _pair_branch_from_env(ctx.env, spec))
+        if spec.name in requested and not want and spec.access == "pair":
+            want = ctx.branch
         if not want or spec.access != "pair":
             if want and spec.access != "pair":
                 warn(f"[[repos]] {spec.name} is access = \"read\", --with ignored")

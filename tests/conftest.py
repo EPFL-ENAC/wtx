@@ -2,7 +2,8 @@
 
 The real git is used because the traps this tool exists for are git behaviours.
 wt, tmux and the agents are faked: a test must never touch the developer's tmux
-server, and must never push anywhere real.
+server, and must never push anywhere real. The fake wt does what the real one
+does with plain git, minus the .wt.toml hooks.
 """
 
 from __future__ import annotations
@@ -50,6 +51,13 @@ BODIES = {
   list-sessions) [ -f "$WTX_TEST_SESSIONS" ] && cat "$WTX_TEST_SESSIONS";;
   list-panes) echo '%0 agent';;
   show-options) echo '';;
+esac""",
+    "wt": """slug=$(printf '%s' "$4" | tr / -)
+case "$3" in
+  create) git worktree add -q -b "$4" ".claude/worktrees/$slug" "$5";;
+  checkout) git worktree add -q ".claude/worktrees/$slug" "$4";;
+  remove) p=$(git worktree list --porcelain | awk -v b="refs/heads/$4" '/^worktree /{w=$2} $0=="branch "b{print w}')
+          [ -n "$p" ] && git worktree remove --force "$p";;
 esac""",
     "npm": 'case "$*" in *ci*) mkdir -p node_modules;; esac',
     "pnpm": 'case "$*" in *install*) mkdir -p node_modules;; esac',

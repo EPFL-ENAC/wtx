@@ -10,7 +10,7 @@ Check a file with `wtx config validate`.
 | Key | Default | What |
 | --- | --- | --- |
 | `schema_version` | `1` | Bumped when the shape changes. |
-| `min_wtx_version` | none | Warn when the installed wtx is older. |
+| `min_wtx_version` | none | Refuse to set up a worktree when the installed wtx is older. |
 
 ## `[repo]`
 
@@ -136,7 +136,8 @@ An external directory the agent needs.
 
 `read`: readable with no prompt, never writable.
 `pair`: the same until someone runs `wtx go <branch> --with <name>=<branch>`,
-which makes a worktree in that repo. The agent edits there, and it lands through
+which makes a worktree in that repo. `--with <name>` alone pairs it on a branch
+named like the app branch. The agent edits there, and it lands through
 that repo's own pull request. A pairing is remembered, so a later plain
 `wtx go` never un-pairs a worktree, and `wtx done` never removes the paired one.
 

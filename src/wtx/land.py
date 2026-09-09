@@ -93,14 +93,17 @@ def land(
         raise LandError(f"{path} has uncommitted changes, commit or stash them first")
 
     git.fetch(ctx.main)
-    if not git.is_ancestor(ctx.main, f"origin/{base}", branch):
-        raise LandError(
-            f"origin/{base} is not an ancestor of {branch}. "
-            f"Rebase it first: git -C {path} rebase origin/{base}"
-        )
+    _refuse_a_branch_cut_from_elsewhere(ctx, branch, base)
 
     say(f"rebasing {branch} onto origin/{base}")
-    run(["git", "rebase", f"origin/{base}"], cwd=path)
+    try:
+        run(["git", "rebase", f"origin/{base}"], cwd=path)
+    except CommandError as exc:
+        run(["git", "rebase", "--abort"], cwd=path, check=False, quiet=True)
+        raise LandError(
+            f"rebase onto origin/{base} has conflicts. Resolve them in {path} "
+            f"(git rebase origin/{base}), then run wtx land again"
+        ) from exc
     run(["git", "push", "--force-with-lease"], cwd=path)
 
     if local:
@@ -115,6 +118,26 @@ def land(
         )
     cleanup(ctx, branch, keep_branch=keep_branch)
     say(f"landed {branch} into {base}")
+
+
+def _refuse_a_branch_cut_from_elsewhere(ctx: Ctx, branch: str, base: str) -> None:
+    """A branch cut from a newer protected branch (stage while dev lags) would
+    drag every missing commit into its PR. Refuse that, and only that: a base
+    that simply moved on since the branch was cut is what the rebase is for.
+    """
+    for other in ctx.cfg.repo.protected_branches:
+        if other == base:
+            continue
+        ref = f"origin/{other}"
+        if not git.branch_exists(ctx.main, ref):
+            continue
+        ahead = capture(["git", "rev-list", "--count", f"origin/{base}..{ref}"], cwd=ctx.main)
+        if ahead.isdigit() and int(ahead) > 0 and git.is_ancestor(ctx.main, ref, branch):
+            raise LandError(
+                f"{branch} contains all of {ref}, which is {ahead} commit(s) ahead of "
+                f"origin/{base}. Landing it would drag those into {base}. "
+                f"Fast-forward {base} first (git push origin {other}:{base}), then run again"
+            )
 
 
 def _land_pr(

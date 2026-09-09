@@ -257,11 +257,19 @@ def _table(data: dict[str, Any], key: str) -> dict[str, Any]:
     return value
 
 
-def parse(data: dict[str, Any], *, source: Path | None = None) -> WtxConfig:
-    """Turn a parsed wtx.toml into a WtxConfig. Raises ConfigError."""
+def parse(
+    data: dict[str, Any], *, source: Path | None = None, default_name: str = ""
+) -> WtxConfig:
+    """Turn a parsed wtx.toml into a WtxConfig. Raises ConfigError.
+
+    default_name fills [repo].name when the file has none. It must be known
+    here, before {repo} is expanded: an expansion with an empty name turns
+    `epfl-{lab}/{repo}` into the whole lab folder, and nothing can put the
+    placeholder back afterwards.
+    """
     repo_t = _table(data, "repo")
     repo = RepoCfg(
-        name=repo_t.get("name", ""),
+        name=repo_t.get("name", "") or default_name,
         lab=repo_t.get("lab", ""),
         base_branch=repo_t.get("base_branch", "main"),
         protected_branches=_as_str_tuple(
@@ -451,11 +459,25 @@ def load(path: Path) -> WtxConfig:
         raise ConfigError(f"no {path}") from exc
     except tomllib.TOMLDecodeError as exc:
         raise ConfigError(f"{path}: {exc}") from exc
-    cfg = parse(data, source=path)
-    if not cfg.repo.name:
-        cfg = replace(cfg, repo=replace(cfg.repo, name=path.parent.name))
-        cfg = _post_process(cfg)
-    return cfg
+    return parse(data, source=path, default_name=_default_name(path.parent))
+
+
+def _default_name(main: Path) -> str:
+    """The repo name when wtx.toml has none: from the origin URL, like the old
+    scripts, so the port hash lands on the same numbers."""
+    from . import git
+
+    return git.repo_name(main)
+
+
+def _version_tuple(text: str) -> tuple[int, ...]:
+    parts = []
+    for piece in text.strip().split("."):
+        digits = "".join(ch for ch in piece if ch.isdigit())
+        if not digits:
+            break
+        parts.append(int(digits))
+    return tuple(parts)
 
 
 def validate(cfg: WtxConfig) -> list[str]:
@@ -468,6 +490,14 @@ def validate(cfg: WtxConfig) -> list[str]:
         )
     if not cfg.repo.name:
         errs.append("[repo].name is empty and could not be guessed")
+    if cfg.min_wtx_version:
+        from . import __version__
+
+        if _version_tuple(__version__) < _version_tuple(cfg.min_wtx_version):
+            errs.append(
+                f"this repo needs wtx {cfg.min_wtx_version} or newer, "
+                f"installed is {__version__}: uv tool upgrade wtx"
+            )
     if not cfg.repo.base_branch:
         errs.append("[repo].base_branch is empty")
     if cfg.repo.base_branch not in cfg.repo.protected_branches:

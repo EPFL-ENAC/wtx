@@ -25,6 +25,14 @@ from .teardown import run_teardown
 
 EVENTS = ("post-create", "post-checkout", "pre-remove")
 
+# What `wtx go` passes down to the hook. These are on purpose not the names
+# written to .env.worktree: every pane exports that file, so a `wtx go` run
+# from inside another worktree's session would otherwise hand that worktree's
+# agent and model to the new one.
+GO_AGENT_ENV = "WTX_GO_AGENT"
+GO_LLM_ENV = "WTX_GO_LLM"
+GO_DRIVING_ENV = "WTX_GO_DRIVING"
+
 
 def _target(path_env: str = "WT_PATH") -> Path | None:
     raw = os.environ.get(path_env, "")
@@ -60,9 +68,12 @@ def run_hook(event: str) -> int:
     run_setup(
         ctx,
         with_repos=decode_with(os.environ.get(WITH_ENV, "")),
-        agent_tool=os.environ.get("WTX_AGENT", ""),
-        llm=os.environ.get("WTX_LLM", ""),
-        start_tmux=True,
+        agent_tool=os.environ.get(GO_AGENT_ENV, ""),
+        llm=os.environ.get(GO_LLM_ENV, ""),
+        # When wtx go is driving, it creates the session itself once the
+        # brief is in place. Starting it here too meant an agent launched
+        # twice on a briefed worktree.
+        start_tmux=not os.environ.get(GO_DRIVING_ENV),
         attach=False,
         brief=False,
     )

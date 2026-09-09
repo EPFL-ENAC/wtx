@@ -6,7 +6,7 @@ import subprocess
 
 import pytest
 
-from wtx import envfile, guard
+from wtx import config, envfile, guard
 from wtx.agents.claude import ClaudeAgent, protected_branch_rules
 from wtx.config import parse, validate
 from wtx.context import session_name
@@ -230,3 +230,32 @@ def test_no_module_reads_wt_main() -> None:
     reads = re.compile(r"""environ(?:\.get\(|\[)\s*['"]WT_MAIN['"]""")
     hits = [f.name for f in src.rglob("*.py") if reads.search(f.read_text())]
     assert hits == [], f"WT_MAIN is read in {hits}"
+
+
+def test_repo_placeholder_survives_a_missing_name(tmp_path) -> None:
+    """With no [repo].name, {repo} was expanded to nothing and the k8s path
+    became the whole lab folder."""
+    d = tmp_path / "speed-to-zero"
+    d.mkdir()
+    (d / "wtx.toml").write_text(
+        '[repo]\nlab = "leure"\n[[repos]]\nname = "k8s"\npath = "~/k/epfl-{lab}/{repo}"\n'
+    )
+    cfg = config.load(d / "wtx.toml")
+    assert cfg.repo.name == "speed-to-zero"
+    assert cfg.repos[0].path == "~/k/epfl-leure/speed-to-zero"
+
+
+def test_min_wtx_version_refuses_an_old_wtx() -> None:
+    assert not validate(parse({"repo": {"name": "x"}, "min_wtx_version": "0.0.1"}))
+    problems = validate(parse({"repo": {"name": "x"}, "min_wtx_version": "999.0"}))
+    assert any("uv tool upgrade" in p for p in problems)
+
+
+def test_marker_is_always_written_and_a_key_under_it_survives(tmp_path) -> None:
+    f = tmp_path / ".env.worktree"
+    owned = {"WT_BRANCH": "b"}
+    envfile.write(f, owned, ["WT_BRANCH"])
+    assert envfile.FOREIGN_MARKER in f.read_text()
+    f.write_text(f.read_text() + "MINE=1\n")
+    envfile.write(f, owned, ["WT_BRANCH"])
+    assert envfile.read(f)["MINE"] == "1"

@@ -39,8 +39,8 @@ from . import (
 )
 from .agents import base as agents
 from .agents.base import PROMPT_FILE, RenderContext
-from .hooks import run_hook
-from .proc import say, set_dry_run, warn
+from .hooks import GO_AGENT_ENV, GO_DRIVING_ENV, GO_LLM_ENV, run_hook
+from .proc import CommandError, is_dry_run, say, set_dry_run, warn
 
 
 class UserError(Exception):
@@ -178,19 +178,30 @@ def cmd_go(args: argparse.Namespace) -> int:
 
     with_repos = repos.parse_with(args.with_repo or [])
     # The hook runs in a fresh process, so what wtx go decided travels in the
-    # environment, the way wt passes everything else to its hooks.
+    # environment, the way wt passes everything else to its hooks. Under names
+    # no pane exports: see hooks.py.
+    for key in (repos.WITH_ENV, GO_AGENT_ENV, GO_LLM_ENV):
+        os.environ.pop(key, None)
     if with_repos:
         os.environ[repos.WITH_ENV] = repos.encode_with(with_repos)
     if args.agent:
-        os.environ["WTX_AGENT"] = args.agent
+        os.environ[GO_AGENT_ENV] = args.agent
     if args.llm:
-        os.environ["WTX_LLM"] = args.llm
+        os.environ[GO_LLM_ENV] = args.llm
+    os.environ[GO_DRIVING_ENV] = "1"
 
     try:
         path, _existed = wt.ensure(main, branch, base)
     except wt.WtError as exc:
         raise UserError(str(exc)) from exc
+    # The hook has run. Drop what was meant for it: a tmux server started
+    # below would inherit these, and every later pane would pass them on.
+    for key in (repos.WITH_ENV, GO_AGENT_ENV, GO_LLM_ENV, GO_DRIVING_ENV):
+        os.environ.pop(key, None)
     if path is None:
+        if is_dry_run():
+            say(f"dry run: the worktree for {branch} would be created and set up")
+            return 0
         raise UserError(f"could not find the worktree for {branch} after creating it")
 
     ctx = context.for_worktree(main, path, branch, cfg)
@@ -538,7 +549,7 @@ def build_parser() -> argparse.ArgumentParser:
         dest="with_repo",
         action="append",
         metavar="NAME[=BRANCH]",
-        help="give this worktree an external repo, with a paired branch when named",
+        help="pair an external repo: its own worktree on BRANCH, or on a branch named like this one",
     )
     s.set_defaults(func=cmd_go)
 
@@ -635,9 +646,20 @@ def main(argv: list[str] | None = None) -> int:
     set_dry_run(bool(getattr(args, "dry_run", False)))
     try:
         return args.func(args)
-    except UserError as exc:
+    except (
+        UserError,
+        setup_mod.SetupError,
+        context.ContextError,
+        config_mod.ConfigError,
+        wt.WtError,
+    ) as exc:
         print(f"wtx: {exc}", file=sys.stderr)
         return 1
+    except CommandError as exc:
+        print(f"wtx: {exc}", file=sys.stderr)
+        if exc.output:
+            print(exc.output, file=sys.stderr)
+        return exc.code or 1
     except KeyboardInterrupt:
         return 130
 

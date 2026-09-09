@@ -18,6 +18,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import shlex
 import subprocess
 import sys
 import time
@@ -157,28 +158,31 @@ def handle(state: str, *, cwd: Path | None = None) -> int:
     payload = _payload_from_stdin()
     where = Path(payload.get("cwd") or cwd or Path.cwd())
     session = session_for(where)
-    if not session:
-        return 0
     message = str(payload.get("message", ""))
 
     if state in ("start", "running"):
-        clear_state(session)
-        if tmux.available():
-            tmux.set_session_option(session, tmux.STATE_OPTION, "")
+        if session:
+            clear_state(session)
+            if tmux.available():
+                tmux.set_session_option(session, tmux.STATE_OPTION, "")
         return 0
 
-    write_state(session, state, message)
-    if tmux.available():
-        tmux.set_session_option(session, tmux.STATE_OPTION, state)
-    _spawn_desktop(session, state, message)
+    if session:
+        write_state(session, state, message)
+        if tmux.available():
+            tmux.set_session_option(session, tmux.STATE_OPTION, state)
+    # An agent outside any wtx session (a plain terminal, an editor) still
+    # deserves the desktop notification. Its title is the directory, and a
+    # click opens a terminal there.
+    _spawn_desktop(session or where.name, state, message, cwd=where)
     return 0
 
 
-def _spawn_desktop(session: str, state: str, message: str) -> None:
+def _spawn_desktop(session: str, state: str, message: str, *, cwd: Path) -> None:
     """Fork the desktop notification so the hook returns straight away."""
     if which("notify-send") is None:
         return
-    cmd = [sys.executable, "-m", "wtx.notify", "--worker", session, state, message]
+    cmd = [sys.executable, "-m", "wtx.notify", "--worker", session, state, message, str(cwd)]
     with contextlib.suppress(OSError):
         subprocess.Popen(  # noqa: S603
             cmd,
@@ -189,7 +193,7 @@ def _spawn_desktop(session: str, state: str, message: str) -> None:
         )
 
 
-def worker(session: str, state: str, message: str) -> int:
+def worker(session: str, state: str, message: str, cwd: str = "") -> int:
     """The blocking half: show the notification, act on a click.
 
     notify-send -A blocks until the notification is clicked or closed, hence the
@@ -221,12 +225,34 @@ def worker(session: str, state: str, message: str) -> int:
             id_file.write_text(lines[0].strip())
     if "default" not in proc.stdout:
         return 0
-    _open_session(session)
+    # A replaced notification leaves the earlier worker waiting on the same
+    # id, so one click can wake several. The first one acts.
+    opened = id_file.with_suffix(".opened")
+    now = int(time.time())
+    with contextlib.suppress(OSError, ValueError):
+        if now - int(opened.read_text().strip() or 0) < 3:
+            return 0
+    with contextlib.suppress(OSError):
+        opened.write_text(str(now))
+    _open_session(session, cwd)
     return 0
 
 
-def _open_session(session: str) -> None:
+def _open_terminal(args: list[str]) -> None:
+    for term in ("gnome-terminal", "x-terminal-emulator", "xterm"):
+        if which(term):
+            flag = "--" if term == "gnome-terminal" else "-e"
+            subprocess.Popen(  # noqa: S603
+                [term, flag, *args] if args else [term],
+                start_new_session=True,
+            )
+            return
+
+
+def _open_session(session: str, cwd: str = "") -> None:
     if not tmux.available() or not tmux.has_session(session):
+        if cwd:
+            _open_terminal(["sh", "-c", f"cd {shlex.quote(cwd)} && exec ${{SHELL:-sh}}"])
         return
     pane = tmux.agent_pane_id(session)
     if pane:
@@ -239,14 +265,7 @@ def _open_session(session: str) -> None:
         if len(newest) == 2:
             tmux._tmux(["switch-client", "-c", newest[1], "-t", f"={session}"])
             return
-    for term in ("gnome-terminal", "x-terminal-emulator", "xterm"):
-        if which(term):
-            flag = "--" if term == "gnome-terminal" else "-e"
-            subprocess.Popen(  # noqa: S603
-                [term, flag, "tmux", "attach-session", "-t", f"={session}"],
-                start_new_session=True,
-            )
-            return
+    _open_terminal(["tmux", "attach-session", "-t", f"={session}"])
 
 
 def status_line(max_items: int = 4) -> str:
@@ -277,7 +296,8 @@ def main(argv: list[str]) -> int:  # pragma: no cover - process entry point
         session = argv[1] if len(argv) > 1 else ""
         state = argv[2] if len(argv) > 2 else ""
         message = argv[3] if len(argv) > 3 else ""
-        return worker(session, state, message)
+        cwd = argv[4] if len(argv) > 4 else ""
+        return worker(session, state, message, cwd)
     return handle(argv[0] if argv else "idle")
 
 

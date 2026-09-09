@@ -22,6 +22,14 @@ _wtx_protected() {
     | tr -d '"' | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -v '^$'
 }
 
+# The [[repos]] names, for --with. Only the name lines under a [[repos]] header.
+_wtx_repos() {
+  local main; main="$(_wtx_main)" || return 1
+  awk '/^\[\[repos\]\]/ {in_repo=1; next} /^\[/ {in_repo=0}
+       in_repo && /^name[[:space:]]*=/ {gsub(/^name[[:space:]]*=[[:space:]]*"|".*$/, ""); print}' \
+    "$main/wtx.toml" 2>/dev/null
+}
+
 # Branches that already have a worktree: the "what was I working on" list.
 _wtx_worktrees() {
   local main; main="$(_wtx_main)" || return 1
@@ -65,7 +73,7 @@ _wtx() {
     go|brief)
       if [ "$prev" = "--with" ]; then
         local main; main="$(_wtx_main)"
-        mapfile -t COMPREPLY < <(compgen -W "$(sed -n 's/^name[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' "$main/wtx.toml" 2>/dev/null | tail -n +2)" -- "$cur")
+        mapfile -t COMPREPLY < <(compgen -W "$(_wtx_repos)" -- "$cur")
         return
       fi
       mapfile -t COMPREPLY < <(compgen -W "$(_wtx_complete_go "$cur") all" -- "$cur")

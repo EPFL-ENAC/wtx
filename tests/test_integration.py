@@ -469,7 +469,7 @@ def test_notify_writes_a_state_and_the_status_line(
     setup_mod.run_setup(context.load(root=path), start_tmux=True)
     ctx = context.load(root=path)
     monkeypatch.setattr(notify, "session_for", lambda cwd: ctx.session)
-    monkeypatch.setattr(notify, "_spawn_desktop", lambda *a: None)
+    monkeypatch.setattr(notify, "_spawn_desktop", lambda *a, **k: None)
     monkeypatch.setattr("sys.stdin", type("S", (), {"isatty": lambda s: True})())
     notify.handle("permission", cwd=path)
 
@@ -491,3 +491,103 @@ def test_wt_toml_hooks_are_lists(wtx_repo: Path) -> None:
         value = data["hooks"][event]
         assert isinstance(value, list), f"{event} must be a list, got {type(value)}"
         assert value[0].startswith("wtx hook ")
+
+
+def test_with_alone_pairs_on_the_app_branch(
+    wtx_repo: Path, sibling: Path, fake_bin: Path
+) -> None:
+    _add_repos_block(wtx_repo, sibling)
+    path = make_worktree(wtx_repo, "feat/same")
+    setup_mod.run_setup(context.load(root=path), with_repos={"model": ""}, start_tmux=False)
+    assert envfile.read_worktree(path)["TCM_BRANCH"] == "feat/same"
+    assert "feat/same" in [w.branch for w in git.list_worktrees(sibling)]
+
+
+def test_hook_ignores_another_worktrees_exported_values(
+    wtx_repo: Path, fake_bin: Path, monkeypatch
+) -> None:
+    """Run from a pane where another worktree's .env.worktree is exported,
+    the hook must not hand that worktree's model to the new one."""
+    from wtx.hooks import GO_LLM_ENV, run_hook
+
+    path = make_worktree(wtx_repo, "feat/leak")
+    monkeypatch.setenv("WT_PATH", str(path))
+    monkeypatch.setenv("WT_BRANCH", "feat/leak")
+    monkeypatch.setenv("WTX_LLM", "sonnet-from-elsewhere")
+    monkeypatch.setenv("WTX_AGENT", "opencode")
+    assert run_hook("post-checkout") == 0
+    values = envfile.read_worktree(path)
+    assert values["WTX_LLM"] == "opus"  # the config's own value, not the leaked one
+    assert values["WTX_AGENT"] == "claude"
+
+    monkeypatch.setenv(GO_LLM_ENV, "haiku")
+    assert run_hook("post-checkout") == 0
+    assert envfile.read_worktree(path)["WTX_LLM"] == "haiku"
+
+
+def test_land_rebases_when_the_base_moved_on(
+    wtx_repo: Path, fake_bin: Path, monkeypatch, capsys
+) -> None:
+    """The ordinary case: dev got a commit after the branch was cut."""
+    path = make_worktree(wtx_repo, "feat/behind")
+    setup_mod.run_setup(context.load(root=path), start_tmux=False)
+    (path / "feature.txt").write_text("x\n")
+    subprocess.run(["git", "add", "-A"], cwd=path, check=True)
+    subprocess.run(["git", "commit", "-qm", "feat"], cwd=path, check=True)
+    (wtx_repo / "other.txt").write_text("y\n")
+    subprocess.run(["git", "add", "-A"], cwd=wtx_repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "dev moved"], cwd=wtx_repo, check=True)
+    subprocess.run(["git", "push", "-q", "origin", "dev"], cwd=wtx_repo, check=True)
+
+    monkeypatch.chdir(wtx_repo)
+    assert run(["land", "feat/behind", "--local", "--skip-checks"]) == 0
+    assert (wtx_repo / "feature.txt").is_file()
+    assert (wtx_repo / "other.txt").is_file()
+    assert git.worktree_path_for(wtx_repo, "feat/behind") is None
+
+
+def test_land_refuses_a_branch_cut_from_a_newer_protected_branch(
+    wtx_repo: Path, fake_bin: Path, monkeypatch, capsys
+) -> None:
+    """stage is ahead of dev and the branch contains all of stage."""
+    cfg_path = wtx_repo / "wtx.toml"
+    cfg_path.write_text(
+        cfg_path.read_text().replace(
+            'protected_branches = ["dev"]', 'protected_branches = ["dev", "stage"]'
+        )
+    )
+    subprocess.run(["git", "commit", "-qam", "stage protected"], cwd=wtx_repo, check=True)
+    subprocess.run(["git", "push", "-q", "origin", "dev"], cwd=wtx_repo, check=True)
+    subprocess.run(["git", "branch", "stage"], cwd=wtx_repo, check=True)
+    (wtx_repo / "stage.txt").write_text("s\n")
+    subprocess.run(["git", "checkout", "-q", "stage"], cwd=wtx_repo, check=True)
+    subprocess.run(["git", "add", "-A"], cwd=wtx_repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "on stage"], cwd=wtx_repo, check=True)
+    subprocess.run(["git", "push", "-q", "-u", "origin", "stage"], cwd=wtx_repo, check=True)
+    subprocess.run(["git", "checkout", "-q", "dev"], cwd=wtx_repo, check=True)
+
+    path = wtx_repo / ".claude" / "worktrees" / "feat-drag"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["git", "worktree", "add", "-q", "-b", "feat/drag", str(path), "origin/stage"],
+        cwd=wtx_repo, check=True, capture_output=True,
+    )
+    subprocess.run(["git", "commit", "-q", "--allow-empty", "-m", "w"], cwd=path, check=True)
+
+    monkeypatch.chdir(wtx_repo)
+    assert run(["land", "feat/drag", "--local", "--skip-checks"]) == 1
+    assert "drag" in capsys.readouterr().err
+    assert git.worktree_path_for(wtx_repo, "feat/drag") is not None
+
+
+def test_a_setup_error_is_a_message_not_a_traceback(
+    wtx_repo: Path, fake_bin: Path, monkeypatch, capsys
+) -> None:
+    cfg_path = wtx_repo / "wtx.toml"
+    cfg_path.write_text(cfg_path.read_text() + '\n[seed]\nrequired = ["backend/.env"]\n')
+    path = make_worktree(wtx_repo, "feat/seedless")
+    monkeypatch.chdir(path)
+    assert run(["setup", "--no-tmux"]) == 1
+    err = capsys.readouterr().err
+    assert "backend/.env" in err
+    assert "Traceback" not in err
