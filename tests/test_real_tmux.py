@@ -16,7 +16,9 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from wtx import context, setup as setup_mod
+
+from wtx import context
+from wtx import setup as setup_mod
 from wtx.agents import base as agents
 
 pytestmark = pytest.mark.tmux
@@ -37,9 +39,11 @@ def real_tmux(monkeypatch: pytest.MonkeyPatch):
     # "no server running" and "cannot reach the socket" look alike from the
     # outside, so prove a server can actually start before promising to test one.
     probe = tmux("new-session", "-d", "-s", "wtx-probe")
-    if probe.returncode != 0 or tmux("has-session", "-t", "=wtx-probe").returncode != 0:
+    listed = tmux("list-sessions", "-F", "#{session_name}")
+    if "wtx-probe" not in listed.stdout.split():
         tmux("kill-server")
-        pytest.skip(f"no usable tmux server here: {probe.stderr.strip() or 'unknown'}")
+        why = (probe.stderr or probe.stdout or listed.stderr).strip() or "unknown"
+        pytest.skip(f"no usable tmux server here: {why}")
     tmux("kill-session", "-t", "=wtx-probe")
     # Every tmux call in wtx goes through the binary, so a wrapper on PATH is
     # enough to keep these tests off the developer's own server.

@@ -26,7 +26,7 @@ WINDOW = "dev"
 def available() -> bool:
     from .proc import which
 
-    return which("tmux") is not None
+    return which("tmux") is not None and server_reachable()
 
 
 def _tmux(args: list[str], *, check: bool = False) -> int:
@@ -37,14 +37,28 @@ def _tmux_out(args: list[str]) -> str:
     return capture(["tmux", *args])
 
 
+def server_reachable() -> bool:
+    """Can we talk to the tmux server at all?
+
+    When the socket is unreachable, which is what an agent sandbox does, tmux
+    still exits 0 and only complains on stderr. Believing the exit code makes
+    every session look present, so wtx never creates one and quietly attaches to
+    nothing.
+    """
+    code, _, err = capture_code(["tmux", "list-sessions"])
+    if err and "no server running" in err.lower():
+        return True
+    return code in (0, 1) and not err
+
+
 def server_up() -> bool:
-    code, _, _ = capture_code(["tmux", "has-session"])
-    return code == 0
+    code, _, err = capture_code(["tmux", "has-session"])
+    return code == 0 and not err
 
 
 def has_session(name: str) -> bool:
-    code, _, _ = capture_code(["tmux", "has-session", "-t", f"={name}"])
-    return code == 0
+    code, _, err = capture_code(["tmux", "has-session", "-t", f"={name}"])
+    return code == 0 and not err
 
 
 def list_sessions() -> list[str]:
@@ -213,7 +227,15 @@ def ensure_session(
 ) -> None:
     """Create the session if it is not there, then optionally attach."""
     if not available():
-        warn("tmux is not installed, no session created")
+        from .proc import which
+
+        if which("tmux") is None:
+            warn("tmux is not installed, no session created")
+        else:
+            warn(
+                "cannot reach the tmux server, no session created. "
+                "A sandboxed agent cannot: run this from a real terminal."
+            )
         return
     panes = list(ctx.cfg.panes.panes)
     if not panes:

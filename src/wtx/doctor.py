@@ -63,6 +63,16 @@ def run(cwd: Path | None = None) -> Report:
         _binary("wt", "go install github.com/timvw/wt@latest, then wt init")
     )
     checks.append(_binary("tmux", "install tmux"))
+    if which("tmux"):
+        checks.append(
+            Check(
+                "tmux server reachable",
+                tmux.server_reachable(),
+                "",
+                "run wtx from a real terminal, an agent sandbox blocks the tmux socket",
+                hard=False,
+            )
+        )
     checks.append(
         _binary("gh", "install the GitHub CLI and run gh auth login, needed by wtx land", hard=False)
     )

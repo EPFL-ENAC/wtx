@@ -91,6 +91,10 @@ explicitly.
 server had a worktree's ports exported, every later pane in every session
 inherits them, including the main checkout's. wtx scrubs them on every run.
 
+**A blocked tmux socket still exits 0.** tmux prints the error on stderr and
+returns success, so believing the exit code makes every session look present and
+wtx creates none. Reachability is checked by looking at stderr too.
+
 **A pane cannot be found by its title.** An agent rewrites its own pane title as
 it works. Panes carry a `@wt_role` option instead.
 
