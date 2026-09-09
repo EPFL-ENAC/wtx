@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 
 import pytest
@@ -259,3 +260,40 @@ def test_marker_is_always_written_and_a_key_under_it_survives(tmp_path) -> None:
     f.write_text(f.read_text() + "MINE=1\n")
     envfile.write(f, owned, ["WT_BRANCH"])
     assert envfile.read(f)["MINE"] == "1"
+
+
+def test_install_machine_replaces_the_old_notify_hooks_and_keeps_others(tmp_path) -> None:
+    from wtx import machine
+
+    settings = tmp_path / "settings.json"
+    settings.write_text(json.dumps({"hooks": {
+        "Stop": [
+            {"matcher": "", "hooks": [{"type": "command", "command": "/x/persist.sh"}]},
+            {"matcher": "*", "hooks": [{"type": "command", "command": "/x/claude-notify stop"}]},
+        ],
+        "Notification": [
+            {"matcher": "permission_prompt",
+             "hooks": [{"type": "command", "command": "/x/claude-notify permission"}]},
+        ],
+    }}))
+    fragment = json.loads(machine.planned("claude")[-1].body)["hooks"]
+    assert machine._merge_hooks(settings, fragment)
+    hooks = json.loads(settings.read_text())["hooks"]
+    text = json.dumps(hooks)
+    assert "claude-notify" not in text
+    assert "/x/persist.sh" in text
+    assert sum(1 for e in hooks["Stop"] if e["matcher"] == "*") == 1
+    assert machine._merge_hooks(settings, fragment) is False  # second run: nothing to do
+
+
+def test_install_machine_comments_out_the_old_bashrc_line(tmp_path) -> None:
+    from wtx import machine
+
+    rc = tmp_path / ".bashrc"
+    rc.write_text("export A=1\nsource ~/code/resslab-hub/scripts/wt-go.bash\n")
+    change = machine.Change(rc, "shell", f"\n# wtx\n{machine.BASHRC_LINE}\n", stale=machine._is_old_bashrc)
+    assert change.needed()
+    assert change.comment_out_stale() == 1
+    text = rc.read_text()
+    assert "# replaced by wtx: source ~/code/resslab-hub/scripts/wt-go.bash" in text
+    assert "export A=1" in text

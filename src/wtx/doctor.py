@@ -164,7 +164,15 @@ def run(cwd: Path | None = None) -> Report:
 
     main = git.main_checkout(here)
     if main is None:
-        checks.append(Check("inside a git repo", False, str(here), "cd into a repo"))
+        checks.append(
+            Check(
+                "repo checks",
+                False,
+                f"{here} is not in a git repo, skipped",
+                "run wtx doctor from inside a repo to check its wtx.toml and guard",
+                hard=False,
+            )
+        )
         return Report(checks)
 
     cfg_path = main / CONFIG_NAME

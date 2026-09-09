@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import shutil
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -87,12 +88,40 @@ def install_skill(target_root: Path) -> bool:
     return True
 
 
+# Predecessors of wtx that may still be wired into the machine files. Their
+# lines are commented out, not deleted, so nothing is lost.
+OLD_BASHRC = ("scripts/wt-go.bash",)
+OLD_NOTIFY = ("claude-notify",)
+
+
+def _is_old_bashrc(line: str) -> bool:
+    s = line.strip()
+    return not s.startswith("#") and any(old in s for old in OLD_BASHRC)
+
+
+def _is_old_tmux(line: str) -> bool:
+    s = line.strip()
+    return s.startswith("bind s choose-tree") and "wtx_state" not in s
+
+
 @dataclass
 class Change:
     path: Path
     what: str
     body: str
     kind: str = "append"  # append | create | merge-json
+    stale: Callable[[str], bool] | None = None  # lines the body replaces
+
+    def _text(self) -> str:
+        try:
+            return self.path.read_text()
+        except OSError:
+            return ""
+
+    def stale_lines(self) -> list[str]:
+        if self.stale is None or not self.path.is_file():
+            return []
+        return [ln for ln in self._text().splitlines() if self.stale(ln)]
 
     def needed(self) -> bool:
         if self.kind == "create":
@@ -101,15 +130,30 @@ class Change:
             return True
         if not self.path.is_file():
             return True
-        try:
-            existing = self.path.read_text()
-        except OSError:
-            return True
-        return any(
-            line.strip() and line not in existing
+        return bool(self.missing_lines()) or bool(self.stale_lines())
+
+    def missing_lines(self) -> list[str]:
+        existing = self._text()
+        return [
+            line
             for line in self.body.splitlines()
-            if not line.startswith("#")
-        )
+            if line.strip() and not line.startswith("#") and line not in existing
+        ]
+
+    def comment_out_stale(self) -> int:
+        """Replace each stale line with a commented copy. Returns the count."""
+        if not self.stale_lines():
+            return 0
+        out = []
+        count = 0
+        for ln in self._text().splitlines():
+            if self.stale(ln):  # type: ignore[misc]
+                out.append(f"# replaced by wtx: {ln}")
+                count += 1
+            else:
+                out.append(ln)
+        self.path.write_text("\n".join(out) + "\n")
+        return count
 
 
 def _bashrc() -> Path:
@@ -128,11 +172,13 @@ def planned(agent_tool: str = "claude") -> list[Change]:
             _bashrc(),
             "wtgo, wtdone and completion in every shell",
             f"\n# wtx\n{BASHRC_LINE}\n",
+            stale=_is_old_bashrc,
         ),
         Change(
             home / ".tmux.conf",
             "show which session is waiting, in the status line and the picker",
             "\n" + "\n".join(TMUX_LINES) + "\n",
+            stale=_is_old_tmux,
         ),
         Change(
             home / ".config" / "git" / "ignore",
@@ -188,13 +234,18 @@ def _merge_hooks(path: Path, fragment: dict) -> bool:
             ]
             if same:
                 continue
-            # Replace a hook of ours on the same matcher, keep anyone else's.
+            # Replace a hook of ours on the same matcher, and the old
+            # claude-notify one wtx replaces, or every event would notify
+            # twice. Keep anyone else's.
             current[:] = [
                 e
                 for e in current
                 if not (
                     e.get("matcher") == entry.get("matcher")
-                    and "wtx notify" in json.dumps(e.get("hooks", []))
+                    and any(
+                        old in json.dumps(e.get("hooks", []))
+                        for old in ("wtx notify", *OLD_NOTIFY)
+                    )
                 )
             ]
             current.append(entry)
@@ -218,6 +269,8 @@ def show(agent_tool: str = "claude") -> str:
     for change in planned(agent_tool):
         status = "needed" if change.needed() else "already there"
         lines.append(f"--- {change.path}  ({status}): {change.what}")
+        for old in change.stale_lines():
+            lines.append(f"    replaces (commented out, not deleted): {old.strip()}")
         lines.append(change.body.strip())
         lines.append("")
     src = skill_source()
@@ -259,8 +312,12 @@ def apply(agent_tool: str = "claude") -> int:
                 if change.path.is_file():
                     backup = change.path.with_suffix(change.path.suffix + ".wtx-backup")
                     backup.write_text(change.path.read_text())
-                with change.path.open("a") as fh:
-                    fh.write(change.body)
+                replaced = change.comment_out_stale()
+                if replaced:
+                    say(f"commented out {replaced} old line(s) in {change.path}")
+                if change.missing_lines():
+                    with change.path.open("a") as fh:
+                        fh.write(change.body)
             say(f"updated {change.path}")
             applied += 1
         except OSError as exc:
