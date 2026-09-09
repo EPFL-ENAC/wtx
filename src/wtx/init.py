@@ -20,11 +20,15 @@ from .proc import capture, say, warn
 
 WT_TOML = ".wt.toml"
 
-WT_TOML_BODY = """# Hooks for the wt worktree manager. All the logic lives in wtx.
+WT_TOML_BODY = """# Hooks for the wt worktree manager (https://github.com/timvw/wt).
+# wt exports WT_PATH and WT_BRANCH to every hook. It also exports WT_MAIN, which
+# wtx ignores: wt calls "main" whichever worktree holds the default branch.
+# Each hook is a list, wt does not run a plain string.
+# All the logic lives in wtx, so an upgrade reaches every repo at once.
 [hooks]
-post_create = "wtx hook post-create"
-post_checkout = "wtx hook post-checkout"
-pre_remove = "wtx hook pre-remove"
+post_create = ["wtx hook post-create"]
+post_checkout = ["wtx hook post-checkout"]
+pre_remove = ["wtx hook pre-remove"]
 """
 
 GITIGNORE_LINES = [

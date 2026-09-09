@@ -478,3 +478,16 @@ def test_notify_writes_a_state_and_the_status_line(
     notify.handle("running", cwd=path)
     assert notify.read_state(ctx.session) == {}
     assert notify.status_line() == ""
+
+
+def test_wt_toml_hooks_are_lists(wtx_repo: Path) -> None:
+    """wt runs a hook given as a list. A plain string is accepted by the TOML
+    parser and then silently never runs, so a whole repo looks set up and is
+    not."""
+    import tomllib
+
+    data = tomllib.loads((wtx_repo / ".wt.toml").read_text())
+    for event in ("post_create", "post_checkout", "pre_remove"):
+        value = data["hooks"][event]
+        assert isinstance(value, list), f"{event} must be a list, got {type(value)}"
+        assert value[0].startswith("wtx hook ")

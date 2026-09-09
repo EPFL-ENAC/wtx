@@ -3,9 +3,9 @@
 A consumer repo's .wt.toml is three lines:
 
     [hooks]
-    post_create = "wtx hook post-create"
-    post_checkout = "wtx hook post-checkout"
-    pre_remove = "wtx hook pre-remove"
+    post_create = ["wtx hook post-create"]
+    post_checkout = ["wtx hook post-checkout"]
+    pre_remove = ["wtx hook pre-remove"]
 
 wt exports WT_PATH and WT_BRANCH and runs the hook through sh, with its own
 working directory. WT_MAIN is also exported and never used: wt calls "main"
