@@ -1,6 +1,6 @@
 # wtx
 
-One branch, one git worktree, one tmux session, one coding agent.
+Every branch gets its own git worktree, ports, tmux session and coding agent.
 
 `wtx` gives every branch its own checkout, its own ports, its own agent settings
 and its own tmux session. The agent works on that branch and nothing else: a

@@ -49,7 +49,7 @@ K8S_ROOT = Path("~/code/enack8s-app-config").expanduser()
 
 CLAUDE_SECTION = """## Dev servers and worktrees
 
-One branch, one git worktree, one tmux session, one agent. The session is
+Every branch has its own git worktree, tmux session and agent. The session is
 `{repo}/<branch>` and its panes are {panes}.
 
 - Ports are per worktree and live in `.env.worktree`, which every pane exports.
@@ -460,7 +460,7 @@ def render_toml(answers: dict[str, Any]) -> str:
     a = answers
     repo = a.get("repo", {})
     lines: list[str] = [
-        "# wtx: one branch, one worktree, one tmux session, one agent.",
+        "# wtx: every branch gets its own worktree, ports, tmux session and agent.",
         "# Reference for every key: https://github.com/EPFL-ENAC/wtx/blob/main/docs/schema.md",
         f"schema_version = {SCHEMA_VERSION}",
         "",

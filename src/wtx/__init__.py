@@ -1,4 +1,4 @@
-"""wtx: one branch, one worktree, one tmux session, one coding agent."""
+"""wtx: every branch gets its own worktree, ports, tmux session and coding agent."""
 
 from __future__ import annotations
 

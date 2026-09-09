@@ -513,7 +513,7 @@ def cmd_guard(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="wtx",
-        description="One branch, one worktree, one tmux session, one coding agent.",
+        description="Every branch gets its own worktree, ports, tmux session and coding agent.",
     )
     p.add_argument("--version", action="version", version=f"wtx {__version__}")
     p.add_argument(
