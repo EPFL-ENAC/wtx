@@ -109,6 +109,7 @@ def model_for(cfg: WtxConfig, size: str) -> str:
 # the trace, because a hook that answers "" leaves nothing behind
 
 
+HANDOFF_DELAY = 2.0
 LOG_MAX_BYTES = 64_000
 LOG_KEEP_LINES = 200
 
@@ -274,6 +275,10 @@ def capture(payload: dict, *, cwd: Path | None = None) -> str:
         },
     )
     trace(f"  record written: {ctx.session} {size} plan -> {model} at {effort}")
+    # Fire it here. Stopping the turn from a hook means Claude Code does not
+    # run the Stop hook, so the record would sit there forever. The delay lets
+    # this turn finish before the pane it runs in is respawned.
+    drain(ctx.session, delay=HANDOFF_DELAY)
     return json.dumps(
         {
             "continue": False,
@@ -286,24 +291,27 @@ def capture(payload: dict, *, cwd: Path | None = None) -> str:
 # the handoff itself
 
 
-def drain(session: str) -> bool:
+def drain(session: str, *, delay: float = 0.0) -> bool:
     """Fire a handoff recorded for this session, if there is one.
 
     The work happens in a detached process. Respawning the agent pane kills
     everything running in it, and this is called from a hook that runs there.
+    The delay lets the turn that recorded the handoff finish printing first.
     """
     running = claim(session)
     if running is None:
         return False
     trace(f"handoff: {session} claimed {running.name}")
-    if not _spawn(running):
+    if not _spawn(running, delay=delay):
         warn("could not fork the handoff, running it in the hook's own pane")
         run(running)
     return True
 
 
-def _spawn(record: Path) -> bool:
+def _spawn(record: Path, *, delay: float = 0.0) -> bool:
     cmd = [sys.executable, "-m", "wtx.orchestrate", "--run", str(record)]
+    if delay:
+        cmd += ["--after", str(delay)]
     try:
         subprocess.Popen(  # noqa: S603
             cmd,
@@ -355,7 +363,10 @@ def run(record: Path) -> int:
 
 
 def main(argv: list[str]) -> int:  # pragma: no cover - process entry point
-    if len(argv) == 2 and argv[0] == "--run":
+    if len(argv) >= 2 and argv[0] == "--run":
+        if len(argv) == 4 and argv[2] == "--after":
+            with contextlib.suppress(ValueError):
+                time.sleep(float(argv[3]))
         return run(Path(argv[1]))
     return 0
 

@@ -605,6 +605,19 @@ def test_help_is_a_word_too(capsys) -> None:
 # -- orchestration ------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def no_fork(monkeypatch):
+    """capture() fires the handoff itself. A test must never fork the real
+    process that respawns a pane, so keep the records it would have run."""
+    from wtx import orchestrate
+
+    fired: list[Path] = []
+    monkeypatch.setattr(
+        orchestrate, "_spawn", lambda record, **kw: fired.append(record) or True
+    )
+    return fired
+
+
 def _enable_orchestration(root: Path, **over) -> None:
     """Replace the block `wtx init` writes, which is there but switched off."""
     keys = {"enabled": "true", **over}
@@ -634,7 +647,7 @@ def _accept(path: Path, plan: str, *, conversation: str = "conv-1") -> str:
 
 
 def test_an_accepted_plan_continues_on_the_implementation_model(
-    wtx_repo: Path, fake_bin: Path
+    wtx_repo: Path, fake_bin: Path, no_fork: list
 ) -> None:
     """The whole point: plan on fable, accept, implement on opus, no typing.
 
@@ -646,7 +659,6 @@ def test_an_accepted_plan_continues_on_the_implementation_model(
     _enable_orchestration(wtx_repo, plan_model='"fable"', build_model='"opus"')
     path = make_worktree(wtx_repo, "feat/plan")
     setup_mod.run_setup(context.load(root=path), start_tmux=True)
-    ctx = context.load(root=path)
 
     answer = json.loads(
         _accept(path, "1. write it\n\nwtx-size: large\n", conversation="conv-abc")
@@ -654,9 +666,8 @@ def test_an_accepted_plan_continues_on_the_implementation_model(
     assert answer["continue"] is False
     assert "opus" in answer["stopReason"]
 
-    claimed = orchestrate.claim(ctx.session)
-    assert claimed is not None
-    orchestrate.run(claimed)
+    assert len(no_fork) == 1
+    orchestrate.run(no_fork[0])
 
     sent = [c for c in calls_of(fake_bin, "tmux") if "send-keys" in c]
     assert any(
@@ -667,20 +678,19 @@ def test_an_accepted_plan_continues_on_the_implementation_model(
 
 
 def test_a_small_plan_lowers_the_effort_not_the_model(
-    wtx_repo: Path, fake_bin: Path
+    wtx_repo: Path, fake_bin: Path, no_fork: list
 ) -> None:
     from wtx import orchestrate
 
     _enable_orchestration(wtx_repo, build_model='"opus"', small_effort='"medium"')
     path = make_worktree(wtx_repo, "feat/small")
     setup_mod.run_setup(context.load(root=path), start_tmux=True)
-    ctx = context.load(root=path)
 
     _accept(path, "1. rename it\n\nwtx-size: small\n")
-    record = json.loads(orchestrate.record_file(ctx.session).read_text())
+    record = json.loads(no_fork[0].read_text())
     assert record["model"] == "opus"
 
-    orchestrate.run(orchestrate.claim(ctx.session))
+    orchestrate.run(no_fork[0])
     sent = [c for c in calls_of(fake_bin, "tmux") if "send-keys" in c]
     assert any("--model opus" in c and "--effort medium" in c for c in sent)
 
@@ -724,22 +734,22 @@ def test_a_plan_the_planner_can_implement_itself_is_not_handed_over(
 
 
 def test_a_handoff_fires_once_however_often_the_agent_stops(
-    wtx_repo: Path, fake_bin: Path, monkeypatch
+    wtx_repo: Path, fake_bin: Path, no_fork: list
 ) -> None:
-    """The Stop hook fires on every turn and must not re-brief the agent."""
+    """The hook fires it, then the Stop hook fires on every turn. Briefing an
+    agent twice throws away the first run."""
     from wtx import orchestrate
 
     _enable_orchestration(wtx_repo)
     path = make_worktree(wtx_repo, "feat/once")
     setup_mod.run_setup(context.load(root=path), start_tmux=True)
     ctx = context.load(root=path)
-    fired: list[Path] = []
-    monkeypatch.setattr(orchestrate, "_spawn", lambda record: fired.append(record) or True)
 
     _accept(path, "1. do it\n\nwtx-size: large\n")
-    assert orchestrate.drain(ctx.session) is True
+    assert len(no_fork) == 1
     assert orchestrate.drain(ctx.session) is False
-    assert len(fired) == 1
+    assert orchestrate.drain(ctx.session) is False
+    assert len(no_fork) == 1
 
 
 def test_a_brief_asks_the_planner_to_size_the_plan(
@@ -771,27 +781,49 @@ def test_a_briefed_session_starts_on_the_planning_model(
     assert any("--model fable --permission-mode plan" in c for c in sent)
 
 
-def test_the_stop_hook_is_what_fires_the_handoff(
-    wtx_repo: Path, fake_bin: Path, monkeypatch
+def test_the_hook_fires_the_handoff_itself(
+    wtx_repo: Path, fake_bin: Path, no_fork: list
 ) -> None:
-    """A pending handoff must not sit there waiting to be noticed, and the
-    session must not be reported as waiting on a human while it does."""
-    from wtx import notify, orchestrate
-
+    """Stopping the turn from a hook means Claude Code never runs the Stop
+    hook, so a handoff left for it sits there forever. Checked against 2.1.267,
+    where the record was written and nothing ever claimed it."""
     _enable_orchestration(wtx_repo)
     path = make_worktree(wtx_repo, "feat/stop")
     setup_mod.run_setup(context.load(root=path), start_tmux=True)
+
+    _accept(path, "1. do it\n\nwtx-size: large\n")
+
+    assert len(no_fork) == 1
+
+
+def test_the_stop_hook_still_fires_a_handoff_left_behind(
+    wtx_repo: Path, fake_bin: Path, monkeypatch, no_fork: list
+) -> None:
+    """The backup path: a record written by an older wtx, or one whose fork
+    failed. The session must not be reported as waiting on a human either."""
+    from wtx import notify, orchestrate
+
+    _enable_orchestration(wtx_repo)
+    path = make_worktree(wtx_repo, "feat/left")
+    setup_mod.run_setup(context.load(root=path), start_tmux=True)
     ctx = context.load(root=path)
-    fired: list[Path] = []
-    monkeypatch.setattr(orchestrate, "_spawn", lambda record: fired.append(record) or True)
     monkeypatch.setattr(notify, "session_for", lambda cwd: ctx.session)
     monkeypatch.setattr(notify, "_spawn_desktop", lambda *a, **k: None)
     monkeypatch.setattr("sys.stdin", type("S", (), {"isatty": lambda s: True})())
 
-    _accept(path, "1. do it\n\nwtx-size: large\n")
+    orchestrate.write_record(
+        ctx.session,
+        {
+            "session": ctx.session,
+            "root": str(path),
+            "conversation": "conv-left",
+            "model": "opus",
+            "size": "large",
+        },
+    )
     notify.handle("stop", cwd=path)
 
-    assert len(fired) == 1
+    assert len(no_fork) == 1
     assert notify.read_state(ctx.session) == {}
 
 
@@ -819,7 +851,7 @@ def test_the_handoff_command_answers_the_hook(
 
 
 def test_the_plan_is_read_from_the_file_when_the_tool_does_not_carry_it(
-    wtx_repo: Path, fake_bin: Path, tmp_path: Path
+    wtx_repo: Path, fake_bin: Path, tmp_path: Path, no_fork: list
 ) -> None:
     """Claude Code 2.1.267 dropped `plan` from the ExitPlanMode schema: the
     plan goes to a file and the tool only says it is ready. Reading the input
@@ -829,7 +861,6 @@ def test_the_plan_is_read_from_the_file_when_the_tool_does_not_carry_it(
     _enable_orchestration(wtx_repo, build_model='"opus"')
     path = make_worktree(wtx_repo, "feat/planfile")
     setup_mod.run_setup(context.load(root=path), start_tmux=True)
-    ctx = context.load(root=path)
     plan_file = tmp_path / "the-plan.md"
     plan_file.write_text("1. write it\n\nwtx-size: large\n")
 
@@ -843,7 +874,7 @@ def test_the_plan_is_read_from_the_file_when_the_tool_does_not_carry_it(
     )
 
     assert json.loads(answer)["continue"] is False
-    record = json.loads(orchestrate.record_file(ctx.session).read_text())
+    record = json.loads(no_fork[0].read_text())
     assert record["size"] == "large"
     assert record["conversation"] == "conv-file"
 
@@ -929,7 +960,7 @@ def test_a_handoff_that_does_nothing_says_why(wtx_repo: Path, fake_bin: Path) ->
 
 
 def test_the_log_records_a_handoff_end_to_end(
-    wtx_repo: Path, fake_bin: Path
+    wtx_repo: Path, fake_bin: Path, no_fork: list
 ) -> None:
     from wtx import orchestrate
 
@@ -939,7 +970,7 @@ def test_the_log_records_a_handoff_end_to_end(
     ctx = context.load(root=path)
 
     _accept(path, "1. do it\n\nwtx-size: large\n", conversation="conv-log")
-    orchestrate.run(orchestrate.claim(ctx.session))
+    orchestrate.run(no_fork[0])
 
     log = orchestrate.log_file().read_text()
     assert "record written" in log
