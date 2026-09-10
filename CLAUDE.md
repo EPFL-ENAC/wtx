@@ -19,7 +19,8 @@ The short version:
 - Call `proc.is_dry_run()`. Never `from .proc import DRY_RUN`, that copies the
   value and a dry run then changes things for real.
 - `wtx.toml` can only add to the permission baseline, never remove from it.
-- An `ask` rule beats everything. No bare interpreters in it.
+- An `ask` rule beats everything. No bare interpreters in it. A rule that
+  names a flag is written `*-d *`: `* -d *` misses the flag in first place.
 - Setup is idempotent. wt fires its hooks more than once.
 - A hook never restarts its own pane. It records what it wants and a detached
   process does it, or the restart kills the hook halfway through.

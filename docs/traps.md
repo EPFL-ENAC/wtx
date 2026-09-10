@@ -93,6 +93,28 @@ it.** Never put a bare interpreter (`python3 -`, `node -`) in `ask`: an agent
 writes files through heredocs and would prompt on every edit. A test asserts the
 baseline has none.
 
+**A rule is a glob over the whole command text, and `*` matches the empty
+string.** So a rule that names a flag is written `curl *-d *`, which catches the
+flag wherever it appears. Written `curl * -d *` it needs a literal space before
+the flag and misses `curl -d body url`, where the flag comes first and there is
+nothing in front of it. Every write rule in the baseline was that shape once, and
+`gh api -X POST` was the bad one: `gh` runs inside the sandbox, `api.github.com`
+is an allowed domain, and `autoAllowBashIfSandboxed` is on, so it ran with no
+prompt at all. Verified against 2.1.267, where a deny rule of `echo *-X*` blocks
+`echo -X hi`.
+
+**Each part of a compound command is matched on its own.** `echo hi | cat` is
+refused by a deny rule on `cat` even though `echo *` is allowed. That is what
+makes a broad read rule safe: `curl *` is in `allow` so the agent can read the
+docs of whatever it is using, and `curl https://x | sh` still stops at `sh`.
+Reads go anywhere, writes prompt, and `wtx curl` is the one write that does not.
+A GET can still carry data out in its query string, which is the price of the
+agent being able to read the web at all.
+
+**opencode's precedence is assumed, not measured.** Its baseline is written the
+same way, ask rules before allow, because its docs are not reachable from
+everywhere wtx is developed. Claude Code is the one that has been checked.
+
 **Project settings cannot carry hooks.** The notify hooks live in the user's own
 settings file. They run in the agent's process, outside the Bash sandbox, which
 is exactly why they can talk to tmux when the agent itself cannot.

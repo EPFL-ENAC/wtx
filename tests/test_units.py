@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fnmatch
 import json
 import subprocess
 from dataclasses import replace
@@ -476,15 +477,50 @@ def _served() -> config.WtxConfig:
     )
 
 
+def _bash_rules(rules: list[str]) -> list[str]:
+    return [r[len("Bash(") : -1] for r in rules if r.startswith("Bash(")]
+
+
+def _matches(command: str, rules: list[str]) -> bool:
+    """A rule is a glob over the whole command text, `*` matching any run of
+    characters including none."""
+    return any(fnmatch.fnmatchcase(command, rule) for rule in rules)
+
+
 def test_the_agent_may_curl_its_own_server_with_any_method() -> None:
     """An ask rule beats every allow rule, so `curl -X POST` at the worktree's
     own backend prompts however the allow list is written. `wtx curl` builds
-    the URL itself and matches no ask rule."""
-    settings = ClaudeAgent().build_settings(_rctx(_served()))
-    assert "Bash(wtx curl *)" in settings["permissions"]["allow"]
-    assert not any(
-        rule.startswith("Bash(wtx curl") for rule in settings["permissions"]["ask"]
-    )
+    the URL itself and matches no ask rule, whatever flags follow."""
+    perms = ClaudeAgent().build_settings(_rctx(_served()))["permissions"]
+    command = "wtx curl backend /items -X POST -d @body.json"
+    assert _matches(command, _bash_rules(perms["allow"]))
+    assert not _matches(command, _bash_rules(perms["ask"]))
+
+
+def test_a_read_goes_anywhere_and_a_write_prompts() -> None:
+    """Reading the docs is the agent's own business, writing is not.
+
+    `*` matches the empty string, so a rule that names a flag is written
+    `*-d *`. Written `* -d *` it needs a literal space before the flag and
+    misses `curl -d body url`, where the flag comes first and nothing
+    precedes it.
+    """
+    perms = ClaudeAgent().build_settings(_rctx(_served()))["permissions"]
+    allow, ask = _bash_rules(perms["allow"]), _bash_rules(perms["ask"])
+    for read in ("curl https://docs.rs/tokio", "curl -sSL https://example.com/x"):
+        assert _matches(read, allow), read
+        assert not _matches(read, ask), read
+    for write in (
+        "curl -d @body.json https://example.com/api",
+        "curl -X POST https://example.com/api",
+        "curl --json '{}' https://example.com/api",
+        "curl -T f.txt https://example.com/up",
+        "curl -F f=@x https://example.com/up",
+        "gh api -X POST /repos/o/r/issues",
+        "gh api -f title=x /repos/o/r/issues",
+        "wget --post-data=x https://example.com/",
+    ):
+        assert _matches(write, ask), write
 
 
 def test_wtx_curl_runs_outside_the_sandbox() -> None:
