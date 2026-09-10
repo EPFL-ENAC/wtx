@@ -19,6 +19,9 @@ from .base import PROMPT_FILE, PROMPT_SENT, RenderContext
 
 SETTINGS_PATH = ".claude/settings.local.json"
 EXPLORE_PATH = ".claude/agents/Explore.md"
+# Loaded every session, same priority as .claude/CLAUDE.md, and not the repo's
+# own CLAUDE.md, which is a human's file wtx must not touch.
+RULES_PATH = ".claude/rules/wtx.md"
 
 COMMENT = (
     "Written by wtx from the main checkout's wtx.toml. Edits here are lost on the "
@@ -43,6 +46,72 @@ Report back with file paths and line numbers, a short answer to the question
 asked, and nothing else. Quote at most a few lines per file. If the answer is
 not in the repository, say so instead of guessing.
 """
+
+
+def worktree_rules(ctx: RenderContext) -> str:
+    """What the agent cannot work out for itself.
+
+    Its ports are picked per worktree, its servers run in tmux panes it cannot
+    reach, and the only window it has into them is a log file. None of that is
+    discoverable from the repository, so it is written down here. Kept short:
+    this loads into every session.
+    """
+    from ..envfile import read_worktree
+
+    env = read_worktree(ctx.root)
+    ports = [
+        (f.name, env.get(f.env_key, ""))
+        for f in ctx.cfg.ports.families
+        if env.get(f.env_key)
+    ]
+    logs = [p.name for p in ctx.cfg.panes.by_role("server") if p.log]
+    if not ports and not logs:
+        return ""
+
+    out = [
+        "# This worktree",
+        "",
+        f"Written by wtx. Branch `{ctx.branch}`, tmux session `{ctx.session}`.",
+    ]
+    if ports:
+        out += [
+            "",
+            "## Your servers",
+            "",
+            "This checkout has its own ports, which no other worktree uses:",
+            "",
+        ]
+        out += [f"- {name}: <http://127.0.0.1:{port}/>" for name, port in ports]
+        first = ports[0][0]
+        out += [
+            "",
+            "Reach one with `wtx curl <family> [path] [curl args]`, which fills in",
+            "the port and never prompts, whatever the method:",
+            "",
+            "```sh",
+            f"wtx curl {first} /              # any path",
+            f"wtx curl {first} /items -X POST -d @body.json",
+            "```",
+            "",
+            "Plain `curl http://127.0.0.1:<port>/...` works for a GET and prompts",
+            "for anything more, so prefer `wtx curl`.",
+        ]
+    if logs:
+        out += [
+            "",
+            "## Server logs",
+            "",
+            "The servers run in tmux panes you cannot see or reach. Their output is",
+            "mirrored to files you can read:",
+            "",
+        ]
+        out += [f"- `.wt-logs/{name}.log`" for name in logs]
+        out += [
+            "",
+            f"Read them with `tail -n 50 .wt-logs/{logs[0]}.log`. Never `tail -f`,",
+            "and never `grep` them without a line limit: they grow while you work.",
+        ]
+    return "\n".join(out) + "\n"
 
 
 def _baseline() -> dict:
@@ -162,18 +231,29 @@ class ClaudeAgent:
             warn(f"could not write {target}: {exc}")
             tmp.unlink(missing_ok=True)
 
+        rules = worktree_rules(ctx)
+        if rules:
+            written += self._write(ctx.root / RULES_PATH, rules)
+
         model = ctx.cfg.agent.explore_agent_model
         if model:
-            explore = ctx.root / EXPLORE_PATH
-            explore.parent.mkdir(parents=True, exist_ok=True)
-            try:
-                explore.write_text(EXPLORE_AGENT.format(model=model))
-                written.append(explore)
-            except OSError as exc:
-                from ..proc import warn
-
-                warn(f"could not write {explore}: {exc}")
+            written += self._write(
+                ctx.root / EXPLORE_PATH, EXPLORE_AGENT.format(model=model)
+            )
         return written
+
+    def _write(self, target: Path, text: str) -> list[Path]:
+        """A file a sandboxed agent cannot write. Not being able to is a
+        warning, not a failure: everything else about the worktree still works."""
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(text)
+        except OSError as exc:
+            from ..proc import warn
+
+            warn(f"could not write {target}: {exc}")
+            return []
+        return [target]
 
     # -- running ---------------------------------------------------------
     def launch_cmd(self, ctx: RenderContext, *, brief: bool) -> str:

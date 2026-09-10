@@ -29,6 +29,7 @@ TMUX_LINES = [
 GIT_IGNORE_LINES = [
     "**/.claude/settings.local.json",
     "**/.claude/agents/Explore.md",
+    "**/.claude/rules/wtx.md",
     "**/.claude/worktrees/",
     "**/.env.worktree",
     "**/.wt-logs/",

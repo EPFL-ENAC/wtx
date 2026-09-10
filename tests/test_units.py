@@ -456,3 +456,63 @@ def test_orchestration_needs_the_agent_that_has_the_hook() -> None:
         }
     )
     assert any("orchestration" in e for e in validate(cfg))
+
+
+# -- reaching the worktree's own servers --------------------------------------
+
+
+def _served() -> config.WtxConfig:
+    return parse(
+        {
+            "repo": {"name": "app", "base_branch": "dev", "protected_branches": ["dev"]},
+            "ports": {"family": [{"name": "backend", "main": 8000}]},
+            "panes": {
+                "pane": [
+                    {"name": "agent", "role": "agent"},
+                    {"name": "backend", "role": "server", "cmd": "run", "log": True},
+                ]
+            },
+        }
+    )
+
+
+def test_the_agent_may_curl_its_own_server_with_any_method() -> None:
+    """An ask rule beats every allow rule, so `curl -X POST` at the worktree's
+    own backend prompts however the allow list is written. `wtx curl` builds
+    the URL itself and matches no ask rule."""
+    settings = ClaudeAgent().build_settings(_rctx(_served()))
+    assert "Bash(wtx curl *)" in settings["permissions"]["allow"]
+    assert not any(
+        rule.startswith("Bash(wtx curl") for rule in settings["permissions"]["ask"]
+    )
+
+
+def test_wtx_curl_runs_outside_the_sandbox() -> None:
+    """Like curl itself: the Linux sandbox cannot reach loopback, so a
+    sandboxed wtx curl would never reach the worktree's own servers."""
+    settings = ClaudeAgent().build_settings(_rctx(_served()))
+    assert "wtx curl *" in settings["sandbox"]["excludedCommands"]
+
+
+def test_the_worktree_note_names_the_ports_and_the_logs(tmp_path) -> None:
+    """The agent cannot work either out: the ports are picked per worktree and
+    the servers run in panes it cannot reach."""
+    from wtx import envfile
+    from wtx.agents.claude import worktree_rules
+
+    envfile.write_worktree(tmp_path, {"BACKEND_PORT": "18042"}, ["BACKEND_PORT"])
+    ctx = replace(_rctx(_served()), root=tmp_path)
+    text = worktree_rules(ctx)
+
+    assert "http://127.0.0.1:18042/" in text
+    assert ".wt-logs/backend.log" in text
+    assert "wtx curl backend" in text
+    assert "tail -f" in text  # named as the thing not to do
+
+
+def test_a_repo_with_no_servers_gets_no_note(tmp_path) -> None:
+    """Nothing to say is better than a section saying nothing."""
+    from wtx.agents.claude import worktree_rules
+
+    ctx = replace(_rctx(parse({"repo": {"name": "app"}})), root=tmp_path)
+    assert worktree_rules(ctx) == ""

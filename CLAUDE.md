@@ -23,6 +23,8 @@ The short version:
 - Setup is idempotent. wt fires its hooks more than once.
 - A hook never restarts its own pane. It records what it wants and a detached
   process does it, or the restart kills the hook halfway through.
+- Every file wtx generates in a checkout is in both ignore lists. An untracked
+  generated file makes the worktree dirty and `wtx land` refuses it.
 
 ## Layout
 

@@ -43,6 +43,7 @@ wtgo feat/thing                     # branch, worktree, session, agent, attached
 wtgo feat/thing --prompt brief.md   # same, and the agent starts on that brief
 wtgo feat/thing --with k8s          # plus a paired worktree in the k8s repo, same branch name
 wtgo all                            # bring every session back after a reboot
+wtx curl backend /api/health        # this worktree's port, whatever it is
 wtx monitor                         # every session on one screen
 wtx land feat/thing                 # rebase, PR, squash merge, clean up
 wtdone feat/thing                   # close the worktree, keep the branch

@@ -878,3 +878,54 @@ def test_go_says_when_llm_is_not_what_a_brief_will_use(
     capsys.readouterr()
     run(["go", "feat/llm-note", "--llm", "haiku", "--prompt", "Do a thing.", "--no-attach"])
     assert "plans on fable and implements on opus" in capsys.readouterr().err
+
+
+# -- the servers the agent cannot see -----------------------------------------
+
+
+def test_every_file_wtx_generates_is_ignored(wtx_repo: Path, fake_bin: Path) -> None:
+    """A generated file with no ignore line leaves the worktree permanently
+    dirty, and `wtx land` then refuses to land it."""
+    path = make_worktree(wtx_repo, "feat/clean")
+    setup_mod.run_setup(context.load(root=path), start_tmux=False)
+
+    untracked = git_out(["status", "--porcelain", "--untracked-files=all"], path)
+    assert untracked == "", f"setup left the worktree dirty:\n{untracked}"
+
+
+def test_setup_tells_the_agent_its_ports_and_its_logs(
+    wtx_repo: Path, fake_bin: Path
+) -> None:
+    path = make_worktree(wtx_repo, "feat/note")
+    setup_mod.run_setup(context.load(root=path), start_tmux=False)
+    ctx = context.load(root=path)
+
+    note = (path / ".claude" / "rules" / "wtx.md").read_text()
+    assert f"http://127.0.0.1:{ctx.port('backend')}/" in note
+    assert ".wt-logs/backend.log" in note
+
+
+def test_wtx_curl_reaches_this_worktrees_port(
+    wtx_repo: Path, fake_bin: Path, monkeypatch
+) -> None:
+    """The agent never has to know the number, and cannot aim this anywhere
+    but its own checkout."""
+    path = make_worktree(wtx_repo, "feat/curl")
+    setup_mod.run_setup(context.load(root=path), start_tmux=False)
+    ctx = context.load(root=path)
+    monkeypatch.chdir(path)
+
+    assert run(["curl", "backend", "/api/health", "-X", "POST"]) == 0
+    called = calls_of(fake_bin, "curl")[-1]
+    assert called == f"-X POST http://127.0.0.1:{ctx.port('backend')}/api/health"
+
+
+def test_wtx_curl_names_the_families_it_knows(
+    wtx_repo: Path, fake_bin: Path, monkeypatch, capsys
+) -> None:
+    path = make_worktree(wtx_repo, "feat/curl-bad")
+    setup_mod.run_setup(context.load(root=path), start_tmux=False)
+    monkeypatch.chdir(path)
+
+    assert run(["curl", "nope", "/"]) == 1
+    assert "backend" in capsys.readouterr().err

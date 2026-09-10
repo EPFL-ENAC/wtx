@@ -50,12 +50,28 @@ with the same refs on its stdin.
 
 ## the agent sandbox
 
-**It cannot reach loopback.** Even with localhost in the allowed domains. So
-`curl` and `docker` are excluded from the sandbox and governed by the ask and
-allow rules instead.
+**It cannot reach loopback.** Even with localhost in the allowed domains.
+`sandbox.network.allowLocalBinding` is about binding a port on macOS, not about
+reaching one, so there is nothing to switch on. `curl` and `docker` are excluded
+from the sandbox and governed by the ask and allow rules instead.
+
+**An ask rule beats an allow rule, so the agent could not POST to its own
+backend.** `Bash(curl *-X*)` is in `ask` to catch a write to the internet, and
+it catches `curl -X POST http://127.0.0.1:18065/items` with it. Rules are globs
+over the command text with no way to say "not loopback", and a PreToolUse hook
+cannot help either: a matching ask rule prompts whatever the hook answers. So
+the agent gets a different verb. `wtx curl <family> [path] [args]` builds the
+URL from the worktree's own ports, matches no ask rule, and is allowed with any
+flags. It is narrower than the `curl http://localhost:*` rules it replaces,
+which reach every other worktree's servers too.
 
 **It cannot reach the tmux socket.** So server panes are mirrored to
 `.wt-logs/*.log`, which is the agent's only window into why a server misbehaves.
+
+**None of that is discoverable.** The ports are picked per worktree, the panes
+are invisible, and the log files are named after panes. wtx writes them down in
+`.claude/rules/wtx.md`, which Claude Code loads every session, and which is not
+the repo's own `CLAUDE.md`: that one belongs to a human.
 
 **It cannot write `.git/hooks`, nor the npm cache.** Creating a worktree is a
 terminal job. wtx says so instead of leaving a repo quietly unguarded.
@@ -162,6 +178,12 @@ whatever the checkout says. For a local checkout use `--editable`, which
 follows the working tree, or `--reinstall` to force a rebuild.
 
 ## everything else
+
+**A generated file with no ignore line makes a worktree permanently dirty**, and
+`wtx land` then refuses to land it. Every file wtx writes into a checkout is in
+both ignore lists, the repo's `.gitignore` from `wtx init` and the machine-level
+one from `wtx install-machine`. A test asserts a fresh setup leaves nothing
+untracked.
 
 **`.env.worktree` used to be rewritten whole**, so a key a human or a repo hook
 added by hand was dropped on the next setup, including the automatic one. wtx

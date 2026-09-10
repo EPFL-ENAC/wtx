@@ -1,6 +1,7 @@
 {
   "permissions": {
     "allow": [
+      "Bash(wtx curl *)",
       "Bash(curl http://localhost:*)",
       "Bash(curl http://127.0.0.1:*)",
       "Bash(curl -s http://localhost:*)",
@@ -95,7 +96,8 @@
     "allowUnsandboxedCommands": false,
     "excludedCommands": [
       "docker *",
-      "curl *"
+      "curl *",
+      "wtx curl *"
     ],
     "network": {
       "allowedDomains": [

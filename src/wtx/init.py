@@ -39,6 +39,7 @@ GITIGNORE_LINES = [
     ".wt-prompts/",
     ".claude/settings.local.json",
     ".claude/agents/Explore.md",
+    ".claude/rules/wtx.md",
     ".claude/worktrees/",
     "opencode.json",
 ]

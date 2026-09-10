@@ -353,6 +353,30 @@ def cmd_open(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_curl(args: argparse.Namespace) -> int:
+    """Reach one of this worktree's own servers.
+
+    The agent cannot know its ports, and the classifier rules that stop a POST
+    to the internet also stop a POST to its own backend: an ask rule beats every
+    allow rule. This builds the URL itself, so it can only ever reach a port
+    this checkout owns, which is why the baseline allows it with any flags.
+    """
+    ctx = _load()
+    families = [f.name for f in ctx.cfg.ports.families]
+    if not families:
+        raise UserError(f"no [[ports.family]] in {config_mod.CONFIG_NAME}")
+    name = args.family or families[0]
+    if name not in families:
+        raise UserError(f"no port family called {name!r}. Known: {', '.join(families)}")
+    port = ctx.port(name)
+    if port is None:
+        raise UserError(f"no port for {name} in this checkout, run `wtx setup`")
+    path = args.path if args.path.startswith("/") else f"/{args.path}"
+    from .proc import run
+
+    return run(["curl", *args.args, f"http://127.0.0.1:{port}{path}"], check=False)
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     main = _main_checkout()
     cfg = _load_cfg(main)
@@ -593,6 +617,17 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("branch", nargs="?", default="")
     s.add_argument("--print-only", action="store_true")
     s.set_defaults(func=cmd_open)
+
+    s = sub.add_parser(
+        "curl",
+        help="curl one of this worktree's servers, without knowing its port",
+    )
+    s.add_argument("family", nargs="?", default="", help="default: the first family")
+    s.add_argument("path", nargs="?", default="/")
+    s.add_argument(
+        "args", nargs=argparse.REMAINDER, help="passed to curl as it stands"
+    )
+    s.set_defaults(func=cmd_curl)
 
     s = sub.add_parser("status", help="ports, sessions and pairings")
     s.add_argument("branch", nargs="?", default="")

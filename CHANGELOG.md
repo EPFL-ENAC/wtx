@@ -11,6 +11,13 @@ New:
   `ExitPlanMode` hook, so re-run `wtx install-machine --apply`.
 - `wtx handoff`, the command that hook calls. A pending handoff shows in
   `wtx status`.
+- `wtx curl <family> [path] [curl args]` reaches one of this worktree's own
+  servers without knowing its port. The baseline allows it with any flags and
+  any method, which the plain `curl` rules cannot do: an ask rule beats every
+  allow rule, so `curl -X POST` at your own backend prompts.
+- Setup writes `.claude/rules/wtx.md`, loaded every session: the worktree's
+  ports, its server log files, and `wtx curl`. The agent could not work any of
+  it out from the repository.
 - Permission modes and effort levels in `wtx.toml` are checked against the ones
   the agent actually knows.
 

@@ -87,7 +87,12 @@ in the order they are listed.
 | `role` | `shell` | `agent`, `server` or `shell`. Exactly one `agent`. |
 | `cwd` | `.` | Relative to the worktree root. |
 | `cmd` | none | What the pane runs. Required for a `server`. |
-| `log` | `false` | Mirror the pane to `.wt-logs/<name>.log`. The agent cannot reach the tmux socket, so this is how it sees a server. |
+| `log` | `false` | Mirror the pane to `.wt-logs/<name>.log`. The agent cannot reach the tmux socket, so this is how it sees a server. Leave it on for every server. |
+
+Setup writes `.claude/rules/wtx.md` in the worktree, which Claude Code loads
+every session: the ports this checkout got, the log file for each logged server
+pane, and how to reach a server with `wtx curl`. None of it is discoverable from
+the repository, and the file is gitignored.
 
 ## `[agent]`
 

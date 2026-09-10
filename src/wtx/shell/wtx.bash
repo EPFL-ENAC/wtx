@@ -23,6 +23,13 @@ _wtx_protected() {
 }
 
 # The [[repos]] names, for --with. Only the name lines under a [[repos]] header.
+_wtx_families() {
+  local main; main="$(_wtx_main)" || return 1
+  awk '/^\[\[ports\.family\]\]/ {in_f=1; next} /^\[/ {in_f=0}
+       in_f && /^name[[:space:]]*=/ {gsub(/^name[[:space:]]*=[[:space:]]*"|".*$/, ""); print}' \
+    "$main/wtx.toml" 2>/dev/null
+}
+
 _wtx_repos() {
   local main; main="$(_wtx_main)" || return 1
   awk '/^\[\[repos\]\]/ {in_repo=1; next} /^\[/ {in_repo=0}
@@ -63,7 +70,7 @@ _wtx() {
   local cur prev words cword
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
-  local subs="init config go all done land open status setup teardown tmux brief hook notify tmux-status monitor doctor install-machine shell-init guard"
+  local subs="init config go all done land open status curl setup teardown tmux brief hook notify tmux-status monitor doctor install-machine shell-init guard"
 
   if [ "$COMP_CWORD" -eq 1 ]; then
     mapfile -t COMPREPLY < <(compgen -W "$subs" -- "$cur")
@@ -80,6 +87,10 @@ _wtx() {
       ;;
     done|land|open|status)
       mapfile -t COMPREPLY < <(compgen -W "$(_wtx_worktrees | _wtx_filter_protected)" -- "$cur")
+      ;;
+    curl)
+      [ "$COMP_CWORD" -eq 2 ] &&
+        mapfile -t COMPREPLY < <(compgen -W "$(_wtx_families)" -- "$cur")
       ;;
     hook)
       mapfile -t COMPREPLY < <(compgen -W "post-create post-checkout pre-remove" -- "$cur")

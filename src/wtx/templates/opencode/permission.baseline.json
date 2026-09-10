@@ -49,6 +49,7 @@
     "curl * -X *": "ask",
     "curl * -d *": "ask",
     "curl * --data*": "ask",
+    "wtx curl *": "allow",
     "curl http://localhost:*": "allow",
     "curl http://127.0.0.1:*": "allow",
     "curl -s http://localhost:*": "allow",
