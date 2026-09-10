@@ -131,12 +131,17 @@ def session_for(cwd: Path) -> str:
 
     First the name the branch implies, then, if there is no such session, a scan
     of every pane for one sitting in that directory.
+
+    The branch is read from the directory, not from `WT_BRANCH`. That variable
+    holds whatever the shell that started the pane exported, which is another
+    worktree's branch as soon as an agent is launched from one. It is only a
+    fallback for a checkout git cannot name (a detached head).
     """
-    branch = os.environ.get("WT_BRANCH", "")
     main = git.main_checkout(cwd)
+    branch = ""
     if main is not None:
-        if not branch:
-            branch = git.current_branch(cwd)
+        branch = git.current_branch(cwd) or os.environ.get("WT_BRANCH", "")
+    if main is not None and branch:
         name = session_name(repo_name_for(main), branch)
         if tmux.available() and tmux.has_session(name):
             return name
