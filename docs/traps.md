@@ -176,9 +176,19 @@ record named `<session>.handoff.json` would sit in that list with no state. It
 is `<session>.handoff`.
 
 **A plan brief must not change the worktree's model.** The plan phase runs on
-`plan_model`, but `.claude/settings.local.json` and a later `claude --continue`
-keep the worktree's own model. Writing the planner into the settings file would
-leave every later session on it.
+`plan_model` at `plan_effort`, but `.claude/settings.local.json` and a later
+`claude --continue` keep the worktree's own model and `[agent].effort`. Writing
+the planner into the settings file would leave every later session on it. The
+settings are rendered from a context with no phase, which is what makes that
+true: `ctx.model` and `ctx.effort` both answer with the worktree's own values
+there.
+
+**A flag passed to `wtx go` is gone by the time the handoff runs.** The hook,
+the handoff and every later `wtx setup` build their context from scratch, in
+another process. `--plan-model` and `--plan-effort` are written to
+`.env.worktree` as `WTX_PLAN_MODEL` and `WTX_PLAN_EFFORT`, the same way
+`--llm` already was, or the plan pane would start at the level asked for and
+everything after it would fall back to the repo config.
 
 **"PostToolUse cannot block" is about the tool, not the turn.** The hooks
 reference lists `PostToolUse` as non-blocking, because the tool has already run

@@ -723,9 +723,13 @@ def test_a_repo_without_orchestration_is_left_alone(
 def test_a_plan_the_planner_can_implement_itself_is_not_handed_over(
     wtx_repo: Path, fake_bin: Path
 ) -> None:
-
+    """Same model, same effort: respawning the pane would only cost a restart."""
     _enable_orchestration(
-        wtx_repo, plan_model='"opus"', build_model='"opus"', large_effort='""'
+        wtx_repo,
+        plan_model='"opus"',
+        plan_effort='""',
+        build_model='"opus"',
+        large_effort='""',
     )
     path = make_worktree(wtx_repo, "feat/same-model")
     setup_mod.run_setup(context.load(root=path), start_tmux=True)
@@ -752,7 +756,7 @@ def test_a_handoff_fires_once_however_often_the_agent_stops(
     assert len(no_fork) == 1
 
 
-def test_a_brief_asks_the_planner_to_size_the_plan(
+def test_a_brief_asks_the_planner_for_an_effort(
     wtx_repo: Path, fake_bin: Path, monkeypatch
 ) -> None:
     from wtx import orchestrate
@@ -765,7 +769,7 @@ def test_a_brief_asks_the_planner_to_size_the_plan(
     run(["brief", "feat/brief", "--prompt", "Add a health endpoint."])
     text = (path / "PROMPT.md").read_text()
     assert "Add a health endpoint." in text
-    assert orchestrate.SIZE_MARKER in text
+    assert orchestrate.EFFORT_MARKER in text
 
 
 def test_a_briefed_session_starts_on_the_planning_model(
@@ -1027,6 +1031,85 @@ def test_a_pending_handoff_shows_in_status(
     assert "handoff pending: large plan -> opus" in capsys.readouterr().out
 
 
+def test_plan_effort_survives_a_later_setup(
+    wtx_repo: Path, fake_bin: Path, monkeypatch
+) -> None:
+    """A flag passed once to `wtx go` has nowhere to live but .env.worktree.
+    The handoff and every later setup rebuild the context from scratch."""
+    _enable_orchestration(wtx_repo, plan_model='"fable"')
+    make_worktree(wtx_repo, "feat/big-plan")
+    monkeypatch.chdir(wtx_repo)
+    run([
+        "go", "feat/big-plan", "--prompt", "Rewrite the ports module.",
+        "--plan-effort", "high", "--plan-model", "opus", "--no-attach",
+    ])
+    path = wtx_repo / ".claude" / "worktrees" / "feat-big-plan"
+    values = envfile.read_worktree(path)
+    assert values["WTX_PLAN_EFFORT"] == "high"
+    assert values["WTX_PLAN_MODEL"] == "opus"
+
+    ctx = context.load(root=path)
+    assert ctx.plan_effort == "high"
+    assert ctx.plan_model == "opus"
+
+    setup_mod.run_setup(context.load(root=path), start_tmux=False)
+    assert envfile.read_worktree(path)["WTX_PLAN_EFFORT"] == "high"
+
+
+def test_a_briefed_session_plans_at_the_plan_effort(
+    wtx_repo: Path, fake_bin: Path, monkeypatch
+) -> None:
+    """Planning is reading and thinking. Low unless the caller said otherwise."""
+    _enable_orchestration(wtx_repo, plan_model='"fable"', plan_effort='"low"')
+    path = make_worktree(wtx_repo, "feat/plan-effort")
+    setup_mod.run_setup(context.load(root=path), start_tmux=True)
+
+    monkeypatch.chdir(wtx_repo)
+    run(["brief", "feat/plan-effort", "--prompt", "Add a health endpoint."])
+    sent = [c for c in calls_of(fake_bin, "tmux") if "send-keys" in c]
+    assert any("--model fable --permission-mode plan --effort low" in c for c in sent)
+
+
+def test_the_plan_names_the_effort_the_build_runs_at(
+    wtx_repo: Path, fake_bin: Path, no_fork: list
+) -> None:
+    """The planner has just read the code. It knows better than small/large."""
+    from wtx import orchestrate
+
+    _enable_orchestration(
+        wtx_repo, plan_model='"fable"', build_model='"opus"', large_effort='"xhigh"'
+    )
+    path = make_worktree(wtx_repo, "feat/named-effort")
+    setup_mod.run_setup(context.load(root=path), start_tmux=True)
+
+    answer = json.loads(
+        _accept(path, "1. rename it\n\nwtx-effort: medium\n", conversation="conv-e")
+    )
+    assert "medium" in answer["stopReason"]
+    assert json.loads(no_fork[0].read_text())["effort"] == "medium"
+
+    orchestrate.run(no_fork[0])
+    sent = [c for c in calls_of(fake_bin, "tmux") if "send-keys" in c]
+    assert any("claude -r conv-e --model opus" in c and "--effort medium" in c for c in sent)
+
+
+def test_a_plan_that_still_says_small_gets_the_small_effort(
+    wtx_repo: Path, fake_bin: Path, no_fork: list
+) -> None:
+    """Plans written before the wtx-effort marker existed must keep working."""
+    from wtx import orchestrate
+
+    _enable_orchestration(wtx_repo, build_model='"opus"', small_effort='"medium"')
+    path = make_worktree(wtx_repo, "feat/old-marker")
+    setup_mod.run_setup(context.load(root=path), start_tmux=True)
+
+    _accept(path, "1. rename it\n\nwtx-size: small\n")
+    assert json.loads(no_fork[0].read_text())["effort"] == "medium"
+    orchestrate.run(no_fork[0])
+    sent = [c for c in calls_of(fake_bin, "tmux") if "send-keys" in c]
+    assert any("--model opus" in c and "--effort medium" in c for c in sent)
+
+
 def test_go_says_when_llm_is_not_what_a_brief_will_use(
     wtx_repo: Path, fake_bin: Path, monkeypatch, capsys
 ) -> None:
@@ -1037,7 +1120,7 @@ def test_go_says_when_llm_is_not_what_a_brief_will_use(
     monkeypatch.chdir(wtx_repo)
     capsys.readouterr()
     run(["go", "feat/llm-note", "--llm", "haiku", "--prompt", "Do a thing.", "--no-attach"])
-    assert "plans on fable and implements on opus" in capsys.readouterr().err
+    assert "plans on fable (--plan-model) and implements on opus" in capsys.readouterr().err
 
 
 # -- the servers the agent cannot see -----------------------------------------

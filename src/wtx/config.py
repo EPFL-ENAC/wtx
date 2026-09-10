@@ -17,7 +17,14 @@ SCHEMA_VERSION = 1
 
 # Keys wtx always writes into .env.worktree, on top of the port families,
 # [env].extra and the external repo prefixes.
-BASE_ENV_KEYS = ("WT_BRANCH", "WT_SLUG", "WTX_AGENT", "WTX_LLM")
+BASE_ENV_KEYS = (
+    "WT_BRANCH",
+    "WT_SLUG",
+    "WTX_AGENT",
+    "WTX_LLM",
+    "WTX_PLAN_MODEL",
+    "WTX_PLAN_EFFORT",
+)
 
 
 class ConfigError(Exception):
@@ -139,6 +146,9 @@ class OrchestrationCfg:
 
     enabled: bool = False
     plan_model: str = "fable"
+    # Planning is reading and thinking, not writing. Low is enough for most
+    # briefs, and `wtx go --plan-effort high` raises it for the ones it is not.
+    plan_effort: str = "low"
     build_model: str = "opus"
     small_model: str = ""
     small_effort: str = "medium"
@@ -400,6 +410,7 @@ def parse(
         orchestration=OrchestrationCfg(
             enabled=bool(orch_t.get("enabled", False)),
             plan_model=orch_t.get("plan_model", "fable"),
+            plan_effort=orch_t.get("plan_effort", "low"),
             build_model=orch_t.get("build_model", "opus"),
             small_model=orch_t.get("small_model", ""),
             small_effort=orch_t.get("small_effort", "medium"),
@@ -578,6 +589,7 @@ def validate(cfg: WtxConfig) -> list[str]:
     orch = cfg.agent.orchestration
     for key, effort in (
         ("[agent].effort", cfg.agent.effort),
+        ("[agent.orchestration].plan_effort", orch.plan_effort),
         ("[agent.orchestration].small_effort", orch.small_effort),
         ("[agent.orchestration].large_effort", orch.large_effort),
     ):

@@ -8,15 +8,16 @@ bookkeeping is what wtx is for.
 How it runs:
 
 1. `wtx go <branch> --prompt ...` writes PROMPT.md and starts the agent pane on
-   `[agent.orchestration].plan_model`, in plan mode. The brief carries one extra
-   instruction: end the plan with a `wtx-size:` line.
+   `[agent.orchestration].plan_model` (or `--plan-model`), in plan mode, at
+   `plan_effort` (or `--plan-effort`). The brief carries one extra
+   instruction: end the plan with a `wtx-effort:` line.
 2. The human accepts the plan. Claude Code fires PostToolUse on ExitPlanMode,
    which runs `wtx handoff`. That records which conversation is holding the
-   accepted plan and how it was sized, then answers `continue: false` so the
-   planning model stops there instead of starting to implement.
+   accepted plan and what effort it asked for, then answers `continue: false`
+   so the planning model stops there instead of starting to implement.
 3. The record is drained a couple of seconds later, by a detached process the
    hook forks: the agent pane is respawned on `claude -r <that conversation>`,
-   on the implementation model, at the effort the plan's size asks for, in
+   on the implementation model, at the effort the plan asked for, in
    `build_permission_mode` (auto, the plan is already agreed). The Stop hook
    drains too, as a backup for a record whose fork failed.
 
@@ -26,10 +27,13 @@ needs, and Claude Code's own opusplan switches models this way. The prompt
 cache is lost across the switch either way, so the transcript is re-read once
 and cached again.
 
-The size routes effort, not the model. Anthropic's guidance is that effort is
+The plan routes effort, not the model. Anthropic's guidance is that effort is
 usually the better lever and that model choice suits the kind of work rather
 than the individual task, so `small_model` is empty until a repo has measured
 that a smaller one is enough.
+
+Plans written before the `wtx-effort:` marker existed said `wtx-size: small` or
+`large` instead. That still works, through `small_effort` and `large_effort`.
 
 Nothing here happens unless a repo sets `[agent.orchestration].enabled`.
 """
@@ -51,6 +55,7 @@ from .proc import warn
 
 SIZES = ("small", "large")
 SIZE_MARKER = "wtx-size:"
+EFFORT_MARKER = "wtx-effort:"
 
 # Marks the block wtx appends to a brief, so a reader can tell wtx's
 # instructions to the planner from the human's own task.
@@ -60,11 +65,18 @@ PLAN_INSTRUCTION = f"""
 {INSTRUCTION_MARK}
 Added by wtx. End your plan with this line, on its own, and nothing after it:
 
-    {SIZE_MARKER} small
+    {EFFORT_MARKER} high
 
-Say `small` when the plan is a handful of steps in code you have already read,
-and `large` when it is not. wtx reads that line to decide how much effort the
-implementation gets, so answer for the work, not for the writing.
+That is how much effort the implementation runs at. Pick one of:
+
+- `low`: a handful of mechanical steps in code you have already read.
+- `medium`: a normal change, a few files, nothing to work out along the way.
+- `high`: several files, or a step you cannot fully see from here.
+- `xhigh`: a design that has to hold together across the whole change.
+- `max`: only when a wrong move costs a lot and is hard to undo.
+
+wtx reads that line and starts the implementation there, so answer for the
+work, not for the writing.
 """
 
 HANDOFF_PROMPT = (
@@ -78,21 +90,37 @@ def plan_instruction() -> str:
     return PLAN_INSTRUCTION
 
 
-def size_of(plan: str) -> str:
-    """What the planner called the job.
+def _marker_word(plan: str, marker: str, allowed: tuple[str, ...]) -> str:
+    """The word a marker line carries, read from the end of the plan.
 
-    The marker is read from the end of the plan, and tolerates the list bullets
-    and bold markers a model wraps a line in. No marker means large: guessing
-    from the length of the plan is a guess, and guessing low costs quality
-    where guessing high only costs money.
+    Tolerates the list bullets and bold markers a model wraps a line in. A word
+    outside `allowed` is ignored: the planner made it up, and acting on it
+    would put a level the agent does not know on the command line.
     """
     for line in reversed(plan.strip().splitlines()):
-        head, marker, rest = line.strip().lower().partition(SIZE_MARKER)
-        if marker and not head.strip("*_-# "):
+        head, found, rest = line.strip().lower().partition(marker)
+        if found and not head.strip("*_-# "):
             word = rest.strip(" `*_.")
-            if word in SIZES:
+            if word in allowed:
                 return word
-    return "large"
+    return ""
+
+
+def size_of(plan: str) -> str:
+    """What the planner called the job, on a plan that still uses wtx-size.
+
+    No marker means large: guessing from the length of the plan is a guess, and
+    guessing low costs quality where guessing high only costs money.
+    """
+    return _marker_word(plan, SIZE_MARKER, SIZES) or "large"
+
+
+def effort_of(plan: str) -> str:
+    """The effort the planner asked the implementation to run at.
+
+    Empty when the plan names none, and the caller falls back to the size.
+    """
+    return _marker_word(plan, EFFORT_MARKER, config_mod.EFFORT_LEVELS)
 
 
 def model_for(cfg: WtxConfig, size: str) -> str:
@@ -261,8 +289,13 @@ def capture(payload: dict, *, cwd: Path | None = None) -> str:
 
     size = size_of(plan)
     model = model_for(ctx.cfg, size)
-    effort = orch.small_effort if size == "small" else orch.large_effort
-    if model == orch.plan_model and effort == ctx.cfg.agent.effort:
+    # The planner names the effort. A plan written before that marker existed
+    # only says small or large, and those two still map to the two config
+    # levels.
+    effort = effort_of(plan)
+    if not effort:
+        effort = orch.small_effort if size == "small" else orch.large_effort
+    if model == ctx.plan_model and effort == ctx.plan_effort:
         trace(f"  no: already {model} at {effort}")
         return ""  # already the right model at the right effort, carry on
 
@@ -274,6 +307,7 @@ def capture(payload: dict, *, cwd: Path | None = None) -> str:
             "conversation": conversation,
             "model": model,
             "size": size,
+            "effort": effort,
         },
     )
     trace(f"  record written: {ctx.session} {size} plan -> {model} at {effort}")
@@ -284,7 +318,7 @@ def capture(payload: dict, *, cwd: Path | None = None) -> str:
     return json.dumps(
         {
             "continue": False,
-            "stopReason": f"wtx: {size} plan, continuing on {model} at {effort}",
+            "stopReason": f"wtx: plan accepted, continuing on {model} at {effort}",
         }
     )
 
@@ -346,7 +380,9 @@ def run(record: Path) -> int:
         repos.resolve_all(ctx),
         llm=data["model"],
         phase="build",
-        size=data["size"],
+        size=data.get("size", ""),
+        # A record written before this key existed falls back to the size.
+        effort=data.get("effort", ""),
     )
     cmd = agent.handoff_cmd(rctx, session=data["conversation"], prompt=HANDOFF_PROMPT)
     if not cmd:
@@ -357,7 +393,7 @@ def run(record: Path) -> int:
     done = tmux.respawn_agent(
         ctx,
         cmd,
-        note=f"{ctx.session}: {data['size']} plan, continuing on "
+        note=f"{ctx.session}: plan accepted, continuing on "
         f"{rctx.model} at {rctx.effort or 'the default effort'}",
     )
     trace(f"handoff: respawned {ctx.session}" if done else "handoff: no pane to respawn")

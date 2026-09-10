@@ -157,7 +157,13 @@ def _split_percent(position: int, total: int) -> int:
 
 
 def render_ctx(
-    ctx: Ctx, resolved: list, *, llm: str = "", phase: str = "", size: str = ""
+    ctx: Ctx,
+    resolved: list,
+    *,
+    llm: str = "",
+    phase: str = "",
+    size: str = "",
+    effort: str = "",
 ) -> RenderContext:
     """What a backend needs to write settings and start, from a live context."""
     return RenderContext(
@@ -170,6 +176,9 @@ def render_ctx(
         llm=llm or ctx.llm,
         phase=phase,
         size=size,
+        plan_model=ctx.plan_model,
+        plan_effort=ctx.plan_effort,
+        effort_override=effort,
     )
 
 

@@ -209,8 +209,11 @@ class ClaudeAgent:
             env["CLAUDE_CODE_SUBAGENT_MODEL"] = cfg.agent.subagent_model
         if env:
             out["env"] = env
-        if cfg.agent.effort:
-            out["effortLevel"] = cfg.agent.effort
+        # ctx.effort, not cfg.agent.effort: the file has to say the same thing
+        # as the --effort flag on the command line, or a `claude` started by
+        # hand in this worktree runs at another level than the pane does.
+        if ctx.effort:
+            out["effortLevel"] = ctx.effort
         if cfg.agent.auto_compact_window:
             out["autoCompactWindow"] = cfg.agent.auto_compact_window
         if cfg.agent.disabled_mcp_servers:

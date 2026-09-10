@@ -31,6 +31,8 @@ EVENTS = ("post-create", "post-checkout", "pre-remove")
 # agent and model to the new one.
 GO_AGENT_ENV = "WTX_GO_AGENT"
 GO_LLM_ENV = "WTX_GO_LLM"
+GO_PLAN_MODEL_ENV = "WTX_GO_PLAN_MODEL"
+GO_PLAN_EFFORT_ENV = "WTX_GO_PLAN_EFFORT"
 GO_DRIVING_ENV = "WTX_GO_DRIVING"
 
 
@@ -70,6 +72,8 @@ def run_hook(event: str) -> int:
         with_repos=decode_with(os.environ.get(WITH_ENV, "")),
         agent_tool=os.environ.get(GO_AGENT_ENV, ""),
         llm=os.environ.get(GO_LLM_ENV, ""),
+        plan_model=os.environ.get(GO_PLAN_MODEL_ENV, ""),
+        plan_effort=os.environ.get(GO_PLAN_EFFORT_ENV, ""),
         # When wtx go is driving, it creates the session itself once the
         # brief is in place. Starting it here too meant an agent launched
         # twice on a briefed worktree.

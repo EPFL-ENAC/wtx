@@ -309,6 +309,18 @@ def test_install_machine_drops_an_old_hook_sitting_next_to_ours(tmp_path) -> Non
     assert text.count("wtx notify stop") == 1
 
 
+def test_install_machine_installs_every_shipped_skill(tmp_path) -> None:
+    """A skill that ships with wtx but is never copied is a skill nobody has."""
+    from wtx import machine
+
+    assert machine.shipped_skills() == list(machine.SKILL_NAMES)
+    assert machine.install_skill(tmp_path) == list(machine.SKILL_NAMES)
+    for name in machine.SKILL_NAMES:
+        assert (tmp_path / name / "SKILL.md").is_file()
+    # Idempotent: install-machine runs more than once.
+    assert machine.install_skill(tmp_path) == list(machine.SKILL_NAMES)
+
+
 def test_install_machine_comments_out_the_old_bashrc_line(tmp_path) -> None:
     from wtx import machine
 
@@ -372,6 +384,61 @@ def test_the_size_routes_effort_and_leaves_the_model_alone() -> None:
 
     assert effort("small") == "medium"
     assert effort("large") == "xhigh"
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "wtx-effort: high",
+        "- wtx-effort: high",
+        "**wtx-effort:** high",
+        "WTX-EFFORT: High",
+    ],
+)
+def test_the_planner_names_the_effort_it_wants(line: str) -> None:
+    assert orchestrate.effort_of(f"step one\nstep two\n\n{line}\n") == "high"
+
+
+def test_an_effort_the_agent_does_not_know_is_ignored() -> None:
+    """A made-up level on the command line is a failed launch, not a slow one."""
+    assert orchestrate.effort_of("do it\n\nwtx-effort: turbo\n") == ""
+    assert orchestrate.effort_of("do it\n") == ""
+
+
+def test_the_planner_effort_beats_the_size(tmp_path) -> None:
+    """The size is the fallback for a plan written before the marker existed."""
+    cfg = _orchestrated(small_effort="medium", large_effort="xhigh")
+    build = replace(_rctx(cfg), phase="build", llm="opus", size="large")
+    assert build.effort == "xhigh"
+    assert replace(build, effort_override="low").effort == "low"
+
+
+def test_a_plan_brief_works_less_hard_than_the_build() -> None:
+    """Planning is reading and thinking. The build is where the effort goes."""
+    cfg = _orchestrated(plan_effort="low", large_effort="xhigh")
+    ctx = _rctx(cfg)
+    assert replace(ctx, phase="plan").effort == "low"
+    assert replace(ctx, phase="plan", plan_effort="high").effort == "high"
+    assert replace(ctx, phase="build", llm="opus", size="large").effort == "xhigh"
+
+
+def test_a_worktree_can_name_its_own_planning_model() -> None:
+    ctx = _rctx(_orchestrated(plan_model="fable"))
+    assert replace(ctx, phase="plan").model == "fable"
+    assert replace(ctx, phase="plan", plan_model="opus").model == "opus"
+
+
+def test_the_settings_effort_is_the_one_the_pane_runs_at() -> None:
+    """The file and the --effort flag must say the same thing, or a `claude`
+    started by hand in the worktree runs at another level than the pane."""
+    cfg = parse(
+        {
+            "repo": {"name": "app", "base_branch": "dev"},
+            "agent": {"llm": "opus", "effort": "high"},
+        }
+    )
+    ctx = _rctx(cfg)
+    assert ClaudeAgent().build_settings(ctx)["effortLevel"] == ctx.effort == "high"
 
 
 def test_a_repo_can_still_opt_into_a_smaller_model() -> None:
@@ -454,6 +521,7 @@ def test_validate_catches_an_effort_level_that_does_not_exist() -> None:
     cfg = _orchestrated(large_effort="maximum")
     assert any("large_effort" in e for e in validate(cfg))
     assert any("effort" in e for e in validate(parse({"agent": {"effort": "huge"}})))
+    assert any("plan_effort" in e for e in validate(_orchestrated(plan_effort="turbo")))
 
 
 def test_orchestration_needs_the_agent_that_has_the_hook() -> None:

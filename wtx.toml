@@ -46,7 +46,9 @@ explore_agent_model = "haiku"
 [agent.orchestration]
 enabled = true
 plan_model = "fable"
+plan_effort = "low"
 build_model = "opus"
+# Fallbacks, for a plan with no wtx-effort: line.
 small_effort = "medium"
 large_effort = "xhigh"
 

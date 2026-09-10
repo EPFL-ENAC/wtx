@@ -52,17 +52,22 @@ wtdone feat/thing                   # close the worktree, keep the branch
 ## Plan on one model, build on another
 
 Turn `[agent.orchestration]` on in `wtx.toml` and a brief plans on the model you
-name, in plan mode. Accept the plan and wtx carries that same conversation on to
-the implementation model, at the effort the plan's size asks for. You read the
+name, in plan mode. The plan ends with the effort it wants, and wtx carries that
+same conversation on to the implementation model at that effort. You read the
 plan and press accept. Nothing else.
 
 ```toml
 [agent.orchestration]
 enabled = true
 plan_model = "fable"     # writes the plan
-build_model = "opus"     # implements it
-small_effort = "medium"  # a small plan: same model, working less hard
-large_effort = "xhigh"   # everything else
+plan_effort = "low"      # planning is reading and thinking
+build_model = "opus"     # implements it, at the effort the plan asked for
+```
+
+Per worktree, when you already know the plan is a big one:
+
+```sh
+wtx go feat/thing --prompt "..." --plan-effort high
 ```
 
 Every key is in `docs/schema.md`.
