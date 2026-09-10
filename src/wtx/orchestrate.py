@@ -14,9 +14,11 @@ How it runs:
    which runs `wtx handoff`. That records which conversation is holding the
    accepted plan and how it was sized, then answers `continue: false` so the
    planning model stops there instead of starting to implement.
-3. The Stop hook fires `wtx notify stop`, which drains the record: the agent
-   pane is respawned on `claude -r <that conversation>`, on the implementation
-   model, at the effort the plan's size asks for.
+3. The record is drained a couple of seconds later, by a detached process the
+   hook forks: the agent pane is respawned on `claude -r <that conversation>`,
+   on the implementation model, at the effort the plan's size asks for, in
+   `build_permission_mode` (auto, the plan is already agreed). The Stop hook
+   drains too, as a backup for a record whose fork failed.
 
 The implementation carries on the same conversation. Everything the planner
 read to write the plan is still there, which is most of what implementing it
