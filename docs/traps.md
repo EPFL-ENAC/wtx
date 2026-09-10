@@ -187,6 +187,15 @@ which is the whole handoff: checked against Claude Code 2.1.266 with a hook on
 `Read`, where the hooked run stopped after the tool call and the same run
 without the hook answered normally.
 
+**A hook that stops the turn stops the Stop hook too.** The handoff used to be
+left for `wtx notify stop` to pick up. Claude Code does not run the Stop hook
+when a hook ended the turn itself, so the record was written and nothing ever
+claimed it: checked against 2.1.267, where `handoff.log` showed
+`record written` and no `claimed` line after it. `capture()` fires the handoff
+itself now, and the Stop hook stays as a backup for a record left behind. The
+detached process waits two seconds first, so the turn finishes printing before
+its pane is respawned.
+
 **The plan is not in the tool call any more.** Claude Code 2.1.267 took `plan`
 out of the ExitPlanMode schema: the plan goes to a file and the tool only says
 it is ready. A model that follows that description calls it with no arguments,
