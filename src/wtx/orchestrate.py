@@ -38,6 +38,7 @@ import contextlib
 import json
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from . import config as config_mod
@@ -105,6 +106,74 @@ def model_for(cfg: WtxConfig, size: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# the trace, because a hook that answers "" leaves nothing behind
+
+
+LOG_MAX_BYTES = 64_000
+LOG_KEEP_LINES = 200
+
+
+def log_file() -> Path:
+    return notify.state_dir() / "handoff.log"
+
+
+def trace(msg: str) -> None:
+    """One line per hook run, so a handoff that did not happen can be read.
+
+    Every early return in capture() looks the same from outside: the agent
+    just keeps going. Without this the only way to tell which guard fired was
+    to guess.
+    """
+    with contextlib.suppress(OSError):
+        path = log_file()
+        if path.is_file() and path.stat().st_size > LOG_MAX_BYTES:
+            kept = path.read_text().splitlines()[-LOG_KEEP_LINES:]
+            path.write_text("\n".join(kept) + "\n")
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        with path.open("a") as fh:
+            fh.write(f"{stamp} {msg}\n")
+
+
+def plan_from(payload: dict) -> str:
+    """The plan text, from the tool input or from the file it names.
+
+    Claude Code 2.1.267 dropped `plan` from the ExitPlanMode schema: the plan
+    goes to a file and the tool only signals that it is ready. A model that
+    follows that description calls the tool with no arguments at all, and a
+    hook reading `tool_input["plan"]` then sees nothing and hands off nothing.
+
+    So try, in order: the tool input, the tool response (which carries both the
+    text and the file), then any file either of them names.
+    """
+    tool_input = payload.get("tool_input") or {}
+    response = payload.get("tool_response") or {}
+    if not isinstance(tool_input, dict):
+        tool_input = {}
+    if not isinstance(response, dict):
+        response = {}
+
+    for where in (tool_input, response):
+        plan = str(where.get("plan") or "").strip()
+        if plan:
+            return plan
+
+    for key, where in (
+        ("planFilePath", tool_input),
+        ("plan_file_path", tool_input),
+        ("filePath", response),
+        ("planFilePath", response),
+    ):
+        name = str(where.get(key) or "").strip()
+        if not name:
+            continue
+        with contextlib.suppress(OSError):
+            text = Path(name).read_text().strip()
+            if text:
+                return text
+    return ""
+
+
+# ---------------------------------------------------------------------------
 # the record a handoff leaves behind
 
 
@@ -158,27 +227,40 @@ def capture(payload: dict, *, cwd: Path | None = None) -> str:
     answer for every repo that has not turned orchestration on.
     """
     where = Path(payload.get("cwd") or cwd or Path.cwd())
+    tool_input = payload.get("tool_input") or {}
+    trace(
+        f"hook in {where}: payload keys {sorted(payload)}, "
+        f"tool_input keys {sorted(tool_input) if isinstance(tool_input, dict) else '?'}"
+    )
     try:
         ctx = context.load(cwd=where)
     except (context.ContextError, config_mod.ConfigError):
+        trace("  no: not a wtx checkout")
         return ""  # not a wtx checkout, not ours to orchestrate
     orch = ctx.cfg.agent.orchestration
     if not orch.enabled:
+        trace(f"  no: orchestration off in {ctx.main}")
         return ""
-    plan = str(payload.get("tool_input", {}).get("plan", "")).strip()
+    plan = plan_from(payload)
     conversation = str(payload.get("session_id", ""))
     if not plan or not conversation:
         # With no conversation to resume there is no handoff to make, and
         # stopping the agent would only take the plan away.
+        trace(f"  no: plan {len(plan)} chars, conversation {conversation!r}")
         return ""
-    if not (tmux.available() and tmux.has_session(ctx.session)):
+    if not tmux.available():
+        trace("  no: no tmux server to talk to")
+        return ""
+    if not tmux.has_session(ctx.session):
         # Nothing to respawn: an agent in a plain terminal.
+        trace(f"  no: session {ctx.session} is not there")
         return ""
 
     size = size_of(plan)
     model = model_for(ctx.cfg, size)
     effort = orch.small_effort if size == "small" else orch.large_effort
     if model == orch.plan_model and effort == ctx.cfg.agent.effort:
+        trace(f"  no: already {model} at {effort}")
         return ""  # already the right model at the right effort, carry on
 
     write_record(
@@ -191,6 +273,7 @@ def capture(payload: dict, *, cwd: Path | None = None) -> str:
             "size": size,
         },
     )
+    trace(f"  record written: {ctx.session} {size} plan -> {model} at {effort}")
     return json.dumps(
         {
             "continue": False,
@@ -212,6 +295,7 @@ def drain(session: str) -> bool:
     running = claim(session)
     if running is None:
         return False
+    trace(f"handoff: {session} claimed {running.name}")
     if not _spawn(running):
         warn("could not fork the handoff, running it in the hook's own pane")
         run(running)
@@ -238,12 +322,14 @@ def run(record: Path) -> int:
     try:
         data = json.loads(record.read_text())
     except (OSError, json.JSONDecodeError):
+        trace(f"handoff: cannot read {record}")
         return 0
     record.unlink(missing_ok=True)
     try:
         ctx = context.load(root=Path(data["root"]))
         agent = agents.get(ctx.agent_tool)
-    except (context.ContextError, config_mod.ConfigError, KeyError):
+    except (context.ContextError, config_mod.ConfigError, KeyError) as exc:
+        trace(f"handoff: {data.get('session')} has no context left ({exc})")
         return 0
     rctx = tmux.render_ctx(
         ctx,
@@ -254,14 +340,17 @@ def run(record: Path) -> int:
     )
     cmd = agent.handoff_cmd(rctx, session=data["conversation"], prompt=HANDOFF_PROMPT)
     if not cmd:
+        trace(f"handoff: {agent.name} cannot resume")
         warn(f"{agent.name} cannot resume a conversation, no handoff made")
         return 0
-    tmux.respawn_agent(
+    trace(f"handoff: respawning {ctx.session} on: {cmd}")
+    done = tmux.respawn_agent(
         ctx,
         cmd,
         note=f"{ctx.session}: {data['size']} plan, continuing on "
         f"{rctx.model} at {rctx.effort or 'the default effort'}",
     )
+    trace(f"handoff: respawned {ctx.session}" if done else "handoff: no pane to respawn")
     return 0
 
 

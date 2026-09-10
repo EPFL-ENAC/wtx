@@ -187,6 +187,25 @@ which is the whole handoff: checked against Claude Code 2.1.266 with a hook on
 `Read`, where the hooked run stopped after the tool call and the same run
 without the hook answered normally.
 
+**The plan is not in the tool call any more.** Claude Code 2.1.267 took `plan`
+out of the ExitPlanMode schema: the plan goes to a file and the tool only says
+it is ready. A model that follows that description calls it with no arguments,
+so a hook reading `tool_input["plan"]` sees an empty string and hands off
+nothing, quietly. `plan_from()` tries the tool input, then the tool response,
+then any file either of them names.
+
+**A hook that answers "" leaves no trace at all.** Every guard in `capture()`
+looks the same from outside: the agent just carries on planning. Finding out
+which one fired meant guessing. Each one now writes a line to
+`$XDG_RUNTIME_DIR/wtx/handoff.log`, and so does the respawn.
+
+**`WT_BRANCH` is the branch of the shell, not of the directory.** It is
+exported by whichever worktree started the pane, so an agent launched from
+another worktree carries the wrong one. `notify.session_for()` used to prefer
+it and then named a session that does not exist, which records a handoff
+nothing ever drains. It reads the branch from the directory and keeps the
+variable as a fallback for a detached head. Same trap as `$WT_MAIN`.
+
 **The handoff resumes, it does not re-brief.** `claude -r <id>` continues the
 conversation that wrote the plan, so the implementation still has everything the
 planner read. A resumed session restores its own model and permission mode, so

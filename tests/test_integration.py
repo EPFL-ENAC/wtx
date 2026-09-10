@@ -818,6 +818,135 @@ def test_the_handoff_command_answers_the_hook(
     assert json.loads(capsys.readouterr().out)["continue"] is False
 
 
+def test_the_plan_is_read_from_the_file_when_the_tool_does_not_carry_it(
+    wtx_repo: Path, fake_bin: Path, tmp_path: Path
+) -> None:
+    """Claude Code 2.1.267 dropped `plan` from the ExitPlanMode schema: the
+    plan goes to a file and the tool only says it is ready. Reading the input
+    key alone makes every handoff a silent no-op."""
+    from wtx import orchestrate
+
+    _enable_orchestration(wtx_repo, build_model='"opus"')
+    path = make_worktree(wtx_repo, "feat/planfile")
+    setup_mod.run_setup(context.load(root=path), start_tmux=True)
+    ctx = context.load(root=path)
+    plan_file = tmp_path / "the-plan.md"
+    plan_file.write_text("1. write it\n\nwtx-size: large\n")
+
+    answer = orchestrate.capture(
+        {
+            "cwd": str(path),
+            "session_id": "conv-file",
+            "tool_name": "ExitPlanMode",
+            "tool_input": {"planFilePath": str(plan_file)},
+        }
+    )
+
+    assert json.loads(answer)["continue"] is False
+    record = json.loads(orchestrate.record_file(ctx.session).read_text())
+    assert record["size"] == "large"
+    assert record["conversation"] == "conv-file"
+
+
+def test_the_plan_file_can_come_from_the_tool_response(
+    wtx_repo: Path, fake_bin: Path, tmp_path: Path
+) -> None:
+    """The accepted-plan result names it `filePath`, the call names it
+    `planFilePath`. Both are in the same transcript, so read both."""
+    from wtx import orchestrate
+
+    _enable_orchestration(wtx_repo)
+    path = make_worktree(wtx_repo, "feat/response")
+    setup_mod.run_setup(context.load(root=path), start_tmux=True)
+    plan_file = tmp_path / "from-response.md"
+    plan_file.write_text("1. do it\n\nwtx-size: small\n")
+
+    answer = orchestrate.capture(
+        {
+            "cwd": str(path),
+            "session_id": "conv-resp",
+            "tool_name": "ExitPlanMode",
+            "tool_input": {"plan": ""},
+            "tool_response": {"filePath": str(plan_file)},
+        }
+    )
+
+    assert json.loads(answer)["continue"] is False
+
+
+def test_the_tool_can_carry_nothing_but_the_response(
+    wtx_repo: Path, fake_bin: Path
+) -> None:
+    """The shape a model that follows the 2.1.267 tool description produces:
+    ExitPlanMode called with no arguments, the plan only in the result."""
+    from wtx import orchestrate
+
+    _enable_orchestration(wtx_repo)
+    path = make_worktree(wtx_repo, "feat/bare")
+    setup_mod.run_setup(context.load(root=path), start_tmux=True)
+
+    answer = orchestrate.capture(
+        {
+            "cwd": str(path),
+            "session_id": "conv-bare",
+            "tool_name": "ExitPlanMode",
+            "tool_input": {},
+            "tool_response": {"plan": "1. do it\n\nwtx-size: large\n"},
+        }
+    )
+
+    assert json.loads(answer)["continue"] is False
+
+
+def test_a_leaked_wt_branch_does_not_rename_the_session(
+    wtx_repo: Path, fake_bin: Path, monkeypatch
+) -> None:
+    """An agent launched from another worktree's shell carries that worktree's
+    WT_BRANCH. Trusting it names a session that does not exist, and the handoff
+    is then recorded for nobody."""
+    from wtx import notify
+
+    path = make_worktree(wtx_repo, "feat/mine")
+    setup_mod.run_setup(context.load(root=path), start_tmux=True)
+    ctx = context.load(root=path)
+    monkeypatch.setenv("WT_BRANCH", "feat/somewhere-else")
+
+    assert notify.session_for(path) == ctx.session
+
+
+def test_a_handoff_that_does_nothing_says_why(wtx_repo: Path, fake_bin: Path) -> None:
+    """Every guard in capture() looks the same from outside, the agent just
+    carries on. The log is the only way to tell which one fired."""
+    from wtx import orchestrate
+
+    path = make_worktree(wtx_repo, "feat/quiet")
+    setup_mod.run_setup(context.load(root=path), start_tmux=True)
+
+    assert _accept(path, "1. do it\n\nwtx-size: large\n") == ""
+
+    log = orchestrate.log_file().read_text()
+    assert "orchestration off" in log
+
+
+def test_the_log_records_a_handoff_end_to_end(
+    wtx_repo: Path, fake_bin: Path
+) -> None:
+    from wtx import orchestrate
+
+    _enable_orchestration(wtx_repo, build_model='"opus"')
+    path = make_worktree(wtx_repo, "feat/logged")
+    setup_mod.run_setup(context.load(root=path), start_tmux=True)
+    ctx = context.load(root=path)
+
+    _accept(path, "1. do it\n\nwtx-size: large\n", conversation="conv-log")
+    orchestrate.run(orchestrate.claim(ctx.session))
+
+    log = orchestrate.log_file().read_text()
+    assert "record written" in log
+    assert "claude -r conv-log" in log
+    assert f"respawned {ctx.session}" in log
+
+
 def test_an_agent_outside_a_session_is_never_stopped(
     wtx_repo: Path, fake_bin: Path, monkeypatch
 ) -> None:
