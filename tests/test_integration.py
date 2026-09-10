@@ -671,7 +671,7 @@ def test_an_accepted_plan_continues_on_the_implementation_model(
 
     sent = [c for c in calls_of(fake_bin, "tmux") if "send-keys" in c]
     assert any(
-        "claude -r conv-abc --model opus --permission-mode acceptEdits "
+        "claude -r conv-abc --model opus --permission-mode auto "
         "--effort xhigh" in c
         for c in sent
     )

@@ -390,8 +390,18 @@ def test_a_plan_brief_runs_on_the_planning_model_the_settings_do_not() -> None:
     assert ClaudeAgent().build_settings(ctx)["model"] == "opus"
 
 
+def test_a_build_starts_in_auto_mode_by_default() -> None:
+    """The human has just read the plan and said yes. Asking again about every
+    edit and command hands them back a job they thought they were done with."""
+    build = replace(_rctx(_orchestrated()), phase="build", llm="opus", size="large")
+    assert build.permission_mode == "auto"
+    assert "--permission-mode auto" in ClaudeAgent().handoff_cmd(
+        build, session="abc-123", prompt="go"
+    )
+
+
 def test_each_phase_starts_in_its_own_permission_mode() -> None:
-    base = _rctx(_orchestrated(build_permission_mode="acceptEdits"))
+    base = _rctx(_orchestrated(build_permission_mode="acceptEdits"))  # not the default
     agent = ClaudeAgent()
     plan = agent.launch_cmd(replace(base, phase="plan"), brief=True)
     build = agent.handoff_cmd(

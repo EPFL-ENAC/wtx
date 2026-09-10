@@ -143,7 +143,10 @@ class OrchestrationCfg:
     small_model: str = ""
     small_effort: str = "medium"
     large_effort: str = "xhigh"
-    build_permission_mode: str = "acceptEdits"
+    # auto, not acceptEdits: the plan is already read and agreed, so stopping
+    # the build to ask about every command puts the human back in the loop they
+    # just stepped out of. The permission baseline is still what says no.
+    build_permission_mode: str = "auto"
 
 
 @dataclass(frozen=True)
@@ -401,7 +404,7 @@ def parse(
             small_model=orch_t.get("small_model", ""),
             small_effort=orch_t.get("small_effort", "medium"),
             large_effort=orch_t.get("large_effort", "xhigh"),
-            build_permission_mode=orch_t.get("build_permission_mode", "acceptEdits"),
+            build_permission_mode=orch_t.get("build_permission_mode", "auto"),
         ),
         opencode=OpencodeCfg(
             provider=oc_t.get("provider", ""),

@@ -132,7 +132,7 @@ one.
 | `small_effort` | `medium` | Effort for a plan the planner called `small`. |
 | `large_effort` | `xhigh` | Effort for everything else. A plan with no `wtx-size:` line counts as large. |
 | `small_model` | none | A different model for a small plan. Opt-in, see below. |
-| `build_permission_mode` | `acceptEdits` | What the implementation starts in. The plan is already agreed. |
+| `build_permission_mode` | `auto` | What the implementation starts in. The plan is already agreed, so the build does not stop to ask about each step. |
 
 **The size routes effort, not the model.** Anthropic's guidance is that tuning
 effort is usually a better lever than switching models, and that model choice
