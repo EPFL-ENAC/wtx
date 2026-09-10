@@ -40,7 +40,14 @@ from . import (
 )
 from .agents import base as agents
 from .agents.base import PROMPT_FILE
-from .hooks import GO_AGENT_ENV, GO_DRIVING_ENV, GO_LLM_ENV, run_hook
+from .hooks import (
+    GO_AGENT_ENV,
+    GO_DRIVING_ENV,
+    GO_LLM_ENV,
+    GO_PLAN_EFFORT_ENV,
+    GO_PLAN_MODEL_ENV,
+    run_hook,
+)
 from .proc import CommandError, is_dry_run, say, set_dry_run, warn
 
 
@@ -176,7 +183,13 @@ def cmd_go(args: argparse.Namespace) -> int:
     # The hook runs in a fresh process, so what wtx go decided travels in the
     # environment, the way wt passes everything else to its hooks. Under names
     # no pane exports: see hooks.py.
-    for key in (repos.WITH_ENV, GO_AGENT_ENV, GO_LLM_ENV):
+    for key in (
+        repos.WITH_ENV,
+        GO_AGENT_ENV,
+        GO_LLM_ENV,
+        GO_PLAN_MODEL_ENV,
+        GO_PLAN_EFFORT_ENV,
+    ):
         os.environ.pop(key, None)
     if with_repos:
         os.environ[repos.WITH_ENV] = repos.encode_with(with_repos)
@@ -184,6 +197,10 @@ def cmd_go(args: argparse.Namespace) -> int:
         os.environ[GO_AGENT_ENV] = args.agent
     if args.llm:
         os.environ[GO_LLM_ENV] = args.llm
+    if args.plan_model:
+        os.environ[GO_PLAN_MODEL_ENV] = args.plan_model
+    if args.plan_effort:
+        os.environ[GO_PLAN_EFFORT_ENV] = args.plan_effort
     os.environ[GO_DRIVING_ENV] = "1"
 
     try:
@@ -192,7 +209,14 @@ def cmd_go(args: argparse.Namespace) -> int:
         raise UserError(str(exc)) from exc
     # The hook has run. Drop what was meant for it: a tmux server started
     # below would inherit these, and every later pane would pass them on.
-    for key in (repos.WITH_ENV, GO_AGENT_ENV, GO_LLM_ENV, GO_DRIVING_ENV):
+    for key in (
+        repos.WITH_ENV,
+        GO_AGENT_ENV,
+        GO_LLM_ENV,
+        GO_PLAN_MODEL_ENV,
+        GO_PLAN_EFFORT_ENV,
+        GO_DRIVING_ENV,
+    ):
         os.environ.pop(key, None)
     if path is None:
         if is_dry_run():
@@ -209,6 +233,8 @@ def cmd_go(args: argparse.Namespace) -> int:
         with_repos=with_repos,
         agent_tool=args.agent,
         llm=args.llm,
+        plan_model=args.plan_model,
+        plan_effort=args.plan_effort,
         # The session is created once, below. On a brand new worktree the
         # post_create hook already made it and this call is a no-op re-run.
         start_tmux=False,
@@ -220,8 +246,8 @@ def cmd_go(args: argparse.Namespace) -> int:
             orch = cfg.agent.orchestration
             warn(
                 f"--llm {args.llm} names the model for a plain session. This brief "
-                f"plans on {orch.plan_model} and implements on {orch.build_model}: "
-                "see [agent.orchestration]"
+                f"plans on {ctx.plan_model} (--plan-model) and implements on "
+                f"{orch.build_model}: see [agent.orchestration]"
             )
         _write_prompt(path, args.prompt, cfg)
 
@@ -444,6 +470,8 @@ def cmd_setup(args: argparse.Namespace) -> int:
         with_repos=repos.parse_with(args.with_repo or []),
         agent_tool=args.agent,
         llm=args.llm,
+        plan_model=args.plan_model,
+        plan_effort=args.plan_effort,
         start_tmux=not args.no_tmux,
         attach=False,
     )
@@ -587,6 +615,18 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--agent", default="", choices=["", "claude", "opencode"])
     s.add_argument("--llm", default="", metavar="MODEL", help="model for this worktree")
     s.add_argument(
+        "--plan-model",
+        default="",
+        metavar="MODEL",
+        help="model for the plan brief, default the repo's plan_model",
+    )
+    s.add_argument(
+        "--plan-effort",
+        default="",
+        choices=["", *config_mod.EFFORT_LEVELS],
+        help="how hard the plan brief works, default low. Raise it for a big plan.",
+    )
+    s.add_argument(
         "--with",
         dest="with_repo",
         action="append",
@@ -639,6 +679,18 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--no-tmux", action="store_true")
     s.add_argument("--agent", default="", choices=["", "claude", "opencode"])
     s.add_argument("--llm", default="")
+    s.add_argument(
+        "--plan-model",
+        default="",
+        metavar="MODEL",
+        help="model for the plan brief, default the repo's plan_model",
+    )
+    s.add_argument(
+        "--plan-effort",
+        default="",
+        choices=["", *config_mod.EFFORT_LEVELS],
+        help="how hard the plan brief works, default low. Raise it for a big plan.",
+    )
     s.add_argument("--with", dest="with_repo", action="append", metavar="NAME[=BRANCH]")
     s.set_defaults(func=cmd_setup)
 

@@ -55,38 +55,46 @@ say so instead of guessing.
 """
 
 
-SKILL_NAME = "wtx-init"
+# The skills shipped inside the package: /wtx-init sets a repo up, /wtx-create
+# starts a worktree on a brief.
+SKILL_NAMES = ("wtx-init", "wtx-create")
 
 
-def skill_source() -> Path | None:
-    """The guided setup skill shipped inside the package."""
+def skill_source(name: str) -> Path | None:
+    """One skill shipped inside the package."""
     from importlib import resources
 
     try:
-        base = resources.files("wtx") / "skills" / SKILL_NAME
+        base = resources.files("wtx") / "skills" / name
         path = Path(str(base))
         return path if path.is_dir() else None
     except (ModuleNotFoundError, TypeError):
         return None
 
 
-def install_skill(target_root: Path) -> bool:
-    """Copy the skill so /wtx-init works in any repo.
+def shipped_skills() -> list[str]:
+    """The skills this install can actually copy."""
+    return [name for name in SKILL_NAMES if skill_source(name) is not None]
 
-    It lives with wtx so the questions improve with the tool, not per repo.
+
+def install_skill(target_root: Path) -> list[str]:
+    """Copy the skills so /wtx-init and /wtx-create work in any repo.
+
+    They live with wtx so they improve with the tool, not per repo.
     """
-    src = skill_source()
-    if src is None:
-        return False
-    dst = target_root / SKILL_NAME
-    try:
-        if dst.exists():
-            shutil.rmtree(dst)
-        shutil.copytree(src, dst)
-    except OSError as exc:
-        warn(f"could not install the {SKILL_NAME} skill in {dst}: {exc}")
-        return False
-    return True
+    done: list[str] = []
+    for name in shipped_skills():
+        src = skill_source(name)
+        dst = target_root / name
+        try:
+            if dst.exists():
+                shutil.rmtree(dst)
+            shutil.copytree(src, dst)
+        except OSError as exc:
+            warn(f"could not install the {name} skill in {dst}: {exc}")
+            continue
+        done.append(name)
+    return done
 
 
 # Predecessors of wtx that may still be wired into the machine files. Their
@@ -288,13 +296,12 @@ def show(agent_tool: str = "claude") -> str:
             lines.append(f"    replaces (commented out, not deleted): {old.strip()}")
         lines.append(change.body.strip())
         lines.append("")
-    src = skill_source()
-    if agent_tool == "claude" and src is not None:
-        lines.append(
-            f"--- {Path.home() / '.claude' / 'skills' / SKILL_NAME}: the /wtx-init "
-            "skill, guided setup for a new repo"
-        )
-        lines.append("")
+    if agent_tool == "claude":
+        for name in shipped_skills():
+            lines.append(
+                f"--- {Path.home() / '.claude' / 'skills' / name}: the /{name} skill"
+            )
+            lines.append("")
     lines.append(
         "A coding agent cannot write these files, and should not: they decide what "
         "it is allowed to do."
@@ -341,8 +348,8 @@ def apply(agent_tool: str = "claude") -> int:
         skills = Path.home() / ".claude" / "skills"
         try:
             skills.mkdir(parents=True, exist_ok=True)
-            if install_skill(skills):
-                say(f"installed the /{SKILL_NAME} skill in {skills}")
+            for name in install_skill(skills):
+                say(f"installed the /{name} skill in {skills}")
                 applied += 1
         except OSError as exc:
             warn(f"could not create {skills}: {exc}")

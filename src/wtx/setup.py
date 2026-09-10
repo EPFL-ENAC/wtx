@@ -69,7 +69,15 @@ def seed(ctx: Ctx) -> None:
         say(f"linked {rel} -> {src}")
 
 
-def write_env(ctx: Ctx, resolved: list[repos.Resolved], *, agent: str, llm: str) -> dict[str, str]:
+def write_env(
+    ctx: Ctx,
+    resolved: list[repos.Resolved],
+    *,
+    agent: str,
+    llm: str,
+    plan_model: str = "",
+    plan_effort: str = "",
+) -> dict[str, str]:
     """Ports and the rest of .env.worktree.
 
     Existing ports are reused so a restart never moves a running server. Keys
@@ -95,6 +103,11 @@ def write_env(ctx: Ctx, resolved: list[repos.Resolved], *, agent: str, llm: str)
         "WT_SLUG": ctx.slug,
         "WTX_AGENT": agent,
         "WTX_LLM": llm,
+        # The plan side of orchestration, per worktree. It has to live here:
+        # the handoff and every later setup rebuild the render context from
+        # scratch, so a flag passed once to `wtx go` has nowhere else to stay.
+        "WTX_PLAN_MODEL": plan_model,
+        "WTX_PLAN_EFFORT": plan_effort,
     }
     owned.update({k: str(v) for k, v in port_values.items()})
     owned.update(cfg.env_extra)
@@ -151,6 +164,8 @@ def render_agent(ctx: Ctx, resolved: list[repos.Resolved]) -> None:
         cfg=ctx.cfg,
         repos=resolved,
         llm=ctx.llm,
+        plan_model=ctx.plan_model,
+        plan_effort=ctx.plan_effort,
     )
     for path in agent.render_settings(rctx):
         say(f"wrote {path.relative_to(ctx.root)}")
@@ -162,6 +177,8 @@ def run_setup(
     with_repos: dict[str, str] | None = None,
     agent_tool: str = "",
     llm: str = "",
+    plan_model: str = "",
+    plan_effort: str = "",
     start_tmux: bool = True,
     attach: bool = False,
     brief: bool = False,
@@ -184,7 +201,16 @@ def run_setup(
     # 3. Ports and .env.worktree.
     tool = agent_tool or ctx.agent_tool
     model = llm or ctx.llm
-    write_env(ctx, resolved, agent=tool, llm=model)
+    # ctx.plan_model and ctx.plan_effort read .env.worktree first, so a value
+    # passed once to `wtx go` survives every later setup with no flag.
+    write_env(
+        ctx,
+        resolved,
+        agent=tool,
+        llm=model,
+        plan_model=plan_model or ctx.env.get("WTX_PLAN_MODEL", ""),
+        plan_effort=plan_effort or ctx.env.get("WTX_PLAN_EFFORT", ""),
+    )
 
     # 4. The repo's own step, if it has one.
     if cfg.hooks.post_setup:

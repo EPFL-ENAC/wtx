@@ -63,6 +63,16 @@ class Ctx:
     def llm(self) -> str:
         return self.env.get("WTX_LLM") or self.cfg.agent.llm
 
+    @property
+    def plan_model(self) -> str:
+        """The model the plan brief runs on, this worktree's own or the repo's."""
+        return self.env.get("WTX_PLAN_MODEL") or self.cfg.agent.orchestration.plan_model
+
+    @property
+    def plan_effort(self) -> str:
+        """How hard the plan brief works. `wtx go --plan-effort` writes it."""
+        return self.env.get("WTX_PLAN_EFFORT") or self.cfg.agent.orchestration.plan_effort
+
     def port(self, family_name: str) -> int | None:
         for f in self.cfg.ports.families:
             if f.name == family_name:

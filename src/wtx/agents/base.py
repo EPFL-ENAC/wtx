@@ -32,6 +32,12 @@ class RenderContext:
     phase: str = ""
     # What the planner called the job, on a build launch: small or large.
     size: str = ""
+    # This worktree's own plan model and plan effort, from .env.worktree. Empty
+    # means the repo config decides.
+    plan_model: str = ""
+    plan_effort: str = ""
+    # The effort the planner asked for, on a build launch. It beats the size.
+    effort_override: str = ""
 
     @property
     def read_repos(self) -> list[Resolved]:
@@ -50,8 +56,10 @@ class RenderContext:
         settings file included, keeps the worktree's model.
         """
         orch = self.cfg.agent.orchestration
-        if self.phase == "plan" and orch.enabled and orch.plan_model:
-            return orch.plan_model
+        if self.phase == "plan" and orch.enabled:
+            planner = self.plan_model or orch.plan_model
+            if planner:
+                return planner
         return self.llm or self.cfg.agent.llm
 
     @property
@@ -66,13 +74,20 @@ class RenderContext:
     def effort(self) -> str:
         """How hard the agent works.
 
-        Implementing an accepted plan takes the effort its size asks for. This
-        is the lever the size routes, not the model: a smaller model is the
-        bigger bet and stays opt-in.
+        Planning and implementing are not the same job. Planning is reading and
+        thinking, so it runs low unless the caller said the plan is a big one.
+        Implementing an accepted plan takes the effort the planner asked for.
+        That is the lever the plan routes, not the model: a smaller model is
+        the bigger bet and stays opt-in.
         """
         orch = self.cfg.agent.orchestration
-        if self.phase == "build" and orch.enabled and self.size:
-            return orch.small_effort if self.size == "small" else orch.large_effort
+        if self.phase == "plan" and orch.enabled:
+            return self.plan_effort or orch.plan_effort or self.cfg.agent.effort
+        if self.phase == "build" and orch.enabled:
+            if self.effort_override:
+                return self.effort_override
+            if self.size:
+                return orch.small_effort if self.size == "small" else orch.large_effort
         return self.cfg.agent.effort
 
 
