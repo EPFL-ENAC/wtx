@@ -1,0 +1,60 @@
+# wtx: every branch gets its own worktree, ports, tmux session and agent.
+# Reference for every key: https://github.com/EPFL-ENAC/wtx/blob/main/docs/schema.md
+schema_version = 1
+
+[repo]
+name = "wtx"
+base_branch = "main"
+# The single source for the push guard, the completion and the deny rules.
+protected_branches = ["main"]
+
+# Gitignored files a fresh worktree needs. Never overwritten.
+[seed]
+copy = ["CLAUDE.md"]
+
+[deps]
+
+[[deps.step]]
+if_missing = ".venv"
+run = "uv venv"
+
+[[deps.step]]
+if_missing = ".venv/bin/pytest"
+run = "uv pip install -e . pytest ruff"
+
+# The agent pane fills the left half, the rest stack on the right.
+[panes]
+
+[[panes.pane]]
+name = "agent"
+role = "agent"
+
+[[panes.pane]]
+name = "shell"
+role = "shell"
+
+[agent]
+tool = "claude"
+llm = "opus"
+subagent_model = "sonnet"
+auto_compact_window = 200000
+explore_agent_model = "haiku"
+
+# Plan on one model, implement on another. A brief starts on
+# plan_model in plan mode; accepting the plan carries the same
+# conversation on to build_model, at the effort its size asks for.
+[agent.orchestration]
+enabled = true
+plan_model = "fable"
+build_model = "opus"
+small_effort = "medium"
+large_effort = "xhigh"
+
+# Added to the baseline wtx ships. A repo can tighten, never loosen.
+[permissions]
+allow = ["Bash(python -m pytest *)", "Bash(ruff check *)", "Bash(ruff format *)", "Bash(wtx --dry-run *)"]
+
+# Run by `wtx land --local`.
+[checks]
+lint = ["ruff check src/ tests/"]
+test = ["python -m pytest tests/ -q"]
