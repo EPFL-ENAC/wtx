@@ -59,11 +59,12 @@ def worktree_rules(ctx: RenderContext) -> str:
     from ..envfile import read_worktree
 
     env = read_worktree(ctx.root)
-    ports = [
-        (f.name, env.get(f.env_key, ""))
-        for f in ctx.cfg.ports.families
-        if env.get(f.env_key)
-    ]
+    is_main = ctx.root.resolve() == ctx.main.resolve()
+    ports = []
+    for f in ctx.cfg.ports.families:
+        port = env.get(f.env_key) or (str(f.main) if is_main else "")
+        if port:
+            ports.append((f.name, port))
     logs = [p.name for p in ctx.cfg.panes.by_role("server") if p.log]
     if not ports and not logs:
         return ""
@@ -74,35 +75,38 @@ def worktree_rules(ctx: RenderContext) -> str:
         f"Written by wtx. Branch `{ctx.branch}`, tmux session `{ctx.session}`.",
     ]
     if ports:
-        out += [
-            "",
-            "## Your servers",
-            "",
-            "This checkout has its own ports, which no other worktree uses:",
-            "",
-        ]
-        out += [f"- {name}: <http://127.0.0.1:{port}/>" for name, port in ports]
         first = ports[0][0]
         out += [
             "",
-            "Reach one with `wtx curl <family> [path] [curl args]`, which fills in",
-            "the port and never prompts, whatever the method:",
+            "## Testing the app",
+            "",
+            "The dev servers are already running, in tmux panes you cannot see or",
+            "reach. Do not start them again. They listen on ports picked for this",
+            "worktree alone:",
+            "",
+        ]
+        out += [f"- {name}: <http://127.0.0.1:{port}/>" for name, port in ports]
+        out += [
+            "",
+            "`wtx curl <family> [path] [curl args]` is how you reach them. It fills",
+            "in the port and never prompts, whatever the method:",
             "",
             "```sh",
-            f"wtx curl {first} /              # any path",
+            f"wtx curl {first} /api/health",
             f"wtx curl {first} /items -X POST -d @body.json",
             "```",
             "",
-            "Plain `curl http://127.0.0.1:<port>/...` works for a GET and prompts",
-            "for anything more, so prefer `wtx curl`.",
+            "It is the way to test these servers. Plain `curl http://127.0.0.1:<port>/`",
+            "works for a GET and prompts on anything past one, and nothing else here",
+            "reaches a local port at all: a browser extension cannot open localhost,",
+            "and neither can the Bash sandbox, which is why `wtx curl` runs outside it.",
         ]
     if logs:
         out += [
             "",
             "## Server logs",
             "",
-            "The servers run in tmux panes you cannot see or reach. Their output is",
-            "mirrored to files you can read:",
+            "The panes are mirrored to files you can read:",
             "",
         ]
         out += [f"- `.wt-logs/{name}.log`" for name in logs]

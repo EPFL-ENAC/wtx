@@ -73,6 +73,15 @@ are invisible, and the log files are named after panes. wtx writes them down in
 `.claude/rules/wtx.md`, which Claude Code loads every session, and which is not
 the repo's own `CLAUDE.md`: that one belongs to a human.
 
+**Claude in Chrome cannot open a localhost page at all**, so it is not a way to
+look at a worktree's frontend and cannot be scoped to one worktree's port.
+Navigating there fails with "This site is blocked by your organization's
+policy", and the extension's site-permission list does not accept a localhost
+entry. The request to allow it was
+[closed as not planned](https://github.com/anthropics/claude-code/issues/75289).
+`wtx curl` is what an agent has; a headless browser driving the port is what a
+screenshot would need.
+
 **It cannot write `.git/hooks`, nor the npm cache.** Creating a worktree is a
 terminal job. wtx says so instead of leaving a repo quietly unguarded.
 

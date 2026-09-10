@@ -929,3 +929,21 @@ def test_wtx_curl_names_the_families_it_knows(
 
     assert run(["curl", "nope", "/"]) == 1
     assert "backend" in capsys.readouterr().err
+
+
+def test_both_agent_facing_documents_name_wtx_curl(
+    wtx_repo: Path, fake_bin: Path
+) -> None:
+    """It is the only way an agent reaches these servers, and nothing about it
+    is guessable: not the command, not the port. Both files it reads say so."""
+    path = make_worktree(wtx_repo, "feat/documented")
+    setup_mod.run_setup(context.load(root=path), start_tmux=False)
+
+    note = (path / ".claude" / "rules" / "wtx.md").read_text()
+    assert "wtx curl" in note
+    assert "cannot see or" in note  # and why plain curl is not enough
+
+    # The repo's own CLAUDE.md is a human's file: wtx prints this section for
+    # someone to paste rather than writing it, so only its text is checked.
+    answers = init_mod.scan(wtx_repo)
+    assert "wtx curl" in init_mod.claude_section(answers)

@@ -38,6 +38,17 @@ keeps, so a developer not using worktrees sees no change.
   is the lever Anthropic recommends reaching for first. It needs
   `wtx install-machine --apply` to have run.
 
+## Servers the agent cannot see
+
+The dev servers run in tmux panes, and a sandboxed agent reaches neither the
+tmux socket nor a browser. Two things follow, and both are automatic:
+
+- `log = true` on every server pane, so the pane is mirrored to
+  `.wt-logs/<name>.log`. That file is the agent's only view of a running server.
+- `wtx curl <family> [path]` reaches a server without knowing its port, with any
+  method and no prompt. Say so in the repo's CLAUDE.md: it is not guessable, and
+  plain curl prompts on anything past a GET.
+
 ## read or pair
 
 - **read**: the agent reads the directory with no prompt and can never write in

@@ -58,7 +58,9 @@ Every branch has its own git worktree, tmux session and agent. The session is
 - The dev servers are already running in their own panes. Do not start them
   again. Read `.wt-logs/*.log` to see what they are doing, the sandbox cannot
   reach the tmux socket.
-- Read-only curl to localhost is allowed, that is how you check the servers.
+- `wtx curl <family> [path] [curl args]` is how you reach them. It fills in this
+  worktree's port and never prompts, whatever the method: `wtx curl backend
+  /api/health`. Plain curl to localhost works for a GET and prompts past that.
 - Work on this branch only. Never push {protected}. When the work is ready, say
   so and a human runs `wtx land <branch>` from the main checkout.
 - A pre-push hook enforces this. If it refuses a push, that is the design, not a

@@ -17,7 +17,9 @@ New:
   allow rule, so `curl -X POST` at your own backend prompts.
 - Setup writes `.claude/rules/wtx.md`, loaded every session: the worktree's
   ports, its server log files, and `wtx curl`. The agent could not work any of
-  it out from the repository.
+  it out from the repository. `wtx init` now names `wtx curl` in the CLAUDE.md
+  section it writes, where it used to say only that curl to localhost was
+  allowed.
 - Permission modes and effort levels in `wtx.toml` are checked against the ones
   the agent actually knows.
 
