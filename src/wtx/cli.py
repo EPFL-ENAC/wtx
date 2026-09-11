@@ -658,7 +658,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--from-tmux", action="store_true", help=argparse.SUPPRESS)
     s.set_defaults(func=cmd_done)
 
-    s = sub.add_parser("land", help="rebase, pull request, squash merge, clean up")
+    s = sub.add_parser("land", help="rebase, pull request, merge, clean up")
     s.add_argument("branch", nargs="?", default="")
     s.add_argument("--local", action="store_true", help="merge locally instead of a PR")
     s.add_argument("--skip-checks", action="store_true")

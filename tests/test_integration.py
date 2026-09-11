@@ -662,6 +662,42 @@ def test_land_refuses_a_branch_cut_from_a_newer_protected_branch(
     assert git.worktree_path_for(wtx_repo, "feat/drag") is not None
 
 
+def test_land_asks_for_a_merge_commit_not_a_squash(
+    wtx_repo: Path, fake_bin: Path, monkeypatch, capsys
+) -> None:
+    """The branch history must survive on the base branch. A squash would
+    flatten it into one commit."""
+    path = make_worktree(wtx_repo, "feat/merge")
+    subprocess.run(["git", "commit", "-q", "--allow-empty", "-m", "one"], cwd=path, check=True)
+    subprocess.run(["git", "commit", "-q", "--allow-empty", "-m", "two"], cwd=path, check=True)
+
+    # A gh that answers OPEN until the merge, MERGED after it, so the poll ends.
+    marker = fake_bin.parent / "merged"
+    gh = fake_bin / "gh"
+    gh.write_text(
+        """#!/bin/sh
+printf '%s\\t%s\\n' gh "$*" >> "$WTX_TEST_CALLS"
+case "$*" in
+  *"pr merge"*) touch MARKER;;
+  *"pr view"*)
+    if [ -f MARKER ]; then state=MERGED; else state=OPEN; fi
+    printf '{"state":"%s","url":"http://x/1"}\\n' "$state";;
+esac
+exit 0
+""".replace("MARKER", str(marker))
+    )
+    gh.chmod(0o755)
+
+    monkeypatch.chdir(wtx_repo)
+    assert run(["land", "feat/merge"]) == 0
+
+    merges = [c for c in calls_of(fake_bin, "gh") if c.startswith("pr merge")]
+    assert merges, "wtx land never asked gh to merge"
+    for call in merges:
+        assert "--merge" in call
+        assert "--squash" not in call
+
+
 def test_a_setup_error_is_a_message_not_a_traceback(
     wtx_repo: Path, fake_bin: Path, monkeypatch, capsys
 ) -> None:

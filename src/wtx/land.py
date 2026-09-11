@@ -163,13 +163,13 @@ def _land_pr(
         say(f"pull request: {url}")
 
     code = run(
-        ["gh", "pr", "merge", branch, "--squash", "--auto"],
+        ["gh", "pr", "merge", branch, "--merge", "--auto"],
         cwd=ctx.main,
         check=False,
     )
     if code != 0:
         say("auto-merge is not available on this repo, merging now")
-        run(["gh", "pr", "merge", branch, "--squash"], cwd=ctx.main)
+        run(["gh", "pr", "merge", branch, "--merge"], cwd=ctx.main)
 
     if is_dry_run():
         return
