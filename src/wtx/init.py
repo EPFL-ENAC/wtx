@@ -124,7 +124,10 @@ def _guess_port(root: Path, kind: str) -> int:
             (Path("quasar.config.ts"), r"port:\s*(?:Number\([^)]*\)\s*\|\|\s*)?(\d{4,5})"),
         ],
         "backend": [
-            (Path("backend/Makefile"), r"--port[= ]\$?\(?[A-Z_]*\)?\s*(\d{4,5})|PORT\s*\?=\s*(\d{4,5})"),
+            (
+                Path("backend/Makefile"),
+                r"--port[= ]\$?\(?[A-Z_]*\)?\s*(\d{4,5})|PORT\s*\?=\s*(\d{4,5})",
+            ),
             (Path("Makefile"), r"BACKEND_PORT\s*\?=\s*(\d{4,5})"),
         ],
     }
@@ -451,6 +454,105 @@ def scan(main: Path) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# re-running on a repo that already has wtx
+
+
+def _merge(current: dict[str, Any], fresh: dict[str, Any]) -> dict[str, Any]:
+    """The file's values win, the fresh scan fills the rest.
+
+    A list or a scalar in wtx.toml is something the human chose or tuned, so a
+    re-run never resets it. Dicts merge recursively, so a key a newer wtx
+    writes and an older file does not have yet still shows up.
+    """
+    out = dict(fresh)
+    for key, value in current.items():
+        if isinstance(value, dict) and isinstance(out.get(key), dict):
+            out[key] = _merge(value, out[key])
+        else:
+            out[key] = value
+    return out
+
+
+def _named(items: Any) -> dict[str, dict[str, Any]]:
+    return {i["name"]: i for i in items if isinstance(i, dict) and "name" in i}
+
+
+def _drift(current: dict[str, Any], fresh: dict[str, Any]) -> list[dict[str, Any]]:
+    """Where the repo has moved on since the file was written.
+
+    Lists are compared as sets, a reordered list is not a change. An entry on
+    both sides is compared on its probe key. An entry only the scan has is
+    reported as an addition, with a `file` of None: wtx cannot tell a family
+    the human dropped on purpose from one that did not exist yet, and a repo
+    that grew a server since the file was written is exactly what a re-run is
+    for. An entry only the file has is left alone, it is a choice.
+    """
+    out: list[dict[str, Any]] = []
+    c_repo, f_repo = current.get("repo", {}), fresh.get("repo", {})
+    if c_repo.get("base_branch") != f_repo.get("base_branch"):
+        out.append(
+            {
+                "what": "repo.base_branch",
+                "file": c_repo.get("base_branch"),
+                "scan": f_repo.get("base_branch"),
+            }
+        )
+    if sorted(c_repo.get("protected_branches", [])) != sorted(f_repo.get("protected_branches", [])):
+        out.append(
+            {
+                "what": "repo.protected_branches",
+                "file": c_repo.get("protected_branches"),
+                "scan": f_repo.get("protected_branches"),
+            }
+        )
+    for what, probe, c_items, f_items in (
+        (
+            "ports",
+            "main",
+            current.get("ports", {}).get("family", []),
+            fresh.get("ports", {}).get("family", []),
+        ),
+        (
+            "panes",
+            "cmd",
+            current.get("panes", {}).get("pane", []),
+            fresh.get("panes", {}).get("pane", []),
+        ),
+    ):
+        c_named, f_named = _named(c_items), _named(f_items)
+        for name in sorted(set(c_named) & set(f_named)):
+            c_value, f_value = c_named[name].get(probe), f_named[name].get(probe)
+            if c_value != f_value:
+                out.append({"what": f"{what}.{name}.{probe}", "file": c_value, "scan": f_value})
+        for name in sorted(set(f_named) - set(c_named)):
+            out.append({"what": f"{what}.{name}", "file": None, "scan": f_named[name]})
+    return out
+
+
+def edit_answers(main: Path) -> dict[str, Any]:
+    """A re-run of `wtx init`: the existing file on top of a fresh scan.
+
+    The /wtx-init skill starts here when a repo already has wtx. The file's own
+    values win, so nothing a human chose is reset in silence, and the
+    `_changes` block names what the repo has moved on to, a new port family or
+    pane included, so the skill asks about it instead of guessing. Nothing is
+    written; the write goes through `--from-json --force`.
+    """
+    fresh = scan(main)
+    fresh["_changes"] = []
+    path = main / CONFIG_NAME
+    if not path.is_file():
+        return fresh
+    try:
+        current = tomllib.loads(path.read_text())
+    except tomllib.TOMLDecodeError as exc:
+        raise ValueError(f"{path} is not valid TOML: {exc}") from exc
+    merged = _merge(current, fresh)
+    merged["_changes"] = _drift(current, fresh)
+    return merged
+
+
+# ---------------------------------------------------------------------------
 # writing
 
 
@@ -535,8 +637,7 @@ def render_toml(answers: dict[str, Any]) -> str:
             lines.append(f"extra = {_v(env['extra'])}")
         if env.get("computed"):
             lines.append(
-                f"computed = {_v(env['computed'])}"
-                "   # written by a hook, wtx carries them over"
+                f"computed = {_v(env['computed'])}   # written by a hook, wtx carries them over"
             )
         lines.append("")
 
@@ -547,7 +648,12 @@ def render_toml(answers: dict[str, Any]) -> str:
             "[panes]",
         ]
         for p in panes:
-            lines += ["", "[[panes.pane]]", f"name = {_v(p['name'])}", f"role = {_v(p.get('role', 'shell'))}"]
+            lines += [
+                "",
+                "[[panes.pane]]",
+                f"name = {_v(p['name'])}",
+                f"role = {_v(p.get('role', 'shell'))}",
+            ]
             if p.get("cwd", ".") != ".":
                 lines.append(f"cwd = {_v(p['cwd'])}")
             if p.get("cmd"):
@@ -576,8 +682,10 @@ def render_toml(answers: dict[str, Any]) -> str:
         lines += [
             "",
             "# Plan on one model, implement on another. A brief starts on",
-            "# plan_model in plan mode; accepting the plan carries the same",
-            "# conversation on to build_model, at the effort its size asks for.",
+            "# plan_model in plan mode. With Claude, accepting the plan carries",
+            "# the same conversation on to build_model, at the effort its size",
+            "# asks for. With opencode the agent switch does it, and the effort",
+            "# routing does not apply.",
             "[agent.orchestration]",
         ]
         for key, value in orch.items():
@@ -616,7 +724,11 @@ def render_toml(answers: dict[str, Any]) -> str:
             f"name = {_v(r['name'])}",
             f"path = {_v(r['path'])}",
             f"access = {_v(r.get('access', 'read'))}"
-            + ("   # read free, edits only through a paired worktree" if r.get("access") == "pair" else "   # read free, never writable"),
+            + (
+                "   # read free, edits only through a paired worktree"
+                if r.get("access") == "pair"
+                else "   # read free, never writable"
+            ),
         ]
         if r.get("base_branch"):
             lines.append(f"base_branch = {_v(r['base_branch'])}")

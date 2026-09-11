@@ -307,9 +307,7 @@ def _table(data: dict[str, Any], key: str) -> dict[str, Any]:
     return value
 
 
-def parse(
-    data: dict[str, Any], *, source: Path | None = None, default_name: str = ""
-) -> WtxConfig:
+def parse(data: dict[str, Any], *, source: Path | None = None, default_name: str = "") -> WtxConfig:
     """Turn a parsed wtx.toml into a WtxConfig. Raises ConfigError.
 
     default_name fills [repo].name when the file has none. It must be known
@@ -333,9 +331,7 @@ def parse(
     for raw in ports_t.get("family", []) or []:
         if "name" not in raw or "main" not in raw:
             raise ConfigError("[[ports.family]] needs name and main")
-        families.append(
-            PortFamily(name=raw["name"], main=int(raw["main"]), env=raw.get("env", ""))
-        )
+        families.append(PortFamily(name=raw["name"], main=int(raw["main"]), env=raw.get("env", "")))
     ports = PortsCfg(
         range_start=int(ports_t.get("range_start", 18000)),
         step=int(ports_t.get("step", 1000)),
@@ -389,9 +385,7 @@ def parse(
                 log=bool(raw.get("log", False)),
             )
         )
-    panes = PanesCfg(
-        layout=panes_t.get("layout", "agent-left-half"), panes=tuple(pane_list)
-    )
+    panes = PanesCfg(layout=panes_t.get("layout", "agent-left-half"), panes=tuple(pane_list))
 
     agent_t = _table(data, "agent")
     oc_t = _table(agent_t, "opencode")
@@ -449,9 +443,7 @@ def parse(
         ei = None
         if ei_raw:
             if not isinstance(ei_raw, dict) or "run" not in ei_raw:
-                raise ConfigError(
-                    f"[[repos]] {raw['name']}: editable_install needs a run key"
-                )
+                raise ConfigError(f"[[repos]] {raw['name']}: editable_install needs a run key")
             ei = EditableInstall(run=ei_raw["run"], cwd=ei_raw.get("cwd", "."))
         ext_repos.append(
             ExtRepo(
@@ -493,9 +485,7 @@ def parse(
 def _post_process(cfg: WtxConfig) -> WtxConfig:
     """Fill in what the config implies: {lab}/{repo} expansion, UV_NO_SYNC."""
     lab, name = cfg.repo.lab, cfg.repo.name
-    repos = tuple(
-        replace(r, path=_expand(r.path, lab=lab, repo=name)) for r in cfg.repos
-    )
+    repos = tuple(replace(r, path=_expand(r.path, lab=lab, repo=name)) for r in cfg.repos)
     env_extra = dict(cfg.env_extra)
     if any(r.editable_install for r in repos) and "UV_NO_SYNC" not in env_extra:
         env_extra["UV_NO_SYNC"] = "1"
@@ -605,16 +595,16 @@ def validate(cfg: WtxConfig) -> list[str]:
                     f"[agent.orchestration] is enabled but {name} is empty, "
                     "there is nothing to hand the plan to"
                 )
-        if cfg.agent.tool != "claude":
-            errs.append(
-                f"[agent.orchestration] needs [agent].tool = \"claude\", "
-                f"'{cfg.agent.tool}' has no accepted-plan hook to fire it"
-            )
+        # Both agent tools here can split the plan from the build. Claude
+        # fires the handoff from its ExitPlanMode hook. opencode switches
+        # agents itself when the plan is accepted, and the agents/opencode.py
+        # settings carry one model per agent, so there is nothing to gate on
+        # the tool.
     agent_panes = cfg.panes.by_role("agent")
     if cfg.panes.panes and not agent_panes:
-        errs.append("no pane has role = \"agent\", the coding agent has nowhere to run")
+        errs.append('no pane has role = "agent", the coding agent has nowhere to run')
     if len(agent_panes) > 1:
-        errs.append("more than one pane has role = \"agent\"")
+        errs.append('more than one pane has role = "agent"')
     names = [p.name for p in cfg.panes.panes]
     if len(names) != len(set(names)):
         errs.append("two panes share a name")
@@ -629,9 +619,7 @@ def validate(cfg: WtxConfig) -> list[str]:
         if r.access not in ("read", "pair"):
             errs.append(f"[[repos]] {r.name}: access must be read or pair")
         if r.editable_install and r.access != "pair":
-            errs.append(
-                f"[[repos]] {r.name}: editable_install needs access = \"pair\""
-            )
+            errs.append(f'[[repos]] {r.name}: editable_install needs access = "pair"')
         if "{lab}" in r.path and not cfg.repo.lab:
             errs.append(f"[[repos]] {r.name}: path uses {{lab}} but [repo].lab is empty")
     for key in cfg.env_extra:

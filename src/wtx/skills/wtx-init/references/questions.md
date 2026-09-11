@@ -18,6 +18,34 @@ Every worktree gets its own port per family, from a hash of the repo and branch,
 stepping past ports that are taken. The `main` value is what the main checkout
 keeps, so a developer not using worktrees sees no change.
 
+## Tool
+
+- **Claude Code** (the default). wtx writes `.claude/` settings, an Explore
+  agent and the wtx rules file. Briefs start in plan mode (`brief_permission_mode`),
+  a hook on ExitPlanMode resumes the planning conversation on the build model,
+  and the plan's size routes the effort.
+- **opencode**. wtx writes `opencode.json`, the project config opencode reads.
+  The same allow and deny lists, translated to its glob format, and external
+  directories through `permission.external_directory` instead of a read list. A
+  brief runs headless first and the TUI continues the same session. With
+  `[agent.orchestration]` on, opencode.json ties a model to each agent under
+  `agent`, and accepting a plan switches agents and models on its own, with no
+  hook. The size routing of the effort levels is Claude's, it does nothing
+  there.
+
+Keys only Claude reads, so they go dead under `tool = "opencode"`:
+`explore_agent_model`, `auto_compact_window`, `brief_permission_mode`.
+`subagent_model` still matters: it is the fallback for opencode's
+`small_model`.
+
+Switching one for the other moves more keys than `tool`:
+
+- to opencode: add `[agent.opencode]` (`provider`, the model names). Drop the
+  three keys above, they mean nothing there.
+- to Claude Code: drop `[agent.opencode]`, and set `subagent_model`,
+  `auto_compact_window` and `explore_agent_model` again, they are off by
+  default in the scan.
+
 ## Agent and models
 
 - **Worker model.** What the agent uses on this repo. A strong model for real

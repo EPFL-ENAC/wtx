@@ -7,8 +7,15 @@ New:
 - `[agent.orchestration]`: plan on one model, implement on another. A brief
   starts the agent on `plan_model` in plan mode; accepting the plan carries the
   same conversation on to `build_model` with `claude -r`, at the effort the
-  plan's size asks for. Off unless a repo turns it on. Needs the new
-  `ExitPlanMode` hook, so re-run `wtx install-machine --apply`.
+  plan's size asks for. Works with opencode too: opencode.json gets a model per
+  agent under `agent`, so the TUI swaps the model with the agent when the plan
+  is accepted (no `wtx-effort:` routing there). Off unless a repo turns it on.
+  Claude needs the new `ExitPlanMode` hook, so re-run
+  `wtx install-machine --apply`.
+- `wtx init --edit` re-runs the setup on a repo that already has wtx: it merges
+  `wtx.toml` with a fresh scan and prints it, with a `_changes` block saying
+  where the repo moved on since the file was written. The file's own values
+  win, nothing is written. `/wtx-init` starts there now.
 - `wtx handoff`, the command that hook calls. A pending handoff shows in
   `wtx status`.
 - `wtx curl <family> [path] [curl args]` reaches one of this worktree's own

@@ -111,7 +111,9 @@ the repository, and the file is gitignored.
 knows: `default`, `acceptEdits`, `plan`, `auto`, `dontAsk`, `bypassPermissions`.
 
 `[agent.opencode]`: `provider` (prefix for `provider/model`), `small_model`,
-`plan_agent`, `build_agent`.
+`plan_agent` (default `plan`), `build_agent` (default `build`). With
+orchestration on, opencode.json gets a model per agent under `agent`, so
+accepting a plan switches the model with the agent.
 
 ## `[agent.orchestration]`
 
@@ -123,6 +125,12 @@ asks it to end the plan with a `wtx-effort:` line. When you accept the plan, wtx
 restarts the agent pane on `claude -r <that conversation>`, on `build_model`, at
 the effort the plan asked for. Reading the plan stays your job; the model
 switching stops being one.
+
+With `tool = "opencode"` there is no restart: when you accept the plan the TUI
+itself asks to switch to the build agent, and opencode.json ties a model to
+each agent under `agent`, so the model follows. wtx passes no `-m` then, that
+flag beats the config. The `wtx-effort:` routing does
+not fire there, it is part of the ExitPlanMode handoff, which is Claude's.
 
 | Key | Default | What |
 | --- | --- | --- |
@@ -160,8 +168,10 @@ again.
 takes its models from this block instead, and `wtx go` says so when both are
 given.
 
-It needs the `ExitPlanMode` hook from `wtx install-machine`. Without it nothing
-ever fires and a brief simply runs on `plan_model`.
+With Claude it needs the `ExitPlanMode` hook from `wtx install-machine`. Without
+it nothing ever fires and a brief simply runs on `plan_model`. opencode needs no
+hook: it switches agents and models on its own, but the `wtx-effort:` line does
+nothing there.
 
 Subagents are a separate dial, and one that already exists: `subagent_model`
 covers every subagent, `explore_agent_model` the search agent, which should be
