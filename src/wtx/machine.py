@@ -19,11 +19,39 @@ from .proc import say, warn
 
 BASHRC_LINE = 'eval "$(wtx shell-init bash)"'
 
+
+def picker_format() -> str:
+    """The line choose-tree draws for one session.
+
+    tmux reads the session option itself, so nothing runs per line and the
+    picker stays instant. The colours come from notify so the picker, the
+    board and the grid agree on what waiting looks like.
+    """
+    from .notify import TMUX_STYLE
+    from .tmux import STATE_OPTION
+
+    opt = f"#{{{STATE_OPTION}}}"
+    style = ""
+    for state, colour in TMUX_STYLE.items():
+        style += f"#{{?#{{==:{opt},{state}}},#[{colour}],"
+    style += "}" * len(TMUX_STYLE)
+    return f"{style}#{{session_name}}#{{?{opt}, [{opt}],}}"
+
+
+# -s, not -w: -w expands every session to its windows, so each session takes
+# two lines and moving to the next one is two key presses. There is only ever
+# one window per session here anyway.
 TMUX_LINES = [
     "# wtx: which session is waiting for you",
     "set -g status-interval 5",
     """set -ag status-right ' #(wtx tmux-status)'""",
-    "bind s choose-tree -wZ -O name -F '#{session_name} #{?#{@wtx_state},[#{@wtx_state}],}'",
+    f"bind s choose-tree -sZ -O name -F '{picker_format()}'",
+    # One command, no `\;` sequence: in a config file tmux reads `\;` as a
+    # literal argument, not as a separator, and a plain `;` would end the
+    # binding and run the rest at load time. wtx monitor does the switch.
+    # -b, or tmux shows whatever the command printed in copy mode, right on
+    # top of the grid it just built.
+    "bind g run-shell -b 'wtx monitor --grid'",
 ]
 
 GIT_IGNORE_LINES = [
@@ -117,8 +145,18 @@ def _is_wtx_hook(entry: dict) -> bool:
 
 
 def _is_old_tmux(line: str) -> bool:
+    """A picker or grid binding an older wtx, or a predecessor, wrote.
+
+    Matched on what the binding does, not on its exact text: the picker line
+    has changed twice already, and two `bind s` lines in the file means the
+    last one read wins, which is not the one wtx just appended.
+    """
     s = line.strip()
-    return s.startswith("bind s choose-tree") and "wtx_state" not in s
+    if s.startswith("#") or s in TMUX_LINES:
+        return False
+    if s.startswith("bind s choose-tree"):
+        return True
+    return s.startswith("bind g ") and "wtx monitor" in s
 
 
 @dataclass

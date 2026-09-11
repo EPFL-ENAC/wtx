@@ -73,14 +73,20 @@ are invisible, and the log files are named after panes. wtx writes them down in
 `.claude/rules/wtx.md`, which Claude Code loads every session, and which is not
 the repo's own `CLAUDE.md`: that one belongs to a human.
 
-**Claude in Chrome cannot open a localhost page at all**, so it is not a way to
-look at a worktree's frontend and cannot be scoped to one worktree's port.
-Navigating there fails with "This site is blocked by your organization's
-policy", and the extension's site-permission list does not accept a localhost
-entry. The request to allow it was
-[closed as not planned](https://github.com/anthropics/claude-code/issues/75289).
-`wtx curl` is what an agent has; a headless browser driving the port is what a
-screenshot would need.
+**A "you cannot" line in the rules file outlives the limit it describes.**
+Claude in Chrome could not open a localhost page when this was written:
+navigating gave "This site is blocked by your organization's policy" and the
+[request to allow it](https://github.com/anthropics/claude-code/issues/75289)
+was closed as not planned. So the rules file told every session the browser was
+no use, and it kept telling them long after it stopped being true. Ten worktrees
+in a row read it and decided they had no way to look at their own frontend.
+
+It works now, checked on 2026-09-11 against a local server whose log shows the
+hits, on both `http://127.0.0.1:<port>/` and `http://localhost:<port>/`. The
+extension drives the real Chrome, outside the Bash sandbox, so the sandbox's
+`allowedDomains` list does not apply to it. The rules file says the browser
+works and says nothing about what it cannot do. A dated claim about another
+tool belongs here, in a file a human reads, not in one an agent reads as fact.
 
 **It cannot write `.git/hooks`, nor the npm cache.** Creating a worktree is a
 terminal job. wtx says so instead of leaving a repo quietly unguarded.
@@ -158,6 +164,25 @@ directory at key time.
 
 **Closing the session you are sitting in kills the command doing the closing.**
 `wtx done` hands the job to the tmux server with `run-shell -b`.
+
+**In a tmux config file `\;` is a literal argument, not a separator.** Only the
+command line splits commands on `\;`. In `.tmux.conf` a plain `;` ends the
+binding and tmux runs the rest at load time, and `\;` becomes an argument of the
+command. A binding that has to do several things calls something that does them,
+so `bind g` just runs `wtx monitor --grid`.
+
+**`choose-tree -w` gives every session two lines.** Windows collapsed still
+means the session line plus its window line, so the down arrow moves half a
+session at a time. `-s` is the one that shows one line per session. wtx installs
+`bind s choose-tree -sZ` with a format that paints a waiting session yellow,
+read by tmux from the `@wtx_state` session option (no `#()`, so the picker does
+not shell out per line).
+
+**A nested `tmux attach` in a tile resizes the real session.** With the default
+`window-size latest` the session follows the newest client, so a tile a few
+lines high shrinks the session an agent is working in. It also shows the top of
+the window, while the part worth reading is the prompt at the bottom. The grid
+runs `capture-pane -p -e` on the agent pane instead and prints the tail itself.
 
 ## the plan handoff
 
@@ -238,6 +263,34 @@ which is false the moment dev gets a commit, so its own rebase only ever ran as
 a no-op and everyone rebased by hand. `wtx land` rebases, aborts cleanly on a
 conflict, and refuses only the case that check was for: a branch cut from a
 newer protected branch (stage while dev lags) that would drag stage into dev.
+
+## desktop notifications
+
+**A `default` action stops the notification from raising anything.** GNOME only
+calls `source.open()`, which activates the app and switches to its workspace,
+when the notification carries no default action. With one it emits
+`ActionInvoked` and nothing else, so clicking used to leave you on the workspace
+you were already on. wtx sends the banner with no action and a
+`desktop-entry` hint naming the terminal, then watches `gdbus monitor` for
+`NotificationClosed` to also move the tmux client.
+
+**The close reason does not say click.** GNOME sends reason 2 (closed by the
+user) for a click on the banner and for the x button and Clear alike, so
+dismissing a banner also switches the tmux client to that session. The session
+was waiting on you either way. `WTX_NOTIFY_CLICK=0` turns it off.
+
+**Banners pile up in the list.** Every permission prompt of the day stays in the
+GNOME list until something closes it, and a full list makes the shell crawl. The
+notification id is kept next to the state file and `notify.settle()` calls
+`CloseNotification` as soon as the session stops waiting, on `start`, `running`,
+a handoff, and on teardown.
+
+**One worker per notification is one worker too many.** The worker outlives the
+hook (it waits for the click), so a session that asks ten times leaves ten
+processes waiting on ids that are already gone, and one click then wakes several
+at once. A new worker kills the one it replaces. It is killed by process group,
+so the pid is checked against `/proc/<pid>/cmdline` first: pids are reused, and
+killing a stale group takes down something unrelated.
 
 ## installing
 

@@ -41,7 +41,7 @@ keeps, so a developer not using worktrees sees no change.
 ## Servers the agent cannot see
 
 The dev servers run in tmux panes, and a sandboxed agent reaches neither the
-tmux socket nor a browser. Two things follow, and both are automatic:
+tmux socket nor a port from Bash. Two things follow, and both are automatic:
 
 - `log = true` on every server pane, so the pane is mirrored to
   `.wt-logs/<name>.log`. That file is the agent's only view of a running server.

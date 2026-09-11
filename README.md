@@ -49,6 +49,22 @@ wtx land feat/thing                 # rebase, PR, squash merge, clean up
 wtdone feat/thing                   # close the worktree, keep the branch
 ```
 
+## Moving between sessions
+
+Inside tmux, with the prefix `wtx install-machine` sets up:
+
+- `prefix+s`, the session list. One line per session, and a session waiting for
+  you is coloured: yellow when it asks for a permission, cyan when it asks a
+  question. The state is the same one the status line shows.
+- `prefix+g`, every agent pane at once. One tile per session, waiting ones
+  first, each showing the bottom of that session's agent pane. Enter or `o` on
+  a tile goes to that session, `q` closes the tile.
+- `prefix+X`, a menu on the session you are in: kill it, or close the worktree.
+
+Outside tmux, a desktop notification tells you which session needs you. Clicking
+it brings the terminal to the front, on its workspace, on that session. The
+banner goes away on its own as soon as the agent starts working again.
+
 ## Plan on one model, build on another
 
 Turn `[agent.orchestration]` on in `wtx.toml` and a brief plans on the model you
