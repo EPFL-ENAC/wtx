@@ -36,9 +36,7 @@ def hooks_dir(main: Path) -> Path:
     if configured:
         p = Path(configured)
         return p if p.is_absolute() else (main / configured)
-    common = capture(
-        ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], cwd=main
-    )
+    common = capture(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], cwd=main)
     return Path(common) / "hooks"
 
 

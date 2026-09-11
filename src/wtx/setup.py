@@ -87,9 +87,7 @@ def write_env(
     cfg = ctx.cfg
     existing = envfile.read_worktree(ctx.root)
     port_values: dict[str, int] = {}
-    have_all = all(
-        existing.get(f.env_key, "").isdigit() for f in cfg.ports.families
-    )
+    have_all = all(existing.get(f.env_key, "").isdigit() for f in cfg.ports.families)
     if cfg.ports.families:
         if have_all:
             port_values = {f.env_key: int(existing[f.env_key]) for f in cfg.ports.families}
@@ -235,6 +233,4 @@ def run_setup(
             agent = agents.get(ctx.agent_tool)
         except KeyError:
             return
-        tmux.ensure_session(
-            ctx, agent, resolved, attach_after=attach, brief=brief
-        )
+        tmux.ensure_session(ctx, agent, resolved, attach_after=attach, brief=brief)

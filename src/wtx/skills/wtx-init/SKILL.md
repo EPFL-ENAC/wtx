@@ -1,6 +1,6 @@
 ---
 name: wtx-init
-description: Set up wtx in this repository, with the human deciding. Use when the user asks to add wtx, set up worktrees and tmux sessions for agents, run /wtx-init, or configure wtx.toml. Reads the repo, proposes a full config with reasons, asks about each choice, then writes the files through the wtx CLI.
+description: Set up wtx in this repository, with the human deciding. Use when the user asks to add wtx, set up worktrees and tmux sessions for agents, run /wtx-init, or update an existing wtx.toml (change the agent tool, reconfigure). Reads the repo, proposes a full config with reasons, asks about each choice, then writes the files through the wtx CLI.
 ---
 
 # Setting up wtx in a repository
@@ -50,10 +50,12 @@ topic the scan settled beyond doubt:
 2. **Ports.** The families found and the values the main checkout keeps.
 3. **Dependencies.** The install steps, and the Python pin if uv is used.
 4. **Panes.** Which servers run in the session, and the command for each.
-5. **Agent and models.** Tool (Claude Code or opencode), the worker model, the
-   subagent model, the context cap, and whether to plan on one model and build
-   on another (`[agent.orchestration]`). Explain the trade: a big context window
-   costs on every turn, a cheaper subagent model costs nothing in quality for
+5. **Agent and models.** Tool (Claude Code or opencode, the trade-offs are in
+   `references/questions.md`, and switching one for the other moves more keys
+   than `tool` alone), the worker model, the subagent model, the context cap,
+   and whether to plan on one model and build on another
+   (`[agent.orchestration]`). Explain the trade: a big context window costs on
+   every turn, a cheaper subagent model costs nothing in quality for
    searching, and planning on the strongest model is cheap because a plan is
    short.
 6. **Extra deny rules.** Propose from the repo: `git tag` and `--tags` when a
@@ -104,6 +106,42 @@ socket, and a sandboxed agent can do neither. Say that plainly rather than
 trying and reporting a confusing failure.
 
 Then offer to commit, on a branch, never on the base branch.
+
+## Re-running on a repo that has wtx
+
+Same flow, a different start. Instead of a bare scan, run:
+
+```sh
+wtx init --edit
+```
+
+That merges the existing `wtx.toml` with a fresh scan and prints it as JSON,
+with a `_changes` block next to `_notes` listing where the repo has moved on
+since the file was written: the base branch, the protected branches, a family
+port, a pane command, and a port family or pane the scan found that the file
+has no entry for. The file's own values win, so nothing a human chose is
+reset, and nothing is written yet.
+
+- Ask about each `_changes` entry: the scan says the repo moved, the file says
+  otherwise. This is where a drifted answer matters most: changing the base
+  branch or the protected list moves the push guard with it.
+- An entry with `"file": null` is a service the repo grew since. Its `scan`
+  value is the whole block to add, so offer it as it stands. wtx never adds it
+  on its own, it cannot tell a new service from one the human deleted.
+- Then ask what brought the human here today (a tool switch, a new server, a
+  model change) and follow the sections above for it.
+- When the agent tool switches, carry the whole `[agent]` table over, not just
+  `tool`. Which keys survive and which become dead is in
+  `references/questions.md`.
+- Write the same way, with `--force` this time, since the file already exists:
+
+```sh
+wtx init --from-json answers.json --force
+wtx config validate
+```
+
+If the repo has no `wtx.toml`, `wtx init --edit` prints a plain scan and an
+empty `_changes`. That is the first run flow; start at step 1.
 
 ## References
 

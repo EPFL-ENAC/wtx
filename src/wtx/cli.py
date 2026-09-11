@@ -120,17 +120,24 @@ def _write_prompt(path: Path, prompt: str, cfg: config_mod.WtxConfig) -> None:
 
 def cmd_init(args: argparse.Namespace) -> int:
     main = _main_checkout()
-    if args.from_json:
+    if args.edit:
+        try:
+            answers = init_mod.edit_answers(main)
+        except ValueError as exc:
+            raise UserError(str(exc)) from exc
+    elif args.from_json:
         answers = init_mod.load_answers(Path(args.from_json))
     else:
         answers = init_mod.scan(main)
         if args.lab:
             answers["repo"]["lab"] = args.lab
-    if args.scan:
-        answers.pop("_notes", None) if args.no_notes else None
+    if args.scan or args.edit:
+        if args.no_notes:
+            answers.pop("_notes", None)
         print(json.dumps(answers, indent=2))
         return 0
     answers.pop("_notes", None)
+    answers.pop("_changes", None)
     try:
         written = init_mod.write_all(main, answers, force=args.force)
     except FileExistsError as exc:
@@ -461,8 +468,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         handoff = row["handoff"]
         if handoff:
             print(
-                f"    handoff pending: {handoff.get('size', '')} plan "
-                f"-> {handoff.get('model', '')}"
+                f"    handoff pending: {handoff.get('size', '')} plan -> {handoff.get('model', '')}"
             )
         for name, info in row["repos"].items():
             if info["branch"]:
@@ -499,9 +505,7 @@ def cmd_tmux(args: argparse.Namespace) -> int:
     ctx = _load()
     resolved = repos.resolve_all(ctx)
     agent = agents.get(ctx.agent_tool)
-    tmux.ensure_session(
-        ctx, agent, resolved, attach_after=not args.no_attach, brief=args.brief
-    )
+    tmux.ensure_session(ctx, agent, resolved, attach_after=not args.no_attach, brief=args.brief)
     return 0
 
 
@@ -609,9 +613,23 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("init", help="write wtx.toml and .wt.toml for this repo")
     s.add_argument("--lab", default="", help="EPFL lab short name, fills {lab} in paths")
-    s.add_argument("--scan", action="store_true", help="print the guesses as JSON, write nothing")
-    s.add_argument("--no-notes", action="store_true", help="with --scan, drop the _notes block")
-    s.add_argument("--from-json", default="", metavar="FILE", help="write from answers ('-' for stdin)")
+    # Three ways in, and they are exclusive: guess, guess on top of the file
+    # that is already there, or take answers back from the skill.
+    source = s.add_mutually_exclusive_group()
+    source.add_argument(
+        "--scan", action="store_true", help="print the guesses as JSON, write nothing"
+    )
+    source.add_argument(
+        "--edit",
+        action="store_true",
+        help="re-run on a repo that has wtx: merge wtx.toml with a fresh scan, print it, write nothing",
+    )
+    source.add_argument(
+        "--from-json", default="", metavar="FILE", help="write from answers ('-' for stdin)"
+    )
+    s.add_argument(
+        "--no-notes", action="store_true", help="with --scan or --edit, drop the _notes block"
+    )
     s.add_argument("--force", action="store_true", help="replace an existing wtx.toml")
     s.set_defaults(func=cmd_init)
 
@@ -649,7 +667,13 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(func=cmd_go)
 
     s = sub.add_parser("all", help="bring every worktree's session back, detached")
-    s.set_defaults(func=lambda a: cmd_go(argparse.Namespace(branch="all", base="", prompt="", no_attach=True, agent="", llm="", with_repo=None)))
+    s.set_defaults(
+        func=lambda a: cmd_go(
+            argparse.Namespace(
+                branch="all", base="", prompt="", no_attach=True, agent="", llm="", with_repo=None
+            )
+        )
+    )
 
     s = sub.add_parser("done", help="close a worktree, keep the branch")
     s.add_argument("branch", nargs="?", default="")
@@ -677,9 +701,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     s.add_argument("family", nargs="?", default="", help="default: the first family")
     s.add_argument("path", nargs="?", default="/")
-    s.add_argument(
-        "args", nargs=argparse.REMAINDER, help="passed to curl as it stands"
-    )
+    s.add_argument("args", nargs=argparse.REMAINDER, help="passed to curl as it stands")
     s.set_defaults(func=cmd_curl)
 
     s = sub.add_parser("status", help="ports, sessions and pairings")

@@ -173,9 +173,7 @@ def session_for(cwd: Path) -> str:
             return name
     if not tmux.available():
         return ""
-    out = tmux._tmux_out(
-        ["list-panes", "-a", "-F", "#{session_name}\t#{pane_current_path}"]
-    )
+    out = tmux._tmux_out(["list-panes", "-a", "-F", "#{session_name}\t#{pane_current_path}"])
     target = str(cwd.resolve())
     for line in out.splitlines():
         name, _, path = line.partition("\t")
@@ -493,9 +491,7 @@ def worker(session: str, state: str, message: str, cwd: str = "") -> int:
     return 0
 
 
-def _worker_notify_send(
-    session: str, state: str, message: str, cwd: str, previous_id: str
-) -> int:
+def _worker_notify_send(session: str, state: str, message: str, cwd: str, previous_id: str) -> int:
     """The fallback for a machine without gdbus.
 
     notify-send -A blocks until the click and prints the action name. It costs
@@ -557,9 +553,7 @@ def status_line(max_items: int = 4) -> str:
     if not waiting:
         return ""
     waiting.sort(reverse=True)
-    parts = [
-        f"{EMOJI.get(state, '')} {name}".strip() for _, name, state in waiting[:max_items]
-    ]
+    parts = [f"{EMOJI.get(state, '')} {name}".strip() for _, name, state in waiting[:max_items]]
     more = len(waiting) - max_items
     if more > 0:
         parts.append(f"+{more}")

@@ -135,9 +135,7 @@ def server_options() -> None:
 
 
 def agent_pane_id(session: str) -> str:
-    out = _tmux_out(
-        ["list-panes", "-t", f"={session}", "-F", "#{pane_id} #{" + ROLE_OPTION + "}"]
-    )
+    out = _tmux_out(["list-panes", "-t", f"={session}", "-F", "#{pane_id} #{" + ROLE_OPTION + "}"])
     for line in out.splitlines():
         pane_id, _, role = line.partition(" ")
         if role.strip() == "agent":

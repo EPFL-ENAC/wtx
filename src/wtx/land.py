@@ -26,9 +26,7 @@ def _gh(args: list[str], cwd: Path) -> tuple[int, str, str]:
 
 def pr_state(cwd: Path, branch: str) -> tuple[str, str]:
     """(state, url) of the branch's pull request, empty when there is none."""
-    code, out, _ = _gh(
-        ["pr", "view", branch, "--json", "state,url"], cwd
-    )
+    code, out, _ = _gh(["pr", "view", branch, "--json", "state,url"], cwd)
     if code != 0 or not out:
         return "", ""
     try:
@@ -80,9 +78,7 @@ def land(
     base = cfg.repo.base_branch
 
     if ctx.is_worktree:
-        raise LandError(
-            f"run this from the main checkout ({ctx.main}), not from a worktree"
-        )
+        raise LandError(f"run this from the main checkout ({ctx.main}), not from a worktree")
     if branch in cfg.repo.protected_branches:
         raise LandError(f"{branch} is a protected branch, there is nothing to land")
 
@@ -140,9 +136,7 @@ def _refuse_a_branch_cut_from_elsewhere(ctx: Ctx, branch: str, base: str) -> Non
             )
 
 
-def _land_pr(
-    ctx: Ctx, branch: str, base: str, *, poll_seconds: int, timeout_minutes: int
-) -> None:
+def _land_pr(ctx: Ctx, branch: str, base: str, *, poll_seconds: int, timeout_minutes: int) -> None:
     from .proc import is_dry_run, which
 
     if which("gh") is None:

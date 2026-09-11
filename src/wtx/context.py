@@ -95,9 +95,7 @@ def load(cwd: Path | None = None, *, root: Path | None = None) -> Ctx:
     top = git.toplevel(here) or main
     cfg_path = main / config_mod.CONFIG_NAME
     if not cfg_path.is_file():
-        raise ContextError(
-            f"no {config_mod.CONFIG_NAME} in {main}. Run `wtx init` there first."
-        )
+        raise ContextError(f"no {config_mod.CONFIG_NAME} in {main}. Run `wtx init` there first.")
     cfg = config_mod.load(cfg_path)
     for problem in config_mod.validate(cfg):
         warn(f"{config_mod.CONFIG_NAME}: {problem}")

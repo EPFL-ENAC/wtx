@@ -22,9 +22,7 @@ from wtx.tmux import _split_percent
 # -- ports -------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "text", ["", "a", "speed-to-zero/feat/x", "resslab-hub/dev", "x" * 300]
-)
+@pytest.mark.parametrize("text", ["", "a", "speed-to-zero/feat/x", "resslab-hub/dev", "x" * 300])
 def test_cksum_matches_the_posix_tool(text: str) -> None:
     """Ports must land where the bash version put them, or every live worktree
     moves the first time it is set up again."""
@@ -37,10 +35,7 @@ def test_cksum_matches_the_posix_tool(text: str) -> None:
 def test_ports_reproduce_a_live_worktree() -> None:
     """Two ports taken from a real checkout before wtx existed."""
     assert 18000 + cksum(b"leure-speed-to-zero/feat/tcaf-deployment") % 500 == 18065
-    assert (
-        18000 + cksum(b"leure-speed-to-zero/feat/add-negawatt-database-levers") % 500
-        == 18387
-    )
+    assert 18000 + cksum(b"leure-speed-to-zero/feat/add-negawatt-database-levers") % 500 == 18387
 
 
 # -- session names -----------------------------------------------------------
@@ -138,12 +133,19 @@ def test_validate_catches_a_base_branch_left_unprotected() -> None:
 
 def test_validate_catches_a_missing_agent_pane() -> None:
     cfg = parse({"panes": {"pane": [{"name": "shell", "role": "shell"}]}})
-    assert any("role = \"agent\"" in p for p in validate(cfg))
+    assert any('role = "agent"' in p for p in validate(cfg))
 
 
 def test_validate_catches_two_families_on_one_env_key() -> None:
     cfg = parse(
-        {"ports": {"family": [{"name": "a", "main": 1, "env": "P"}, {"name": "b", "main": 2, "env": "P"}]}}
+        {
+            "ports": {
+                "family": [
+                    {"name": "a", "main": 1, "env": "P"},
+                    {"name": "b", "main": 2, "env": "P"},
+                ]
+            }
+        }
     )
     assert any("same env key" in p for p in validate(cfg))
 
@@ -270,16 +272,29 @@ def test_install_machine_replaces_the_old_notify_hooks_and_keeps_others(tmp_path
     from wtx import machine
 
     settings = tmp_path / "settings.json"
-    settings.write_text(json.dumps({"hooks": {
-        "Stop": [
-            {"matcher": "", "hooks": [{"type": "command", "command": "/x/persist.sh"}]},
-            {"matcher": "*", "hooks": [{"type": "command", "command": "/x/claude-notify stop"}]},
-        ],
-        "Notification": [
-            {"matcher": "permission_prompt",
-             "hooks": [{"type": "command", "command": "/x/claude-notify permission"}]},
-        ],
-    }}))
+    settings.write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "Stop": [
+                        {"matcher": "", "hooks": [{"type": "command", "command": "/x/persist.sh"}]},
+                        {
+                            "matcher": "*",
+                            "hooks": [{"type": "command", "command": "/x/claude-notify stop"}],
+                        },
+                    ],
+                    "Notification": [
+                        {
+                            "matcher": "permission_prompt",
+                            "hooks": [
+                                {"type": "command", "command": "/x/claude-notify permission"}
+                            ],
+                        },
+                    ],
+                }
+            }
+        )
+    )
     fragment = json.loads(machine.planned("claude")[-1].body)["hooks"]
     assert machine._merge_hooks(settings, fragment)
     hooks = json.loads(settings.read_text())["hooks"]
@@ -296,12 +311,24 @@ def test_install_machine_drops_an_old_hook_sitting_next_to_ours(tmp_path) -> Non
     from wtx import machine
 
     settings = tmp_path / "settings.json"
-    settings.write_text(json.dumps({"hooks": {
-        "Stop": [
-            {"matcher": "*", "hooks": [{"type": "command", "command": "/x/claude-notify stop"}]},
-            {"matcher": "*", "hooks": [{"type": "command", "command": "wtx notify stop"}]},
-        ],
-    }}))
+    settings.write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "Stop": [
+                        {
+                            "matcher": "*",
+                            "hooks": [{"type": "command", "command": "/x/claude-notify stop"}],
+                        },
+                        {
+                            "matcher": "*",
+                            "hooks": [{"type": "command", "command": "wtx notify stop"}],
+                        },
+                    ],
+                }
+            }
+        )
+    )
     fragment = json.loads(machine.planned("claude")[-1].body)["hooks"]
     assert machine._merge_hooks(settings, fragment)
     text = json.dumps(json.loads(settings.read_text()))
@@ -326,7 +353,9 @@ def test_install_machine_comments_out_the_old_bashrc_line(tmp_path) -> None:
 
     rc = tmp_path / ".bashrc"
     rc.write_text("export A=1\nsource ~/code/resslab-hub/scripts/wt-go.bash\n")
-    change = machine.Change(rc, "shell", f"\n# wtx\n{machine.BASHRC_LINE}\n", stale=machine._is_old_bashrc)
+    change = machine.Change(
+        rc, "shell", f"\n# wtx\n{machine.BASHRC_LINE}\n", stale=machine._is_old_bashrc
+    )
     assert change.needed()
     assert change.comment_out_stale() == 1
     text = rc.read_text()
@@ -499,6 +528,72 @@ def test_opencode_cannot_be_handed_a_conversation() -> None:
     assert OpencodeAgent().handoff_cmd(ctx, session="x", prompt="go") == ""
 
 
+def _oc_orchestrated() -> config.WtxConfig:
+    return parse(
+        {
+            "repo": {"name": "app", "base_branch": "dev", "protected_branches": ["dev"]},
+            "agent": {
+                "tool": "opencode",
+                "llm": "qwen",
+                "orchestration": {"enabled": True, "plan_model": "planner"},
+                "opencode": {"provider": "rcp"},
+            },
+        }
+    )
+
+
+def test_opencode_splits_the_models_per_agent_in_its_config() -> None:
+    """When the plan is accepted the TUI switches to the build agent and the
+    model follows it. There is no respawn to pass --model to, so the build
+    model has to ride the file. The top level model keeps the worktree's own
+    one, or a later session would come back on the planner."""
+    from wtx.agents.opencode import OpencodeAgent
+
+    settings = OpencodeAgent().build_settings(_rctx(_oc_orchestrated()))
+    assert settings["model"] == "rcp/qwen"
+    assert settings["agent"] == {
+        "plan": {"model": "rcp/planner"},
+        "build": {"model": "rcp/opus"},
+    }
+
+
+def test_opencode_models_are_not_under_the_deprecated_mode_key() -> None:
+    """opencode's schema says `mode` is deprecated, use `agent`. It still
+    loads today, and the whole handoff rests on this one key."""
+    from wtx.agents.opencode import OpencodeAgent
+
+    assert "mode" not in OpencodeAgent().build_settings(_rctx(_oc_orchestrated()))
+
+
+def test_opencode_orchestration_passes_no_model_on_the_command_line() -> None:
+    """`-m` is the first thing opencode reads when it picks a model, ahead of
+    the config. A planner passed there would stay the model for the whole
+    session, and accepting the plan would switch the agent and nothing else."""
+    from wtx.agents.opencode import OpencodeAgent
+
+    cfg = _oc_orchestrated()
+    agent = OpencodeAgent()
+    for phase in ("", "plan", "build"):
+        ctx = replace(_rctx(cfg), phase=phase)
+        for brief in (True, False):
+            assert " -m " not in agent.launch_cmd(ctx, brief=brief), (phase, brief)
+
+
+def test_opencode_without_orchestration_still_gets_its_model_flag() -> None:
+    """Nothing else picks the model then, so the flag has to stay."""
+    from wtx.agents.opencode import OpencodeAgent
+
+    cfg = parse(
+        {
+            "repo": {"name": "app", "base_branch": "dev"},
+            "agent": {"tool": "opencode", "llm": "qwen"},
+        }
+    )
+    settings = OpencodeAgent().build_settings(_rctx(cfg))
+    assert settings["agent"] == {"plan": {"model": "qwen"}, "build": {"model": "qwen"}}
+    assert " -m qwen" in OpencodeAgent().launch_cmd(_rctx(cfg), brief=True)
+
+
 def test_the_accepted_plan_hook_is_part_of_the_machine_setup() -> None:
     """Without it nothing ever hands a plan over."""
     fragment = ClaudeAgent().hook_fragment()
@@ -524,17 +619,18 @@ def test_validate_catches_an_effort_level_that_does_not_exist() -> None:
     assert any("plan_effort" in e for e in validate(_orchestrated(plan_effort="turbo")))
 
 
-def test_orchestration_needs_the_agent_that_has_the_hook() -> None:
-    """opencode has no ExitPlanMode hook, so nothing would ever fire."""
-    cfg = _orchestrated()
-    assert validate(cfg) == []
-    cfg = parse(
+def test_orchestration_works_for_both_agent_tools() -> None:
+    """Claude fires the handoff from its ExitPlanMode hook. opencode switches
+    agents itself when the plan is accepted and reads the models from its own
+    config, so nothing is gated on the tool any more."""
+    assert validate(_orchestrated()) == []
+    oc = parse(
         {
             "repo": {"name": "app", "base_branch": "dev", "protected_branches": ["dev"]},
             "agent": {"tool": "opencode", "orchestration": {"enabled": True}},
         }
     )
-    assert any("orchestration" in e for e in validate(cfg))
+    assert validate(oc) == []
 
 
 # -- reaching the worktree's own servers --------------------------------------
@@ -634,9 +730,7 @@ def test_the_worktree_note_never_says_the_browser_is_no_use(tmp_path) -> None:
     envfile.write_worktree(tmp_path, {"BACKEND_PORT": "18042"}, ["BACKEND_PORT"])
     ctx = replace(_rctx(_served()), root=tmp_path)
     lines = [
-        ln
-        for ln in worktree_rules(ctx).splitlines()
-        if "browser" in ln.lower() or "Chrome" in ln
+        ln for ln in worktree_rules(ctx).splitlines() if "browser" in ln.lower() or "Chrome" in ln
     ]
     assert lines, "the note has to say the browser works, or nobody tries it"
     for line in lines:
@@ -684,8 +778,7 @@ def test_an_older_picker_binding_is_replaced() -> None:
     from wtx import machine
 
     old_wtx = (
-        "bind s choose-tree -wZ -O name -F "
-        "'#{session_name} #{?#{@wtx_state},[#{@wtx_state}],}'"
+        "bind s choose-tree -wZ -O name -F '#{session_name} #{?#{@wtx_state},[#{@wtx_state}],}'"
     )
     assert machine._is_old_tmux(old_wtx)
     assert machine._is_old_tmux("bind s choose-tree -wZ -O name")
@@ -764,9 +857,7 @@ def test_the_banner_carries_no_action(monkeypatch) -> None:
         stdout = "12\n"
 
     monkeypatch.setattr(notify, "_desktop_entry", lambda: "org.gnome.Terminal")
-    monkeypatch.setattr(
-        notify.subprocess, "run", lambda args, **kw: seen.append(args) or Done()
-    )
+    monkeypatch.setattr(notify.subprocess, "run", lambda args, **kw: seen.append(args) or Done())
     assert notify._send("app/feat-x", "permission", "", "") == "12"
     args = seen[0]
     assert "-A" not in args
@@ -816,7 +907,5 @@ def test_a_tile_shows_the_bottom_of_the_pane() -> None:
 def test_a_tile_with_no_room_shows_the_header() -> None:
     from wtx.monitor import render_peek
 
-    frame = render_peek(
-        ["one", "two"], session="s", state="", age="", rows=1, width=20
-    )
+    frame = render_peek(["one", "two"], session="s", state="", age="", rows=1, width=20)
     assert frame.split("\n") == ["s  running"]

@@ -121,6 +121,18 @@ agent being able to read the web at all.
 same way, ask rules before allow, because its docs are not reachable from
 everywhere wtx is developed. Claude Code is the one that has been checked.
 
+**`-m` beats opencode.json, so orchestration passes no `-m`.** opencode picks a
+model in this order: the `-m` flag, then the config, then the last model used.
+A plan brief runs at `phase = "plan"`, so `ctx.model` is the planner. Putting
+that on the command line pinned the planner for the whole session, and
+accepting the plan switched the agent and nothing else. With orchestration on
+the models live in `agent` in opencode.json, one per agent, and the flag is
+left off.
+
+**opencode's per agent config is `agent`, not `mode`.** `mode` is still read
+but its own schema says `@deprecated Use 'agent' field instead`, and the whole
+opencode handoff hangs off that one key.
+
 **Project settings cannot carry hooks.** The notify hooks live in the user's own
 settings file. They run in the agent's process, outside the Bash sandbox, which
 is exactly why they can talk to tmux when the agent itself cannot.

@@ -73,6 +73,150 @@ def test_init_does_not_overwrite_without_force(wtx_repo: Path) -> None:
         init_mod.write_all(wtx_repo, init_mod.scan(wtx_repo))
 
 
+def test_edit_answers_keeps_what_the_file_chose(repo: Path) -> None:
+    """A re-run must not reset what the human wrote into wtx.toml."""
+    answers = init_mod.scan(repo)
+    answers.pop("_notes", None)
+    init_mod.write_all(repo, answers)
+    text = (repo / "wtx.toml").read_text()
+    protect = (
+        "protected_branches = ["
+        + ", ".join(f'"{b}"' for b in answers["repo"]["protected_branches"])
+        + "]"
+    )
+    assert protect in text
+    text = text.replace(protect, 'protected_branches = ["dev", "stage"]')
+    assert 'plan_model = "fable"' in text
+    text = text.replace('plan_model = "fable"', 'plan_model = "grid"')
+    (repo / "wtx.toml").write_text(text)
+
+    merged = init_mod.edit_answers(repo)
+    assert merged["repo"]["protected_branches"] == ["dev", "stage"]
+    assert merged["agent"]["orchestration"]["plan_model"] == "grid"
+    # the keys the old file does not name come from the scan
+    assert merged["agent"]["orchestration"]["build_model"] == "opus"
+    assert merged["deps"]["python_version_file"] == ".python-version"
+
+
+def test_edit_answers_reports_where_the_repo_moved_on(repo: Path) -> None:
+    answers = init_mod.scan(repo)
+    answers.pop("_notes", None)
+    init_mod.write_all(repo, answers)
+
+    wf = repo / ".github" / "workflows"
+    wf.mkdir(parents=True)
+    (wf / "deploy.yml").write_text(
+        "name: deploy\non:\n  push:\n    branches:\n      - stage\njobs:\n  build:\n"
+    )
+    (repo / "backend" / "Makefile").write_text("BACKEND_PORT ?= 8010\ndev:\n\trun:\n")
+
+    merged = init_mod.edit_answers(repo)
+    marked = {c["what"]: c for c in merged["_changes"]}
+    assert marked["repo.protected_branches"]["scan"] == ["dev", "stage"]
+    assert marked["ports.backend.main"]["file"] == 8000
+    assert marked["ports.backend.main"]["scan"] == 8010
+    assert marked["panes.backend.cmd"]["file"] == "make run"
+    assert marked["panes.backend.cmd"]["scan"] == "make dev"
+    # the file's own values are what comes out, the skill asks before moving
+    assert merged["ports"]["family"][0]["main"] == 8000
+
+
+def test_edit_answers_reports_a_service_the_repo_grew(repo: Path) -> None:
+    """The file was written before the frontend existed. Keeping the file's
+    lists is right, but staying quiet about it means nobody ever adds the
+    port and the pane."""
+    answers = init_mod.scan(repo)
+    answers.pop("_notes", None)
+    answers["ports"]["family"] = [f for f in answers["ports"]["family"] if f["name"] != "frontend"]
+    answers["panes"]["pane"] = [p for p in answers["panes"]["pane"] if p["name"] != "frontend"]
+    init_mod.write_all(repo, answers)
+
+    merged = init_mod.edit_answers(repo)
+    marked = {c["what"]: c for c in merged["_changes"]}
+    assert marked["ports.frontend"]["file"] is None
+    assert marked["ports.frontend"]["scan"]["name"] == "frontend"
+    assert marked["panes.frontend"]["file"] is None
+    # the file's own lists still win, the skill asks before adding
+    assert [f["name"] for f in merged["ports"]["family"]] == ["backend"]
+
+
+def test_edit_answers_stays_quiet_about_what_the_file_dropped(repo: Path) -> None:
+    """A pane the human deleted is a choice, not drift."""
+    answers = init_mod.scan(repo)
+    answers.pop("_notes", None)
+    init_mod.write_all(repo, answers)
+    text = (repo / "wtx.toml").read_text()
+    (repo / "wtx.toml").write_text(text)
+
+    merged = init_mod.edit_answers(repo)
+    assert merged["_changes"] == []
+
+
+def test_edit_answers_without_wtx_toml_is_a_plain_scan(repo: Path) -> None:
+    merged = init_mod.edit_answers(repo)
+    assert merged["_changes"] == []
+    assert merged["repo"]["name"] == "remote"
+    assert merged["agent"]["tool"] == "claude"
+
+
+def test_edit_answers_on_a_broken_toml_says_what(repo: Path) -> None:
+    (repo / "wtx.toml").write_text("not = [valid\n")
+    with pytest.raises(ValueError):
+        init_mod.edit_answers(repo)
+
+
+def test_edit_answers_write_back_through_force(repo: Path) -> None:
+    """The re-run flow: merge, ask, write with --force, still valid."""
+    answers = init_mod.scan(repo)
+    answers.pop("_notes", None)
+    init_mod.write_all(repo, answers)
+    text = (
+        (repo / "wtx.toml")
+        .read_text()
+        .replace('base_branch = "dev"', 'base_branch = "main"')
+        .replace('protected_branches = ["dev"]', 'protected_branches = ["main", "dev"]')
+    )
+    (repo / "wtx.toml").write_text(text)
+
+    merged = init_mod.edit_answers(repo)
+    merged.pop("_notes", None)
+    merged.pop("_changes", None)
+    init_mod.write_all(repo, merged, force=True)
+
+    cfg = config_mod.load(repo / "wtx.toml")
+    assert config_mod.validate(cfg) == []
+    assert cfg.repo.base_branch == "main"
+
+
+def test_init_edit_prints_a_plan_and_writes_nothing(
+    wtx_repo: Path, capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(wtx_repo)
+    before = (wtx_repo / "wtx.toml").read_text()
+    assert main(["init", "--edit"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["_changes"] == []
+    assert out["repo"]["name"] == "remote"
+    assert (wtx_repo / "wtx.toml").read_text() == before
+
+
+@pytest.mark.parametrize(
+    "flags",
+    [
+        ["--edit", "--scan"],
+        ["--edit", "--from-json", "x.json"],
+        ["--scan", "--from-json", "x.json"],
+    ],
+)
+def test_init_takes_one_source_at_a_time(
+    wtx_repo: Path, monkeypatch: pytest.MonkeyPatch, flags: list
+) -> None:
+    """Silently ignoring one of them would write from answers nobody saw."""
+    monkeypatch.chdir(wtx_repo)
+    with pytest.raises(SystemExit):
+        main(["init", *flags])
+
+
 # -- setup --------------------------------------------------------------------
 
 
@@ -128,9 +272,7 @@ def test_setup_repairs_a_branch_that_tracks_its_base(wtx_repo: Path, fake_bin: P
         capture_output=True,
     )
     setup_mod.run_setup(context.load(root=path), start_tmux=False)
-    upstream = git_out(
-        ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], path
-    )
+    upstream = git_out(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], path)
     assert upstream != "origin/dev"
 
 
@@ -316,9 +458,7 @@ def test_a_pairing_is_remembered_on_the_next_setup(
     assert envfile.read_worktree(path)["TCM_BRANCH"] == "feat/sticky-model"
 
 
-def test_an_unpaired_pair_repo_is_read_only(
-    wtx_repo: Path, sibling: Path, fake_bin: Path
-) -> None:
+def test_an_unpaired_pair_repo_is_read_only(wtx_repo: Path, sibling: Path, fake_bin: Path) -> None:
     _add_repos_block(wtx_repo, sibling)
     path = make_worktree(wtx_repo, "feat/unpaired")
     setup_mod.run_setup(context.load(root=path), start_tmux=False)
@@ -328,9 +468,7 @@ def test_an_unpaired_pair_repo_is_read_only(
     assert f"Edit(//{main_path.lstrip('/')}/**)" in settings["permissions"]["deny"]
 
 
-def test_teardown_keeps_the_paired_worktree(
-    wtx_repo: Path, sibling: Path, fake_bin: Path
-) -> None:
+def test_teardown_keeps_the_paired_worktree(wtx_repo: Path, sibling: Path, fake_bin: Path) -> None:
     from wtx.teardown import run_teardown
 
     _add_repos_block(wtx_repo, sibling)
@@ -357,12 +495,24 @@ def test_opencode_backend_writes_its_own_config(wtx_repo: Path, fake_bin: Path) 
     assert envfile.read_worktree(path)["WTX_AGENT"] == "opencode"
 
 
+def test_opencode_orchestration_writes_a_model_per_agent(wtx_repo: Path, fake_bin: Path) -> None:
+    """The TUI switches agents itself when the plan is accepted, and the model
+    follows the agent through `mode`: the top level model stays the
+    worktree's own one."""
+    _enable_orchestration(wtx_repo, plan_model='"planner"', build_model='"worker"')
+    path = make_worktree(wtx_repo, "feat/oc-plan")
+    setup_mod.run_setup(
+        context.load(root=path), agent_tool="opencode", llm="qwen", start_tmux=False
+    )
+    data = json.loads((path / "opencode.json").read_text())
+    assert data["model"] == "qwen"
+    assert data["agent"] == {"plan": {"model": "planner"}, "build": {"model": "worker"}}
+
+
 # -- tmux ---------------------------------------------------------------------
 
 
-def test_a_session_is_built_with_one_pane_per_config_entry(
-    wtx_repo: Path, fake_bin: Path
-) -> None:
+def test_a_session_is_built_with_one_pane_per_config_entry(wtx_repo: Path, fake_bin: Path) -> None:
     path = make_worktree(wtx_repo, "feat/tmux")
     setup_mod.run_setup(context.load(root=path), start_tmux=True)
     roles = [c for c in calls_of(fake_bin, "tmux") if "@wt_role" in c]
@@ -415,9 +565,7 @@ def test_land_refuses_from_a_worktree(wtx_repo: Path, fake_bin: Path, monkeypatc
 def test_dry_run_changes_nothing(wtx_repo: Path, fake_bin: Path, monkeypatch, capsys) -> None:
     path = make_worktree(wtx_repo, "feat/dry")
     setup_mod.run_setup(context.load(root=path), start_tmux=False)
-    subprocess.run(
-        ["git", "commit", "-q", "--allow-empty", "-m", "w"], cwd=path, check=True
-    )
+    subprocess.run(["git", "commit", "-q", "--allow-empty", "-m", "w"], cwd=path, check=True)
     before = git_out(["rev-parse", "dev"], wtx_repo)
     monkeypatch.chdir(wtx_repo)
     run(["--dry-run", "land", "feat/dry", "--local"])
@@ -505,9 +653,7 @@ def test_a_settled_session_drops_its_notification(
     assert not notify.id_file(ctx.session).exists()
 
 
-def test_a_dead_session_drops_its_notification(
-    wtx_repo: Path, fake_bin: Path, monkeypatch
-) -> None:
+def test_a_dead_session_drops_its_notification(wtx_repo: Path, fake_bin: Path, monkeypatch) -> None:
     """A banner for a worktree that no longer exists sits in the list for ever,
     and clicking it opens nothing."""
     from wtx import notify, teardown
@@ -575,9 +721,7 @@ def test_wt_toml_hooks_are_lists(wtx_repo: Path) -> None:
         assert value[0].startswith("wtx hook ")
 
 
-def test_with_alone_pairs_on_the_app_branch(
-    wtx_repo: Path, sibling: Path, fake_bin: Path
-) -> None:
+def test_with_alone_pairs_on_the_app_branch(wtx_repo: Path, sibling: Path, fake_bin: Path) -> None:
     _add_repos_block(wtx_repo, sibling)
     path = make_worktree(wtx_repo, "feat/same")
     setup_mod.run_setup(context.load(root=path), with_repos={"model": ""}, start_tmux=False)
@@ -652,7 +796,9 @@ def test_land_refuses_a_branch_cut_from_a_newer_protected_branch(
     path.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(
         ["git", "worktree", "add", "-q", "-b", "feat/drag", str(path), "origin/stage"],
-        cwd=wtx_repo, check=True, capture_output=True,
+        cwd=wtx_repo,
+        check=True,
+        capture_output=True,
     )
     subprocess.run(["git", "commit", "-q", "--allow-empty", "-m", "w"], cwd=path, check=True)
 
@@ -730,9 +876,7 @@ def no_fork(monkeypatch):
     from wtx import orchestrate
 
     fired: list[Path] = []
-    monkeypatch.setattr(
-        orchestrate, "_spawn", lambda record, **kw: fired.append(record) or True
-    )
+    monkeypatch.setattr(orchestrate, "_spawn", lambda record, **kw: fired.append(record) or True)
     return fired
 
 
@@ -746,9 +890,7 @@ def _enable_orchestration(root: Path, **over) -> None:
             skipping = line.strip() == "[agent.orchestration]"
         if not skipping:
             kept.append(line)
-    (root / "wtx.toml").write_text(
-        "\n".join(kept) + f"\n\n[agent.orchestration]\n{body}\n"
-    )
+    (root / "wtx.toml").write_text("\n".join(kept) + f"\n\n[agent.orchestration]\n{body}\n")
 
 
 def _accept(path: Path, plan: str, *, conversation: str = "conv-1") -> str:
@@ -778,9 +920,7 @@ def test_an_accepted_plan_continues_on_the_implementation_model(
     path = make_worktree(wtx_repo, "feat/plan")
     setup_mod.run_setup(context.load(root=path), start_tmux=True)
 
-    answer = json.loads(
-        _accept(path, "1. write it\n\nwtx-size: large\n", conversation="conv-abc")
-    )
+    answer = json.loads(_accept(path, "1. write it\n\nwtx-size: large\n", conversation="conv-abc"))
     assert answer["continue"] is False
     assert "opus" in answer["stopReason"]
 
@@ -789,9 +929,7 @@ def test_an_accepted_plan_continues_on_the_implementation_model(
 
     sent = [c for c in calls_of(fake_bin, "tmux") if "send-keys" in c]
     assert any(
-        "claude -r conv-abc --model opus --permission-mode auto "
-        "--effort xhigh" in c
-        for c in sent
+        "claude -r conv-abc --model opus --permission-mode auto --effort xhigh" in c for c in sent
     )
 
 
@@ -821,12 +959,10 @@ def test_a_plan_with_no_conversation_to_resume_is_not_stopped(
     path = make_worktree(wtx_repo, "feat/no-conv")
     setup_mod.run_setup(context.load(root=path), start_tmux=True)
 
-    assert _accept(path, "1. do it\n\nwtx-size: large\n", conversation="") == ''
+    assert _accept(path, "1. do it\n\nwtx-size: large\n", conversation="") == ""
 
 
-def test_a_repo_without_orchestration_is_left_alone(
-    wtx_repo: Path, fake_bin: Path
-) -> None:
+def test_a_repo_without_orchestration_is_left_alone(wtx_repo: Path, fake_bin: Path) -> None:
     """Every repo that has not opted in must see no change at all."""
     from wtx import orchestrate
 
@@ -903,9 +1039,7 @@ def test_a_briefed_session_starts_on_the_planning_model(
     assert any("--model fable --permission-mode plan" in c for c in sent)
 
 
-def test_the_hook_fires_the_handoff_itself(
-    wtx_repo: Path, fake_bin: Path, no_fork: list
-) -> None:
+def test_the_hook_fires_the_handoff_itself(wtx_repo: Path, fake_bin: Path, no_fork: list) -> None:
     """Stopping the turn from a hook means Claude Code never runs the Stop
     hook, so a handoff left for it sits there forever. Checked against 2.1.267,
     where the record was written and nothing ever claimed it."""
@@ -1027,9 +1161,7 @@ def test_the_plan_file_can_come_from_the_tool_response(
     assert json.loads(answer)["continue"] is False
 
 
-def test_the_tool_can_carry_nothing_but_the_response(
-    wtx_repo: Path, fake_bin: Path
-) -> None:
+def test_the_tool_can_carry_nothing_but_the_response(wtx_repo: Path, fake_bin: Path) -> None:
     """The shape a model that follows the 2.1.267 tool description produces:
     ExitPlanMode called with no arguments, the plan only in the result."""
     from wtx import orchestrate
@@ -1122,9 +1254,7 @@ def test_a_hook_finds_the_session_of_a_repo_that_renamed_itself(
     URL instead would record a handoff nothing ever drains."""
     from wtx import notify
 
-    text = (wtx_repo / "wtx.toml").read_text().replace(
-        'name = "remote"', 'name = "renamed-app"', 1
-    )
+    text = (wtx_repo / "wtx.toml").read_text().replace('name = "remote"', 'name = "renamed-app"', 1)
     (wtx_repo / "wtx.toml").write_text(text)
     path = make_worktree(wtx_repo, "feat/renamed")
     setup_mod.run_setup(context.load(root=path), start_tmux=True)
@@ -1149,18 +1279,25 @@ def test_a_pending_handoff_shows_in_status(
     assert "handoff pending: large plan -> opus" in capsys.readouterr().out
 
 
-def test_plan_effort_survives_a_later_setup(
-    wtx_repo: Path, fake_bin: Path, monkeypatch
-) -> None:
+def test_plan_effort_survives_a_later_setup(wtx_repo: Path, fake_bin: Path, monkeypatch) -> None:
     """A flag passed once to `wtx go` has nowhere to live but .env.worktree.
     The handoff and every later setup rebuild the context from scratch."""
     _enable_orchestration(wtx_repo, plan_model='"fable"')
     make_worktree(wtx_repo, "feat/big-plan")
     monkeypatch.chdir(wtx_repo)
-    run([
-        "go", "feat/big-plan", "--prompt", "Rewrite the ports module.",
-        "--plan-effort", "high", "--plan-model", "opus", "--no-attach",
-    ])
+    run(
+        [
+            "go",
+            "feat/big-plan",
+            "--prompt",
+            "Rewrite the ports module.",
+            "--plan-effort",
+            "high",
+            "--plan-model",
+            "opus",
+            "--no-attach",
+        ]
+    )
     path = wtx_repo / ".claude" / "worktrees" / "feat-big-plan"
     values = envfile.read_worktree(path)
     assert values["WTX_PLAN_EFFORT"] == "high"
@@ -1254,9 +1391,7 @@ def test_every_file_wtx_generates_is_ignored(wtx_repo: Path, fake_bin: Path) -> 
     assert untracked == "", f"setup left the worktree dirty:\n{untracked}"
 
 
-def test_setup_tells_the_agent_its_ports_and_its_logs(
-    wtx_repo: Path, fake_bin: Path
-) -> None:
+def test_setup_tells_the_agent_its_ports_and_its_logs(wtx_repo: Path, fake_bin: Path) -> None:
     path = make_worktree(wtx_repo, "feat/note")
     setup_mod.run_setup(context.load(root=path), start_tmux=False)
     ctx = context.load(root=path)
@@ -1266,9 +1401,7 @@ def test_setup_tells_the_agent_its_ports_and_its_logs(
     assert ".wt-logs/backend.log" in note
 
 
-def test_wtx_curl_reaches_this_worktrees_port(
-    wtx_repo: Path, fake_bin: Path, monkeypatch
-) -> None:
+def test_wtx_curl_reaches_this_worktrees_port(wtx_repo: Path, fake_bin: Path, monkeypatch) -> None:
     """The agent never has to know the number, and cannot aim this anywhere
     but its own checkout."""
     path = make_worktree(wtx_repo, "feat/curl")
@@ -1292,9 +1425,7 @@ def test_wtx_curl_names_the_families_it_knows(
     assert "backend" in capsys.readouterr().err
 
 
-def test_both_agent_facing_documents_name_wtx_curl(
-    wtx_repo: Path, fake_bin: Path
-) -> None:
+def test_both_agent_facing_documents_name_wtx_curl(wtx_repo: Path, fake_bin: Path) -> None:
     """It is the only way an agent reaches these servers, and nothing about it
     is guessable: not the command, not the port. Both files it reads say so."""
     path = make_worktree(wtx_repo, "feat/documented")

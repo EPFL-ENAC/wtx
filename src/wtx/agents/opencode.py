@@ -23,9 +23,7 @@ SCHEMA = "https://opencode.ai/config.json"
 
 def _baseline() -> dict:
     text = (
-        resources.files("wtx.templates.opencode")
-        .joinpath("permission.baseline.json")
-        .read_text()
+        resources.files("wtx.templates.opencode").joinpath("permission.baseline.json").read_text()
     )
     return json.loads(text)
 
@@ -93,11 +91,21 @@ class OpencodeAgent:
 
         out: dict = {"$schema": SCHEMA, "permission": permission}
         model = self._model(ctx, ctx.model)
+        # When the plan is accepted opencode switches agents itself, and the
+        # model follows the agent. There is no respawn to pass a build model
+        # to, so with orchestration on the models ride the file, one per
+        # agent under `agent`. The top level model stays the worktree's own
+        # one: a plan brief must not change it, see docs/traps.md.
+        orch = ctx.cfg.agent.orchestration
+        plan_model = build_model = ""
+        if orch.enabled:
+            plan_model = self._model(ctx, ctx.plan_model or orch.plan_model)
+            build_model = self._model(ctx, orch.build_model)
         if model:
             out["model"] = model
-            out["mode"] = {
-                cfg.agent.opencode.build_agent: {"model": model},
-                cfg.agent.opencode.plan_agent: {"model": model},
+            out["agent"] = {
+                cfg.agent.opencode.plan_agent: {"model": plan_model or model},
+                cfg.agent.opencode.build_agent: {"model": build_model or model},
             }
         small = cfg.agent.opencode.small_model or cfg.agent.subagent_model
         small_full = self._model(ctx, small)
@@ -119,8 +127,16 @@ class OpencodeAgent:
 
     def launch_cmd(self, ctx: RenderContext, *, brief: bool) -> str:
         """opencode's TUI takes no starting message, so a brief runs headless
-        first and the TUI then continues that same session."""
-        model = self._model(ctx, ctx.model)
+        first and the TUI then continues that same session.
+
+        With orchestration on there is no `-m` at all. `-m` is the first thing
+        opencode reads when it picks a model, ahead of the config file, so a
+        planner passed on the command line would stay the model for the whole
+        session and accepting the plan would switch the agent and nothing else.
+        The models sit in `agent` in opencode.json instead, and each agent
+        brings its own. See docs/traps.md.
+        """
+        model = "" if ctx.cfg.agent.orchestration.enabled else self._model(ctx, ctx.model)
         flags = f" -m {model}" if model else ""
         if brief:
             variant = f" --variant {ctx.cfg.agent.effort}" if ctx.cfg.agent.effort else ""
@@ -135,11 +151,13 @@ class OpencodeAgent:
         return f"opencode{flags} -c || opencode{flags}"
 
     def handoff_cmd(self, ctx: RenderContext, *, session: str, prompt: str) -> str:
-        """opencode has no accepted-plan hook to hand off from, and wtx.toml
-        validation refuses orchestration for it. See docs/opencode.md."""
+        """Empty, on purpose: no accepted-plan hook fires the handoff. opencode
+        switches agents itself when the plan is accepted, and the build model
+        follows the agent through `agent` in opencode.json, so there is no pane
+        to respawn either. See `[agent.opencode]` in docs/schema.md."""
         return ""
 
     def hook_fragment(self) -> dict:
         """opencode signals its state through a plugin, not a settings hook.
-        That plugin is the next piece of work, see docs/opencode.md."""
+        That plugin is the next piece of work."""
         return {}

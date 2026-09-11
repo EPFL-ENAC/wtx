@@ -59,9 +59,7 @@ def run(cwd: Path | None = None) -> Report:
     checks: list[Check] = []
 
     checks.append(_binary("git", "install git"))
-    checks.append(
-        _binary("wt", "go install github.com/timvw/wt@latest, then wt init")
-    )
+    checks.append(_binary("wt", "go install github.com/timvw/wt@latest, then wt init"))
     checks.append(_binary("tmux", "install tmux"))
     if which("tmux"):
         checks.append(
@@ -74,7 +72,9 @@ def run(cwd: Path | None = None) -> Report:
             )
         )
     checks.append(
-        _binary("gh", "install the GitHub CLI and run gh auth login, needed by wtx land", hard=False)
+        _binary(
+            "gh", "install the GitHub CLI and run gh auth login, needed by wtx land", hard=False
+        )
     )
     checks.append(
         _binary("ss", "install iproute2, without it wtx cannot see used ports", hard=False)
