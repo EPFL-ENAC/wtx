@@ -96,10 +96,15 @@ def worktree_rules(ctx: RenderContext) -> str:
             f"wtx curl {first} /items -X POST -d @body.json",
             "```",
             "",
-            "It is the way to test these servers. Plain `curl http://127.0.0.1:<port>/`",
-            "works for a GET and prompts on anything past one, and nothing else here",
-            "reaches a local port at all: a browser extension cannot open localhost,",
-            "and neither can the Bash sandbox, which is why `wtx curl` runs outside it.",
+            "It is the way to test these servers from the shell. Plain",
+            "`curl http://127.0.0.1:<port>/` works for a GET and prompts on anything",
+            "past one, and the Bash sandbox cannot reach a local port, which is why",
+            "`wtx curl` runs outside it.",
+            "",
+            "A browser opens these URLs fine. Claude in Chrome drives a real Chrome,",
+            "outside the sandbox, so localhost is not blocked for it: open a URL",
+            "from the list above, click through the page, take a screenshot. Use",
+            "the ports listed here only, the other ones belong to other agents.",
         ]
     if logs:
         out += [

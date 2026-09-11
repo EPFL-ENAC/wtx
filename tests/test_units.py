@@ -624,9 +624,199 @@ def test_the_worktree_note_names_the_ports_and_the_logs(tmp_path) -> None:
     assert "tail -f" in text  # named as the thing not to do
 
 
+def test_the_worktree_note_never_says_the_browser_is_no_use(tmp_path) -> None:
+    """It used to say Claude in Chrome could not open localhost. That stopped
+    being true, the line stayed, and ten worktrees in a row read it and decided
+    they had no way to look at their own frontend."""
+    from wtx import envfile
+    from wtx.agents.claude import worktree_rules
+
+    envfile.write_worktree(tmp_path, {"BACKEND_PORT": "18042"}, ["BACKEND_PORT"])
+    ctx = replace(_rctx(_served()), root=tmp_path)
+    lines = [
+        ln
+        for ln in worktree_rules(ctx).splitlines()
+        if "browser" in ln.lower() or "Chrome" in ln
+    ]
+    assert lines, "the note has to say the browser works, or nobody tries it"
+    for line in lines:
+        assert "cannot" not in line and "not a way" not in line, line
+
+
 def test_a_repo_with_no_servers_gets_no_note(tmp_path) -> None:
     """Nothing to say is better than a section saying nothing."""
     from wtx.agents.claude import worktree_rules
 
     ctx = replace(_rctx(parse({"repo": {"name": "app"}})), root=tmp_path)
     assert worktree_rules(ctx) == ""
+
+
+# -- the session picker ------------------------------------------------------
+
+
+def test_the_picker_lists_sessions_not_windows() -> None:
+    """-w expands every session to its one "dev" window, so each session takes
+    two lines and moving to the next one is two key presses."""
+    from wtx import machine
+
+    binding = [ln for ln in machine.TMUX_LINES if ln.startswith("bind s ")]
+    assert len(binding) == 1
+    assert "choose-tree -sZ" in binding[0]
+    assert "-wZ" not in binding[0]
+
+
+def test_the_picker_paints_a_waiting_session() -> None:
+    """The state is read by tmux itself from the session option, so the picker
+    stays instant. No #() anywhere in the format."""
+    from wtx import machine, notify
+
+    fmt = machine.picker_format()
+    assert "#(" not in fmt
+    assert "#{session_name}" in fmt
+    for state, style in notify.TMUX_STYLE.items():
+        assert f"#{{==:#{{@wtx_state}},{state}}}" in fmt
+        assert f"#[{style}]" in fmt
+
+
+def test_an_older_picker_binding_is_replaced() -> None:
+    """Two `bind s` lines in .tmux.conf and the last one read wins, which is
+    not the one wtx just appended."""
+    from wtx import machine
+
+    old_wtx = (
+        "bind s choose-tree -wZ -O name -F "
+        "'#{session_name} #{?#{@wtx_state},[#{@wtx_state}],}'"
+    )
+    assert machine._is_old_tmux(old_wtx)
+    assert machine._is_old_tmux("bind s choose-tree -wZ -O name")
+    assert machine._is_old_tmux("bind g run-shell 'wtx monitor --grid --old'")
+    for line in machine.TMUX_LINES:
+        assert not machine._is_old_tmux(line), line
+    assert not machine._is_old_tmux(f"# replaced by wtx: {old_wtx}")
+    assert not machine._is_old_tmux("bind g display-popup -E htop")
+
+
+# -- the desktop notification ------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        (
+            "/org/freedesktop/Notifications: org.freedesktop.Notifications"
+            ".NotificationClosed (uint32 7, uint32 2)",
+            2,
+        ),
+        (
+            "/org/freedesktop/Notifications: org.freedesktop.Notifications"
+            ".NotificationClosed (uint32 7, uint32 3)",
+            3,
+        ),
+        (
+            "/org/freedesktop/Notifications: org.freedesktop.Notifications"
+            ".NotificationClosed (uint32 8, uint32 2)",
+            0,
+        ),
+        (
+            "/org/freedesktop/Notifications: org.freedesktop.Notifications"
+            ".ActionInvoked (uint32 7, 'default')",
+            0,
+        ),
+        ("", 0),
+    ],
+)
+def test_the_close_reason_is_read_from_the_bus(line: str, expected: int) -> None:
+    from wtx import notify
+
+    assert notify.closed_reason(line, "7") == expected
+
+
+def test_only_a_click_counts_as_a_click() -> None:
+    """Reason 3 is wtx closing the notification itself. Acting on it would
+    send the client to a session the moment the agent starts working again."""
+    from wtx import notify
+
+    assert notify.CLOSED_BY_USER == 2
+
+
+def test_the_desktop_entry_can_be_forced(monkeypatch) -> None:
+    """The guess reads PATH, which is wrong on a machine with two terminals."""
+    from wtx import notify
+
+    monkeypatch.setenv("WTX_DESKTOP_ENTRY", "com.mitchellh.ghostty")
+    assert notify._desktop_entry() == "com.mitchellh.ghostty"
+    monkeypatch.setenv("WTX_DESKTOP_ENTRY", "  ")
+    monkeypatch.setattr(notify, "which", lambda name: "/usr/bin/x" if name == "kitty" else None)
+    assert notify._desktop_entry() == "kitty"
+    monkeypatch.setattr(notify, "which", lambda name: None)
+    assert notify._desktop_entry() == ""
+
+
+def test_the_banner_carries_no_action(monkeypatch) -> None:
+    """A notification with a default action makes GNOME emit ActionInvoked and
+    nothing else. Without one it raises the app named by desktop-entry, which
+    is the whole point: the right workspace, not just the right session."""
+    from wtx import notify
+
+    seen: list[list[str]] = []
+
+    class Done:
+        stdout = "12\n"
+
+    monkeypatch.setattr(notify, "_desktop_entry", lambda: "org.gnome.Terminal")
+    monkeypatch.setattr(
+        notify.subprocess, "run", lambda args, **kw: seen.append(args) or Done()
+    )
+    assert notify._send("app/feat-x", "permission", "", "") == "12"
+    args = seen[0]
+    assert "-A" not in args
+    assert "string:desktop-entry:org.gnome.Terminal" in args
+    assert "-e" not in args, "a waiting session belongs in the list"
+
+    seen.clear()
+    notify._send("app/feat-x", "stop", "", "12")
+    assert "-e" in seen[0], "a finished run is a banner, not a list entry"
+    assert seen[0][seen[0].index("-r") + 1] == "12"
+
+
+# -- one grid tile -----------------------------------------------------------
+
+
+def test_a_clipped_line_keeps_its_colours() -> None:
+    """A plain slice can cut inside an escape sequence, and the leftover then
+    paints the rest of the tile."""
+    from wtx.monitor import clip
+
+    assert clip("\x1b[1;31mHELLO\x1b[0m world", 7) == "\x1b[1;31mHELLO\x1b[0m w"
+    assert clip("abc", 10) == "abc"
+    assert clip("abc", 0) == ""
+    assert clip("\u65e5\u672c\u8a9e", 5) == "\u65e5\u672c", "a wide glyph takes two columns"
+
+
+def test_a_tile_shows_the_bottom_of_the_pane() -> None:
+    """The prompt, and the question it is asking, are at the bottom."""
+    from wtx.monitor import render_peek
+
+    frame = render_peek(
+        ["one", "two", "three", "four"],
+        session="app/feat-x",
+        state="permission",
+        age="3m",
+        rows=3,
+        width=40,
+    )
+    lines = frame.split("\n")
+    assert len(lines) == 3
+    assert "app/feat-x" in lines[0] and "permission" in lines[0]
+    assert lines[0].startswith("\x1b[1;33m"), "a waiting tile is painted"
+    assert "three" in lines[1] and "four" in lines[2]
+    assert all(ln.endswith("\x1b[0m") for ln in lines)
+
+
+def test_a_tile_with_no_room_shows_the_header() -> None:
+    from wtx.monitor import render_peek
+
+    frame = render_peek(
+        ["one", "two"], session="s", state="", age="", rows=1, width=20
+    )
+    assert frame.split("\n") == ["s  running"]

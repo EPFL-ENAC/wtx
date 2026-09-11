@@ -285,7 +285,18 @@ def _go_all(main: Path, cfg: config_mod.WtxConfig) -> int:
     if tmux.available() and count:
         from .proc import run
 
-        run(["tmux", "choose-tree", "-wZ", "-O", "name"], check=False)
+        run(
+            [
+                "tmux",
+                "choose-tree",
+                "-sZ",
+                "-O",
+                "name",
+                "-F",
+                machine.picker_format(),
+            ],
+            check=False,
+        )
     return 0
 
 
@@ -537,6 +548,8 @@ def cmd_tmux_status(args: argparse.Namespace) -> int:
 
 
 def cmd_monitor(args: argparse.Namespace) -> int:
+    if args.peek:
+        return monitor.peek(args.peek)
     if args.serve:
         return monitor.serve(interval=args.interval)
     return monitor.open_board(grid=args.grid, interval=args.interval)
@@ -723,8 +736,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(func=cmd_tmux_status)
 
     s = sub.add_parser("monitor", help="every session on one screen")
-    s.add_argument("--grid", action="store_true", help="also tile read-only views")
+    s.add_argument("--grid", action="store_true", help="tile every agent pane")
     s.add_argument("--serve", action="store_true", help=argparse.SUPPRESS)
+    s.add_argument("--peek", default="", help=argparse.SUPPRESS)
     s.add_argument("--interval", type=float, default=2.0)
     s.set_defaults(func=cmd_monitor)
 

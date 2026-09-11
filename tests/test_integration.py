@@ -480,6 +480,88 @@ def test_notify_writes_a_state_and_the_status_line(
     assert notify.status_line() == ""
 
 
+def test_a_settled_session_drops_its_notification(
+    wtx_repo: Path, fake_bin: Path, monkeypatch
+) -> None:
+    """Every permission prompt used to leave a banner in the GNOME list. A day
+    of agents filled it, and a full list makes the shell crawl."""
+    from wtx import notify
+
+    path = make_worktree(wtx_repo, "feat/close")
+    setup_mod.run_setup(context.load(root=path), start_tmux=True)
+    ctx = context.load(root=path)
+    monkeypatch.setattr(notify, "session_for", lambda cwd: ctx.session)
+    monkeypatch.setattr(notify, "_spawn_desktop", lambda *a, **k: None)
+    monkeypatch.setattr("sys.stdin", type("S", (), {"isatty": lambda s: True})())
+
+    # pid 0 is nobody, so nothing is killed. The id is what matters here.
+    notify.id_file(ctx.session).write_text("7 0")
+    notify.handle("permission", cwd=path)
+    notify.handle("running", cwd=path)
+
+    closed = [c for c in calls_of(fake_bin, "gdbus") if "CloseNotification" in c]
+    assert len(closed) == 1
+    assert closed[0].endswith(" 7")
+    assert not notify.id_file(ctx.session).exists()
+
+
+def test_a_dead_session_drops_its_notification(
+    wtx_repo: Path, fake_bin: Path, monkeypatch
+) -> None:
+    """A banner for a worktree that no longer exists sits in the list for ever,
+    and clicking it opens nothing."""
+    from wtx import notify, teardown
+
+    path = make_worktree(wtx_repo, "feat/gone")
+    setup_mod.run_setup(context.load(root=path), start_tmux=True)
+    ctx = context.load(root=path)
+    notify.write_state(ctx.session, "permission")
+    notify.id_file(ctx.session).write_text("9 0")
+
+    # What the pre_remove hook runs, before the worktree goes.
+    teardown.run_teardown(ctx)
+
+    closed = [c for c in calls_of(fake_bin, "gdbus") if "CloseNotification" in c]
+    assert closed and closed[-1].endswith(" 9")
+    assert notify.read_state(ctx.session) == {}
+    assert not notify.id_file(ctx.session).exists()
+
+
+def test_the_grid_shows_the_waiting_sessions_first(
+    wtx_repo: Path, fake_bin: Path, monkeypatch
+) -> None:
+    """One tile per session, and the one asking for something is tile one."""
+    import os
+
+    from wtx import monitor, notify
+
+    Path(os.environ["WTX_TEST_SESSIONS"]).write_text("app/calm\napp/asking\n")
+    notify.write_state("app/asking", "permission")
+
+    monitor._build_grid()
+    tmux_calls = calls_of(fake_bin, "tmux")
+    windows = [c for c in tmux_calls if c.startswith("new-window")]
+    splits = [c for c in tmux_calls if c.startswith("split-window")]
+    assert len(windows) == 1 and "app/asking" in windows[0]
+    assert len(splits) == 1 and "app/calm" in splits[0]
+    assert any(c.startswith("select-layout") and c.endswith("tiled") for c in tmux_calls)
+    assert any("pane-border-status top" in c for c in tmux_calls)
+
+
+def test_the_grid_never_tiles_the_monitor_itself(
+    wtx_repo: Path, fake_bin: Path, monkeypatch
+) -> None:
+    """A tile peeking at the monitor session draws the grid inside the grid."""
+    import os
+
+    from wtx import monitor
+
+    Path(os.environ["WTX_TEST_SESSIONS"]).write_text(f"{monitor.SESSION}\napp/one\n")
+    monitor._build_grid()
+    peeked = [c.split("--peek ", 1)[1] for c in calls_of(fake_bin, "tmux") if "--peek " in c]
+    assert peeked == ["app/one"]
+
+
 def test_wt_toml_hooks_are_lists(wtx_repo: Path) -> None:
     """wt runs a hook given as a list. A plain string is accepted by the TOML
     parser and then silently never runs, so a whole repo looks set up and is

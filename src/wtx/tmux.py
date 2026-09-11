@@ -212,6 +212,27 @@ def attach(session: str) -> None:
         run(["tmux", "attach-session", "-t", f"={session}"], check=False)
 
 
+def focus_session(session: str) -> bool:
+    """Put the session in front of whoever is looking, from anywhere.
+
+    attach() switches the client that runs it, and a notification worker or a
+    `run-shell` job is not one: it has no terminal, so tmux has to guess which
+    client was meant. This names the client that was used last instead, and
+    works from outside tmux too. False when nobody is attached.
+
+    #{client_activity} is the plain epoch number (t: is what formats it), so
+    the lines sort by time.
+    """
+    if not available() or not has_session(session):
+        return False
+    clients = _tmux_out(["list-clients", "-F", "#{client_activity} #{client_name}"]).splitlines()
+    newest = sorted(line for line in clients if " " in line)
+    if not newest:
+        return False
+    _tmux(["switch-client", "-c", newest[-1].split(" ", 1)[1], "-t", f"={session}"])
+    return True
+
+
 def respawn_agent(ctx: Ctx, cmd: str, *, note: str = "") -> bool:
     """Restart the agent pane on a new command line.
 

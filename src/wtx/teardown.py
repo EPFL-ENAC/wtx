@@ -7,7 +7,7 @@ that is not pushed.
 
 from __future__ import annotations
 
-from . import envfile, ports, repos, tmux
+from . import envfile, notify, ports, repos, tmux
 from .context import Ctx
 from .proc import run_shell, say, warn
 
@@ -18,6 +18,10 @@ def run_teardown(ctx: Ctx) -> None:
         say(f"hook pre_teardown: {cfg.hooks.pre_teardown}")
         if run_shell(cfg.hooks.pre_teardown, cwd=ctx.root, check=False) != 0:
             warn("pre_teardown hook failed, continuing")
+
+    # Before the session goes: a banner for a worktree that no longer exists
+    # sits in the desktop list for ever, and clicking it opens nothing.
+    notify.settle(ctx.session)
 
     if tmux.available() and tmux.has_session(ctx.session):
         tmux.kill_session(ctx.session)

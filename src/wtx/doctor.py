@@ -82,6 +82,14 @@ def run(cwd: Path | None = None) -> Report:
     checks.append(
         _binary("notify-send", "install libnotify-bin for desktop notifications", hard=False)
     )
+    checks.append(
+        _binary(
+            "gdbus",
+            "install libglib2.0-bin, without it a clicked notification cannot "
+            "bring the terminal to the front",
+            hard=False,
+        )
+    )
 
     if which("wt"):
         cfg_file = Path("~/.config/wt/config.toml").expanduser()
