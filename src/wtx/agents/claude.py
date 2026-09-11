@@ -124,11 +124,7 @@ def worktree_rules(ctx: RenderContext) -> str:
 
 
 def _baseline() -> dict:
-    text = (
-        resources.files("wtx.templates.claude")
-        .joinpath("settings.baseline.json")
-        .read_text()
-    )
+    text = resources.files("wtx.templates.claude").joinpath("settings.baseline.json").read_text()
     return json.loads(text)
 
 
@@ -249,9 +245,7 @@ class ClaudeAgent:
 
         model = ctx.cfg.agent.explore_agent_model
         if model:
-            written += self._write(
-                ctx.root / EXPLORE_PATH, EXPLORE_AGENT.format(model=model)
-            )
+            written += self._write(ctx.root / EXPLORE_PATH, EXPLORE_AGENT.format(model=model))
         return written
 
     def _write(self, target: Path, text: str) -> list[Path]:
@@ -278,8 +272,7 @@ class ClaudeAgent:
         """
         if brief:
             return (
-                f"mv {PROMPT_FILE} {PROMPT_SENT} && "
-                f'claude{self._flags(ctx)} "$(cat {PROMPT_SENT})"'
+                f'mv {PROMPT_FILE} {PROMPT_SENT} && claude{self._flags(ctx)} "$(cat {PROMPT_SENT})"'
             )
         flags = f" --model {ctx.model}" if ctx.model else ""
         return f"claude{flags} --continue || claude{flags}"
@@ -311,6 +304,7 @@ class ClaudeAgent:
         one moment wtx can swap the model without losing anything. See
         orchestrate.py.
         """
+
         def entry(matcher: str, command: str) -> dict:
             return {
                 "matcher": matcher,

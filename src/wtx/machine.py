@@ -336,9 +336,7 @@ def show(agent_tool: str = "claude") -> str:
         lines.append("")
     if agent_tool == "claude":
         for name in shipped_skills():
-            lines.append(
-                f"--- {Path.home() / '.claude' / 'skills' / name}: the /{name} skill"
-            )
+            lines.append(f"--- {Path.home() / '.claude' / 'skills' / name}: the /{name} skill")
             lines.append("")
     lines.append(
         "A coding agent cannot write these files, and should not: they decide what "

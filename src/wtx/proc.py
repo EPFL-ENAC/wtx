@@ -92,9 +92,7 @@ def run_shell(
         loc = f" (in {cwd})" if cwd else ""
         print(f"would run{loc}: {command}")
         return 0
-    proc = subprocess.run(
-        ["sh", "-c", command], cwd=cwd, env=_env(env), check=False
-    )
+    proc = subprocess.run(["sh", "-c", command], cwd=cwd, env=_env(env), check=False)
     if check and proc.returncode != 0:
         raise CommandError(["sh", "-c", command], proc.returncode)
     return proc.returncode
@@ -125,12 +123,8 @@ def capture(
     return proc.stdout.strip()
 
 
-def capture_code(
-    cmd: Sequence[str], *, cwd: Path | None = None
-) -> tuple[int, str, str]:
-    proc = subprocess.run(
-        list(cmd), cwd=cwd, capture_output=True, text=True, check=False
-    )
+def capture_code(cmd: Sequence[str], *, cwd: Path | None = None) -> tuple[int, str, str]:
+    proc = subprocess.run(list(cmd), cwd=cwd, capture_output=True, text=True, check=False)
     return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
 
 

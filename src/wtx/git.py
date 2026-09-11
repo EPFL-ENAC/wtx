@@ -24,9 +24,7 @@ def toplevel(cwd: Path) -> Path | None:
 
 
 def common_dir(cwd: Path) -> Path | None:
-    out = capture(
-        ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], cwd=cwd
-    )
+    out = capture(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], cwd=cwd)
     return Path(out) if out else None
 
 
@@ -111,9 +109,7 @@ def is_clean(cwd: Path) -> bool:
 
 
 def is_ancestor(cwd: Path, ancestor: str, descendant: str) -> bool:
-    code, _, _ = capture_code(
-        ["git", "merge-base", "--is-ancestor", ancestor, descendant], cwd=cwd
-    )
+    code, _, _ = capture_code(["git", "merge-base", "--is-ancestor", ancestor, descendant], cwd=cwd)
     return code == 0
 
 

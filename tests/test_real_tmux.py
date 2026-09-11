@@ -58,9 +58,7 @@ def real_tmux(monkeypatch: pytest.MonkeyPatch):
     tmux("kill-server")
 
 
-def test_a_real_session_gets_its_panes_and_roles(
-    wtx_repo: Path, fake_bin: Path, real_tmux
-) -> None:
+def test_a_real_session_gets_its_panes_and_roles(wtx_repo: Path, fake_bin: Path, real_tmux) -> None:
     from wtx import tmux as tmux_mod
 
     path = wtx_repo / ".claude" / "worktrees" / "feat-real"
@@ -77,9 +75,7 @@ def test_a_real_session_gets_its_panes_and_roles(
     tmux_mod.ensure_session(ctx, agents.get("claude"), [], attach_after=False)
 
     assert tmux_mod.has_session(ctx.session)
-    roles = tmux(
-        "list-panes", "-t", f"={ctx.session}", "-F", "#{@wt_role}"
-    ).stdout.split()
+    roles = tmux("list-panes", "-t", f"={ctx.session}", "-F", "#{@wt_role}").stdout.split()
     assert roles.count("agent") == 1
     assert len(roles) == len(ctx.cfg.panes.panes)
     assert tmux_mod.agent_pane_id(ctx.session)

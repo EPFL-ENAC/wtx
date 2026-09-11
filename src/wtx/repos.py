@@ -75,9 +75,7 @@ def _pair_branch_from_env(env: dict[str, str], spec: ExtRepo) -> str:
     return env.get(spec.branch_key, "")
 
 
-def resolve_all(
-    ctx: Ctx, *, requested: dict[str, str] | None = None
-) -> list[Resolved]:
+def resolve_all(ctx: Ctx, *, requested: dict[str, str] | None = None) -> list[Resolved]:
     """Work out, for every [[repos]] entry, which directory this worktree gets.
 
     Pairings are sticky: a branch remembered in .env.worktree is re-paired on
@@ -101,7 +99,7 @@ def resolve_all(
             want = ctx.branch
         if not want or spec.access != "pair":
             if want and spec.access != "pair":
-                warn(f"[[repos]] {spec.name} is access = \"read\", --with ignored")
+                warn(f'[[repos]] {spec.name} is access = "read", --with ignored')
             out.append(Resolved(spec, main_path, "", exists=True))
             continue
 

@@ -41,6 +41,7 @@ python -m pytest tests/ -q                                  # all tests
 python -m pytest tests/test_units.py -k guard -q            # one test by name
 python -m pytest tests/test_real_tmux.py --run-tmux -q      # needs a real tmux server
 ruff check src/ tests/
+ruff format src/ tests/                                     # the repo is formatted
 wtx --dry-run go feat/x                                     # print, do not run
 ```
 
