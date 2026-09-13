@@ -29,11 +29,8 @@ and cached again.
 
 The plan routes effort, not the model. Anthropic's guidance is that effort is
 usually the better lever and that model choice suits the kind of work rather
-than the individual task, so `small_model` is empty until a repo has measured
-that a smaller one is enough.
-
-Plans written before the `wtx-effort:` marker existed said `wtx-size: small` or
-`large` instead. That still works, through `small_effort` and `large_effort`.
+than the individual task, so every plan implements on `build_model` and the
+plan's own `wtx-effort:` line decides how hard it works.
 
 Nothing here happens unless a repo sets `[agent.orchestration].enabled`.
 """
@@ -50,11 +47,8 @@ from pathlib import Path
 from . import config as config_mod
 from . import context, notify, repos, tmux
 from .agents import base as agents
-from .config import WtxConfig
 from .proc import warn
 
-SIZES = ("small", "large")
-SIZE_MARKER = "wtx-size:"
 EFFORT_MARKER = "wtx-effort:"
 
 # Marks the block wtx appends to a brief, so a reader can tell wtx's
@@ -102,33 +96,14 @@ def _marker_word(plan: str, marker: str, allowed: tuple[str, ...]) -> str:
     return ""
 
 
-def size_of(plan: str) -> str:
-    """What the planner called the job, on a plan that still uses wtx-size.
-
-    No marker means large: guessing from the length of the plan is a guess, and
-    guessing low costs quality where guessing high only costs money.
-    """
-    return _marker_word(plan, SIZE_MARKER, SIZES) or "large"
-
-
 def effort_of(plan: str) -> str:
     """The effort the planner asked the implementation to run at.
 
-    Empty when the plan names none, and the caller falls back to the size.
+    Empty when the plan names none, and the caller falls back to build_effort.
+    No guessing from the length of the plan: guessing low costs quality where
+    guessing high only costs money.
     """
     return _marker_word(plan, EFFORT_MARKER, config_mod.EFFORT_LEVELS)
-
-
-def model_for(cfg: WtxConfig, size: str) -> str:
-    """The model that implements a plan of this size.
-
-    Normally build_model whatever the size, with the size going to effort
-    instead. A repo that has set small_model has opted into the other bet.
-    """
-    orch = cfg.agent.orchestration
-    if size == "small" and orch.small_model:
-        return orch.small_model
-    return orch.build_model
 
 
 # ---------------------------------------------------------------------------
@@ -283,14 +258,8 @@ def capture(payload: dict, *, cwd: Path | None = None) -> str:
         trace(f"  no: session {ctx.session} is not there")
         return ""
 
-    size = size_of(plan)
-    model = model_for(ctx.cfg, size)
-    # The planner names the effort. A plan written before that marker existed
-    # only says small or large, and those two still map to the two config
-    # levels.
-    effort = effort_of(plan)
-    if not effort:
-        effort = orch.small_effort if size == "small" else orch.large_effort
+    model = orch.build_model
+    effort = effort_of(plan) or orch.build_effort
     if model == ctx.plan_model and effort == ctx.plan_effort:
         trace(f"  no: already {model} at {effort}")
         return ""  # already the right model at the right effort, carry on
@@ -302,11 +271,10 @@ def capture(payload: dict, *, cwd: Path | None = None) -> str:
             "root": str(ctx.root),
             "conversation": conversation,
             "model": model,
-            "size": size,
             "effort": effort,
         },
     )
-    trace(f"  record written: {ctx.session} {size} plan -> {model} at {effort}")
+    trace(f"  record written: {ctx.session} plan -> {model} at {effort}")
     # Fire it here. Stopping the turn from a hook means Claude Code does not
     # run the Stop hook, so the record would sit there forever. The delay lets
     # this turn finish before the pane it runs in is respawned.
@@ -382,8 +350,6 @@ def run(record: Path) -> int:
         repos.resolve_all(ctx),
         llm=data["model"],
         phase="build",
-        size=data.get("size", ""),
-        # A record written before this key existed falls back to the size.
         effort=data.get("effort", ""),
     )
     cmd = agent.handoff_cmd(rctx, session=data["conversation"], prompt=HANDOFF_PROMPT)

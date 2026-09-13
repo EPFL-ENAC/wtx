@@ -52,13 +52,11 @@ class RenderContext:
     # Which side of the plan/build handoff this launch is on. Empty means a
     # plain session, which is neither. See orchestrate.py.
     phase: str = ""
-    # What the planner called the job, on a build launch: small or large.
-    size: str = ""
     # This worktree's own plan model and plan effort, from .env.worktree. Empty
     # means the repo config decides.
     plan_model: str = ""
     plan_effort: str = ""
-    # The effort the planner asked for, on a build launch. It beats the size.
+    # The effort the planner asked for, on a build launch.
     effort_override: str = ""
 
     @property
@@ -97,19 +95,16 @@ class RenderContext:
         """How hard the agent works.
 
         Planning and implementing are not the same job. Planning is reading and
-        thinking, so it runs low unless the caller said the plan is a big one.
-        Implementing an accepted plan takes the effort the planner asked for.
-        That is the lever the plan routes, not the model: a smaller model is
-        the bigger bet and stays opt-in.
+        thinking, so it runs low unless the caller raised it. Implementing an
+        accepted plan takes the effort the planner asked for. That is the lever
+        the plan routes, not the model: a smaller model is the bigger bet and
+        stays opt-in.
         """
         orch = self.cfg.agent.orchestration
         if self.phase == "plan" and orch.enabled:
             return self.plan_effort or orch.plan_effort or self.cfg.agent.effort
-        if self.phase == "build" and orch.enabled:
-            if self.effort_override:
-                return self.effort_override
-            if self.size:
-                return orch.small_effort if self.size == "small" else orch.large_effort
+        if self.phase == "build" and orch.enabled and self.effort_override:
+            return self.effort_override
         return self.cfg.agent.effort
 
 

@@ -955,7 +955,9 @@ def test_an_accepted_plan_continues_on_the_implementation_model(
     path = make_worktree(wtx_repo, "feat/plan")
     setup_mod.run_setup(context.load(root=path), start_tmux=True)
 
-    answer = json.loads(_accept(path, "1. write it\n\nwtx-size: large\n", conversation="conv-abc"))
+    answer = json.loads(
+        _accept(path, "1. write it\n\nwtx-effort: xhigh\n", conversation="conv-abc")
+    )
     assert answer["continue"] is False
     assert "opus" in answer["stopReason"]
 
@@ -971,13 +973,15 @@ def test_an_accepted_plan_continues_on_the_implementation_model(
 def test_a_small_plan_lowers_the_effort_not_the_model(
     wtx_repo: Path, fake_bin: Path, no_fork: list
 ) -> None:
+    """Anthropic's guidance: effort is the better lever, so the model does not
+    change with the size of the job."""
     from wtx import orchestrate
 
-    _enable_orchestration(wtx_repo, build_model='"opus"', small_effort='"medium"')
+    _enable_orchestration(wtx_repo, build_model='"opus"', build_effort='"xhigh"')
     path = make_worktree(wtx_repo, "feat/small")
     setup_mod.run_setup(context.load(root=path), start_tmux=True)
 
-    _accept(path, "1. rename it\n\nwtx-size: small\n")
+    _accept(path, "1. rename it\n\nwtx-effort: medium\n")
     record = json.loads(no_fork[0].read_text())
     assert record["model"] == "opus"
 
@@ -994,7 +998,7 @@ def test_a_plan_with_no_conversation_to_resume_is_not_stopped(
     path = make_worktree(wtx_repo, "feat/no-conv")
     setup_mod.run_setup(context.load(root=path), start_tmux=True)
 
-    assert _accept(path, "1. do it\n\nwtx-size: large\n", conversation="") == ""
+    assert _accept(path, "1. do it\n\nwtx-effort: xhigh\n", conversation="") == ""
 
 
 def test_a_repo_without_orchestration_is_left_alone(wtx_repo: Path, fake_bin: Path) -> None:
@@ -1005,7 +1009,7 @@ def test_a_repo_without_orchestration_is_left_alone(wtx_repo: Path, fake_bin: Pa
     setup_mod.run_setup(context.load(root=path), start_tmux=True)
     ctx = context.load(root=path)
 
-    assert _accept(path, "1. do it\n\nwtx-size: large\n") == ""
+    assert _accept(path, "1. do it\n\nwtx-effort: xhigh\n") == ""
     assert not orchestrate.record_file(ctx.session).exists()
 
 
@@ -1016,14 +1020,13 @@ def test_a_plan_the_planner_can_implement_itself_is_not_handed_over(
     _enable_orchestration(
         wtx_repo,
         plan_model='"opus"',
-        plan_effort='""',
+        plan_effort='"xhigh"',
         build_model='"opus"',
-        large_effort='""',
     )
     path = make_worktree(wtx_repo, "feat/same-model")
     setup_mod.run_setup(context.load(root=path), start_tmux=True)
 
-    assert _accept(path, "1. do it\n\nwtx-size: large\n") == ""
+    assert _accept(path, "1. do it\n\nwtx-effort: xhigh\n") == ""
 
 
 def test_a_handoff_fires_once_however_often_the_agent_stops(
@@ -1038,7 +1041,7 @@ def test_a_handoff_fires_once_however_often_the_agent_stops(
     setup_mod.run_setup(context.load(root=path), start_tmux=True)
     ctx = context.load(root=path)
 
-    _accept(path, "1. do it\n\nwtx-size: large\n")
+    _accept(path, "1. do it\n\nwtx-effort: xhigh\n")
     assert len(no_fork) == 1
     assert orchestrate.drain(ctx.session) is False
     assert orchestrate.drain(ctx.session) is False
@@ -1082,7 +1085,7 @@ def test_the_hook_fires_the_handoff_itself(wtx_repo: Path, fake_bin: Path, no_fo
     path = make_worktree(wtx_repo, "feat/stop")
     setup_mod.run_setup(context.load(root=path), start_tmux=True)
 
-    _accept(path, "1. do it\n\nwtx-size: large\n")
+    _accept(path, "1. do it\n\nwtx-effort: xhigh\n")
 
     assert len(no_fork) == 1
 
@@ -1100,7 +1103,7 @@ def test_a_handoff_that_cannot_fork_stays_pending(
     ctx = context.load(root=path)
     monkeypatch.setattr(orchestrate, "_spawn", lambda record, **kw: False)
 
-    _accept(path, "1. do it\n\nwtx-size: large\n")
+    _accept(path, "1. do it\n\nwtx-effort: xhigh\n")
 
     assert not any(c.startswith("respawn-pane") for c in calls_of(fake_bin, "tmux"))
     assert orchestrate.pending(ctx.session).get("conversation") == "conv-1"
@@ -1152,7 +1155,7 @@ def test_the_handoff_command_answers_the_hook(
         lambda: {
             "cwd": str(path),
             "session_id": "conv-1",
-            "tool_input": {"plan": "1. do it\n\nwtx-size: large"},
+            "tool_input": {"plan": "1. do it\n\nwtx-effort: xhigh"},
         },
     )
 
@@ -1173,7 +1176,7 @@ def test_the_plan_is_read_from_the_file_when_the_tool_does_not_carry_it(
     path = make_worktree(wtx_repo, "feat/planfile")
     setup_mod.run_setup(context.load(root=path), start_tmux=True)
     plan_file = tmp_path / "the-plan.md"
-    plan_file.write_text("1. write it\n\nwtx-size: large\n")
+    plan_file.write_text("1. write it\n\nwtx-effort: xhigh\n")
 
     answer = orchestrate.capture(
         {
@@ -1186,7 +1189,7 @@ def test_the_plan_is_read_from_the_file_when_the_tool_does_not_carry_it(
 
     assert json.loads(answer)["continue"] is False
     record = json.loads(no_fork[0].read_text())
-    assert record["size"] == "large"
+    assert record["effort"] == "xhigh"
     assert record["conversation"] == "conv-file"
 
 
@@ -1201,7 +1204,7 @@ def test_the_plan_file_can_come_from_the_tool_response(
     path = make_worktree(wtx_repo, "feat/response")
     setup_mod.run_setup(context.load(root=path), start_tmux=True)
     plan_file = tmp_path / "from-response.md"
-    plan_file.write_text("1. do it\n\nwtx-size: small\n")
+    plan_file.write_text("1. do it\n\nwtx-effort: medium\n")
 
     answer = orchestrate.capture(
         {
@@ -1231,7 +1234,7 @@ def test_the_tool_can_carry_nothing_but_the_response(wtx_repo: Path, fake_bin: P
             "session_id": "conv-bare",
             "tool_name": "ExitPlanMode",
             "tool_input": {},
-            "tool_response": {"plan": "1. do it\n\nwtx-size: large\n"},
+            "tool_response": {"plan": "1. do it\n\nwtx-effort: xhigh\n"},
         }
     )
 
@@ -1262,7 +1265,7 @@ def test_a_handoff_that_does_nothing_says_why(wtx_repo: Path, fake_bin: Path) ->
     path = make_worktree(wtx_repo, "feat/quiet")
     setup_mod.run_setup(context.load(root=path), start_tmux=True)
 
-    assert _accept(path, "1. do it\n\nwtx-size: large\n") == ""
+    assert _accept(path, "1. do it\n\nwtx-effort: xhigh\n") == ""
 
     log = orchestrate.log_file().read_text()
     assert "orchestration off" in log
@@ -1278,7 +1281,7 @@ def test_the_log_records_a_handoff_end_to_end(
     setup_mod.run_setup(context.load(root=path), start_tmux=True)
     ctx = context.load(root=path)
 
-    _accept(path, "1. do it\n\nwtx-size: large\n", conversation="conv-log")
+    _accept(path, "1. do it\n\nwtx-effort: xhigh\n", conversation="conv-log")
     orchestrate.run(no_fork[0])
 
     log = orchestrate.log_file().read_text()
@@ -1299,7 +1302,7 @@ def test_an_agent_outside_a_session_is_never_stopped(
     setup_mod.run_setup(context.load(root=path), start_tmux=False)
     monkeypatch.setattr(tmux, "has_session", lambda name: False)
 
-    assert _accept(path, "1. do it\n\nwtx-size: large\n") == ""
+    assert _accept(path, "1. do it\n\nwtx-effort: xhigh\n") == ""
 
 
 def test_a_hook_finds_the_session_of_a_repo_that_renamed_itself(
@@ -1327,11 +1330,11 @@ def test_a_pending_handoff_shows_in_status(
     path = make_worktree(wtx_repo, "feat/visible")
     setup_mod.run_setup(context.load(root=path), start_tmux=True)
 
-    _accept(path, "1. do it\n\nwtx-size: large\n")
+    _accept(path, "1. do it\n\nwtx-effort: xhigh\n")
     monkeypatch.chdir(wtx_repo)
     capsys.readouterr()
     run(["status", "feat/visible"])
-    assert "handoff pending: large plan -> opus" in capsys.readouterr().out
+    assert "handoff pending: plan -> opus at xhigh" in capsys.readouterr().out
 
 
 def test_plan_effort_survives_a_later_setup(wtx_repo: Path, fake_bin: Path, monkeypatch) -> None:
@@ -1401,23 +1404,6 @@ def test_the_plan_names_the_effort_the_build_runs_at(
     orchestrate.run(no_fork[0])
     sent = [c for c in calls_of(fake_bin, "tmux") if "send-keys" in c]
     assert any("claude -r conv-e --model opus" in c and "--effort medium" in c for c in sent)
-
-
-def test_a_plan_that_still_says_small_gets_the_small_effort(
-    wtx_repo: Path, fake_bin: Path, no_fork: list
-) -> None:
-    """Plans written before the wtx-effort marker existed must keep working."""
-    from wtx import orchestrate
-
-    _enable_orchestration(wtx_repo, build_model='"opus"', small_effort='"medium"')
-    path = make_worktree(wtx_repo, "feat/old-marker")
-    setup_mod.run_setup(context.load(root=path), start_tmux=True)
-
-    _accept(path, "1. rename it\n\nwtx-size: small\n")
-    assert json.loads(no_fork[0].read_text())["effort"] == "medium"
-    orchestrate.run(no_fork[0])
-    sent = [c for c in calls_of(fake_bin, "tmux") if "send-keys" in c]
-    assert any("--model opus" in c and "--effort medium" in c for c in sent)
 
 
 def test_go_says_when_llm_is_not_what_a_brief_will_use(

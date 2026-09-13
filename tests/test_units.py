@@ -383,39 +383,6 @@ def _rctx(cfg: config.WtxConfig) -> RenderContext:
 
 @pytest.mark.parametrize(
     "line",
-    ["wtx-size: small", "- wtx-size: small", "**wtx-size:** small", "WTX-SIZE: Small"],
-)
-def test_the_planner_sizes_its_own_plan(line: str) -> None:
-    assert orchestrate.size_of(f"step one\nstep two\n\n{line}\n") == "small"
-
-
-def test_a_plan_with_no_marker_is_large() -> None:
-    """Guessing from the length is a guess, and guessing low costs quality
-    where guessing high only costs money."""
-    assert orchestrate.size_of("one two three") == "large"
-
-
-def test_the_marker_is_only_read_from_a_line_of_its_own() -> None:
-    """A plan that quotes the instruction must not be read as sizing itself."""
-    assert orchestrate.size_of("I will end with the wtx-size: small line.") == "large"
-
-
-def test_the_size_routes_effort_and_leaves_the_model_alone() -> None:
-    """Anthropic's guidance: effort is usually the better lever, so a smaller
-    model stays opt-in."""
-    cfg = _orchestrated(build_model="opus", small_effort="medium", large_effort="xhigh")
-    assert orchestrate.model_for(cfg, "small") == "opus"
-    assert orchestrate.model_for(cfg, "large") == "opus"
-
-    def effort(size: str) -> str:
-        return replace(_rctx(cfg), phase="build", size=size, llm="opus").effort
-
-    assert effort("small") == "medium"
-    assert effort("large") == "xhigh"
-
-
-@pytest.mark.parametrize(
-    "line",
     [
         "wtx-effort: high",
         "- wtx-effort: high",
@@ -427,27 +394,32 @@ def test_the_planner_names_the_effort_it_wants(line: str) -> None:
     assert orchestrate.effort_of(f"step one\nstep two\n\n{line}\n") == "high"
 
 
+def test_the_marker_is_only_read_from_a_line_of_its_own() -> None:
+    """A plan that quotes the instruction must not be read as marking itself."""
+    assert orchestrate.effort_of("I will end with the wtx-effort: low line.") == ""
+
+
 def test_an_effort_the_agent_does_not_know_is_ignored() -> None:
     """A made-up level on the command line is a failed launch, not a slow one."""
     assert orchestrate.effort_of("do it\n\nwtx-effort: turbo\n") == ""
     assert orchestrate.effort_of("do it\n") == ""
 
 
-def test_the_planner_effort_beats_the_size(tmp_path) -> None:
-    """The size is the fallback for a plan written before the marker existed."""
-    cfg = _orchestrated(small_effort="medium", large_effort="xhigh")
-    build = replace(_rctx(cfg), phase="build", llm="opus", size="large")
-    assert build.effort == "xhigh"
+def test_the_build_runs_at_the_effort_the_plan_asked_for() -> None:
+    """build_effort is only what an unmarked plan falls back to."""
+    cfg = _orchestrated(build_effort="xhigh")
+    build = replace(_rctx(cfg), phase="build", llm="opus")
+    assert orchestrate.effort_of("do it\n\nwtx-effort: low\n") == "low"
     assert replace(build, effort_override="low").effort == "low"
 
 
 def test_a_plan_brief_works_less_hard_than_the_build() -> None:
     """Planning is reading and thinking. The build is where the effort goes."""
-    cfg = _orchestrated(plan_effort="low", large_effort="xhigh")
+    cfg = _orchestrated(plan_effort="low")
     ctx = _rctx(cfg)
     assert replace(ctx, phase="plan").effort == "low"
     assert replace(ctx, phase="plan", plan_effort="high").effort == "high"
-    assert replace(ctx, phase="build", llm="opus", size="large").effort == "xhigh"
+    assert replace(ctx, phase="build", llm="opus", effort_override="xhigh").effort == "xhigh"
 
 
 def test_a_worktree_can_name_its_own_planning_model() -> None:
@@ -469,12 +441,6 @@ def test_the_settings_effort_is_the_one_the_pane_runs_at() -> None:
     assert ClaudeAgent().build_settings(ctx)["effortLevel"] == ctx.effort == "high"
 
 
-def test_a_repo_can_still_opt_into_a_smaller_model() -> None:
-    cfg = _orchestrated(small_model="sonnet")
-    assert orchestrate.model_for(cfg, "small") == "sonnet"
-    assert orchestrate.model_for(cfg, "large") == "opus"
-
-
 def test_a_plan_brief_runs_on_the_planning_model_the_settings_do_not() -> None:
     """The worktree keeps its own model. Only the plan phase is redirected, or
     a later `claude --continue` would come back on the planner."""
@@ -488,7 +454,7 @@ def test_a_plan_brief_runs_on_the_planning_model_the_settings_do_not() -> None:
 def test_a_build_starts_in_auto_mode_by_default() -> None:
     """The human has just read the plan and said yes. Asking again about every
     edit and command hands them back a job they thought they were done with."""
-    build = replace(_rctx(_orchestrated()), phase="build", llm="opus", size="large")
+    build = replace(_rctx(_orchestrated()), phase="build", llm="opus", effort_override="xhigh")
     assert build.permission_mode == "auto"
     assert "--permission-mode auto" in ClaudeAgent().handoff_cmd(
         build, session="abc-123", prompt="go"
@@ -500,7 +466,7 @@ def test_each_phase_starts_in_its_own_permission_mode() -> None:
     agent = ClaudeAgent()
     plan = agent.launch_cmd(replace(base, phase="plan"), brief=True)
     build = agent.handoff_cmd(
-        replace(base, phase="build", llm="opus", size="large"),
+        replace(base, phase="build", llm="opus", effort_override="xhigh"),
         session="abc-123",
         prompt="go",
     )
@@ -512,7 +478,7 @@ def test_the_handoff_resumes_the_planning_conversation() -> None:
     """Not a fresh one: everything the planner read is most of what the
     implementation needs, and Claude Code's own opusplan switches this way."""
     cmd = ClaudeAgent().handoff_cmd(
-        replace(_rctx(_orchestrated()), phase="build", llm="opus", size="large"),
+        replace(_rctx(_orchestrated()), phase="build", llm="opus", effort_override="xhigh"),
         session="abc 123",
         prompt="Implement it.",
     )
@@ -635,8 +601,8 @@ def test_validate_catches_orchestration_with_nothing_to_hand_to() -> None:
 
 
 def test_validate_catches_an_effort_level_that_does_not_exist() -> None:
-    cfg = _orchestrated(large_effort="maximum")
-    assert any("large_effort" in e for e in validate(cfg))
+    cfg = _orchestrated(build_effort="maximum")
+    assert any("build_effort" in e for e in validate(cfg))
     assert any("effort" in e for e in validate(parse({"agent": {"effort": "huge"}})))
     assert any("plan_effort" in e for e in validate(_orchestrated(plan_effort="turbo")))
 

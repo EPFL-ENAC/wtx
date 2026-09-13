@@ -432,8 +432,7 @@ def scan(main: Path) -> dict[str, Any]:
                 "enabled": False,
                 "plan_model": "fable",
                 "build_model": "opus",
-                "small_effort": "medium",
-                "large_effort": "xhigh",
+                "build_effort": "xhigh",
             },
         },
         "permissions": {"allow": allow, "deny": deny, "allowed_domains": []},
@@ -682,9 +681,9 @@ def render_toml(answers: dict[str, Any]) -> str:
             "",
             "# Plan on one model, implement on another. A brief starts on",
             "# plan_model in plan mode. With Claude, accepting the plan carries",
-            "# the same conversation on to build_model, at the effort its size",
-            "# asks for. With opencode the agent switch does it, and the effort",
-            "# routing does not apply.",
+            "# the same conversation on to build_model, at the effort the plan",
+            "# asked for. With opencode the agent switch does it, and the",
+            "# effort routing does not apply.",
             "[agent.orchestration]",
         ]
         for key, value in orch.items():

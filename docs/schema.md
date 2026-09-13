@@ -138,9 +138,7 @@ not fire there, it is part of the ExitPlanMode handoff, which is Claude's.
 | `plan_model` | `fable` | Writes the plan. The strongest model you have: a plan is cheap and a bad one is not. |
 | `plan_effort` | `low` | How hard it works while planning. Planning is reading and thinking, so low is usually enough. |
 | `build_model` | `opus` | Implements it. |
-| `small_effort` | `medium` | Fallback effort for a plan that says `wtx-size: small` instead. |
-| `large_effort` | `xhigh` | Fallback for everything else with no `wtx-effort:` line. |
-| `small_model` | none | A different model for a small plan. Opt-in, see below. |
+| `build_effort` | `xhigh` | What a plan with no `wtx-effort:` line implements at. |
 | `build_permission_mode` | `auto` | What the implementation starts in. The plan is already agreed, so the build does not stop to ask about each step. |
 
 Per worktree, `wtx go --plan-model` and `wtx go --plan-effort` beat the two plan
@@ -150,13 +148,12 @@ big one.
 
 **The plan routes effort, not the model.** Anthropic's guidance is that tuning
 effort is usually a better lever than switching models, and that model choice
-suits the kind of work you do rather than the task in front of you. So a small
-plan gets the same model working less hard. `small_model` is there for a repo
-that has measured that a smaller model is enough, and is empty until then.
+suits the kind of work you do rather than the task in front of you. So every
+plan implements on `build_model`, and a small one gets the same model working
+less hard.
 
 `wtx-effort:` takes any level the agent knows: `low`, `medium`, `high`, `xhigh`,
-`max`. A plan written before that marker existed says `wtx-size: small` or
-`large`, and those still map to `small_effort` and `large_effort`.
+`max`. A plan that names none implements at `build_effort`.
 
 **The implementation continues the planning conversation**, it does not start a
 new one, which is how Claude Code's own `opusplan` switches models. Everything

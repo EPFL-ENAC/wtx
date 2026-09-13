@@ -103,8 +103,8 @@ def _require_valid(cfg: config_mod.WtxConfig) -> None:
 def _write_prompt(path: Path, prompt: str, cfg: config_mod.WtxConfig) -> None:
     """A brief is a file at the checkout root. The agent pane starts on it.
 
-    With orchestration on, the planner is also told to size the plan, so wtx
-    knows which model to hand it to.
+    With orchestration on, the planner is also told to mark the effort the
+    implementation needs, so wtx knows how hard to start it.
     """
     candidate = Path(prompt).expanduser()
     text = candidate.read_text() if candidate.is_file() else prompt
@@ -468,7 +468,8 @@ def cmd_status(args: argparse.Namespace) -> int:
         handoff = row["handoff"]
         if handoff:
             print(
-                f"    handoff pending: {handoff.get('size', '')} plan -> {handoff.get('model', '')}"
+                f"    handoff pending: plan -> {handoff.get('model', '')} "
+                f"at {handoff.get('effort', '')}"
             )
         for name, info in row["repos"].items():
             if info["branch"]:

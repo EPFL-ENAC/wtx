@@ -139,9 +139,9 @@ class OrchestrationCfg:
 
     Off by default: it changes what a brief does. See docs/schema.md.
 
-    A plan the planner called small gets less effort, not a smaller model.
-    Anthropic's own guidance is that effort is usually the better lever, so
-    small_model is empty until someone has measured that it is enough here.
+    Every plan implements on build_model. The plan's own `wtx-effort:` line
+    decides how hard it works, and build_effort is what an unmarked plan gets.
+    Effort is the better lever: that is Anthropic's own guidance.
     """
 
     enabled: bool = False
@@ -150,9 +150,8 @@ class OrchestrationCfg:
     # briefs, and `wtx go --plan-effort high` raises it for the ones it is not.
     plan_effort: str = "low"
     build_model: str = "opus"
-    small_model: str = ""
-    small_effort: str = "medium"
-    large_effort: str = "xhigh"
+    # What a plan with no wtx-effort: line implements at.
+    build_effort: str = "xhigh"
     # auto, not acceptEdits: the plan is already read and agreed, so stopping
     # the build to ask about every command puts the human back in the loop they
     # just stepped out of. The permission baseline is still what says no.
@@ -392,9 +391,7 @@ def parse(data: dict[str, Any], *, default_name: str = "") -> WtxConfig:
             plan_model=orch_t.get("plan_model", "fable"),
             plan_effort=orch_t.get("plan_effort", "low"),
             build_model=orch_t.get("build_model", "opus"),
-            small_model=orch_t.get("small_model", ""),
-            small_effort=orch_t.get("small_effort", "medium"),
-            large_effort=orch_t.get("large_effort", "xhigh"),
+            build_effort=orch_t.get("build_effort", "xhigh"),
             build_permission_mode=orch_t.get("build_permission_mode", "auto"),
         ),
         opencode=OpencodeCfg(
@@ -555,8 +552,7 @@ def validate(cfg: WtxConfig) -> list[str]:
     for key, effort in (
         ("[agent].effort", cfg.agent.effort),
         ("[agent.orchestration].plan_effort", orch.plan_effort),
-        ("[agent.orchestration].small_effort", orch.small_effort),
-        ("[agent.orchestration].large_effort", orch.large_effort),
+        ("[agent.orchestration].build_effort", orch.build_effort),
     ):
         if effort and effort not in EFFORT_LEVELS:
             errs.append(f"{key} '{effort}' is not one of {', '.join(EFFORT_LEVELS)}")

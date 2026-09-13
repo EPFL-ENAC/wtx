@@ -157,7 +157,6 @@ def render_ctx(
     *,
     llm: str = "",
     phase: str = "",
-    size: str = "",
     effort: str = "",
 ) -> RenderContext:
     """What a backend needs to write settings and start, from a live context."""
@@ -170,7 +169,6 @@ def render_ctx(
         repos=resolved,
         llm=llm or ctx.llm,
         phase=phase,
-        size=size,
         plan_model=ctx.plan_model,
         plan_effort=ctx.plan_effort,
         effort_override=effort,
