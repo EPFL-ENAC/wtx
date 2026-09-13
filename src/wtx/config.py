@@ -269,11 +269,7 @@ class WtxConfig:
         keys += list(self.env_computed)
         for r in self.repos:
             keys += [r.path_key, r.branch_key]
-        out: list[str] = []
-        for k in keys:
-            if k not in out:
-                out.append(k)
-        return tuple(out)
+        return tuple(dict.fromkeys(keys))
 
 
 # ---------------------------------------------------------------------------

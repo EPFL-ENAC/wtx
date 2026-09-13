@@ -38,7 +38,8 @@ def _python_version(cfg: WtxConfig, main: Path) -> str:
     f = main / cfg.deps.python_version_file
     if not f.is_file():
         return ""
-    return f.read_text().strip().splitlines()[0] if f.read_text().strip() else ""
+    lines = f.read_text().split()
+    return lines[0] if lines else ""
 
 
 def seed(ctx: Ctx) -> None:
