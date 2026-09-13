@@ -43,6 +43,7 @@ from .agents.base import PROMPT_FILE
 from .hooks import (
     GO_AGENT_ENV,
     GO_DRIVING_ENV,
+    GO_ENV_KEYS,
     GO_LLM_ENV,
     GO_PLAN_EFFORT_ENV,
     GO_PLAN_MODEL_ENV,
@@ -190,13 +191,7 @@ def cmd_go(args: argparse.Namespace) -> int:
     # The hook runs in a fresh process, so what wtx go decided travels in the
     # environment, the way wt passes everything else to its hooks. Under names
     # no pane exports: see hooks.py.
-    for key in (
-        repos.WITH_ENV,
-        GO_AGENT_ENV,
-        GO_LLM_ENV,
-        GO_PLAN_MODEL_ENV,
-        GO_PLAN_EFFORT_ENV,
-    ):
+    for key in GO_ENV_KEYS:
         os.environ.pop(key, None)
     if with_repos:
         os.environ[repos.WITH_ENV] = repos.encode_with(with_repos)
@@ -216,14 +211,7 @@ def cmd_go(args: argparse.Namespace) -> int:
         raise UserError(str(exc)) from exc
     # The hook has run. Drop what was meant for it: a tmux server started
     # below would inherit these, and every later pane would pass them on.
-    for key in (
-        repos.WITH_ENV,
-        GO_AGENT_ENV,
-        GO_LLM_ENV,
-        GO_PLAN_MODEL_ENV,
-        GO_PLAN_EFFORT_ENV,
-        GO_DRIVING_ENV,
-    ):
+    for key in GO_ENV_KEYS:
         os.environ.pop(key, None)
     if path is None:
         if is_dry_run():
