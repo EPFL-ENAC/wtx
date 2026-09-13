@@ -36,7 +36,6 @@ GITIGNORE_LINES = [
     ".wt-logs/",
     "PROMPT.md",
     "PROMPT.sent.md",
-    ".wt-prompts/",
     ".claude/settings.local.json",
     ".claude/agents/Explore.md",
     ".claude/rules/wtx.md",

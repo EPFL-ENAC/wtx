@@ -575,6 +575,23 @@ def test_dry_run_changes_nothing(wtx_repo: Path, fake_bin: Path, monkeypatch, ca
     assert git.worktree_path_for(wtx_repo, "feat/dry") is not None
 
 
+def test_dry_run_writes_no_files_either(wtx_repo: Path, fake_bin: Path, capsys) -> None:
+    """A file write does not go through proc.run, so each one has to ask about
+    dry run itself. They all used to write for real."""
+    from wtx.proc import set_dry_run
+
+    path = make_worktree(wtx_repo, "feat/nofiles")
+    set_dry_run(True)
+    try:
+        setup_mod.run_setup(context.load(root=path), start_tmux=False)
+    finally:
+        set_dry_run(False)
+    assert "would write" in capsys.readouterr().out
+    for rel in (".env.worktree", ".claude/settings.local.json"):
+        assert not (path / rel).exists(), rel
+    assert not (wtx_repo / ".git" / "hooks" / "pre-push").exists()
+
+
 def test_config_validate_reports_a_problem(wtx_repo: Path, monkeypatch, capsys) -> None:
     (wtx_repo / "wtx.toml").write_text(
         '[repo]\nname = "x"\nbase_branch = "dev"\nprotected_branches = ["main"]\n'
@@ -706,6 +723,24 @@ def test_the_grid_never_tiles_the_monitor_itself(
     monitor._build_grid()
     peeked = [c.split("--peek ", 1)[1] for c in calls_of(fake_bin, "tmux") if "--peek " in c]
     assert peeked == ["app/one"]
+
+
+def test_a_state_file_outlives_its_session_only_until_something_reads_it(
+    wtx_repo: Path, fake_bin: Path
+) -> None:
+    """A session killed from tmux never runs settle, so its state file stays.
+    It used to surface in the status bar on the day no session was live."""
+    import os
+
+    from wtx import notify
+
+    Path(os.environ["WTX_TEST_SESSIONS"]).write_text("app/live\n")
+    notify.write_state("app/live", "permission")
+    notify.write_state("app/killed", "permission")
+
+    assert "app/killed" not in notify.status_line()
+    assert "app/live" in notify.status_line()
+    assert not notify.state_file("app/killed").exists()
 
 
 def test_wt_toml_hooks_are_lists(wtx_repo: Path) -> None:
@@ -1050,6 +1085,26 @@ def test_the_hook_fires_the_handoff_itself(wtx_repo: Path, fake_bin: Path, no_fo
     _accept(path, "1. do it\n\nwtx-size: large\n")
 
     assert len(no_fork) == 1
+
+
+def test_a_handoff_that_cannot_fork_stays_pending(
+    wtx_repo: Path, fake_bin: Path, monkeypatch
+) -> None:
+    """A hook never respawns its own pane: that kills the hook halfway. When
+    the fork fails the record goes back, for the Stop hook or `wtx status`."""
+    from wtx import orchestrate
+
+    _enable_orchestration(wtx_repo)
+    path = make_worktree(wtx_repo, "feat/nofork")
+    setup_mod.run_setup(context.load(root=path), start_tmux=True)
+    ctx = context.load(root=path)
+    monkeypatch.setattr(orchestrate, "_spawn", lambda record, **kw: False)
+
+    _accept(path, "1. do it\n\nwtx-size: large\n")
+
+    assert not any(c.startswith("respawn-pane") for c in calls_of(fake_bin, "tmux"))
+    assert orchestrate.pending(ctx.session).get("conversation") == "conv-1"
+    assert orchestrate.record_file(ctx.session).exists()
 
 
 def test_the_stop_hook_still_fires_a_handoff_left_behind(

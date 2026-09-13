@@ -28,7 +28,7 @@ from pathlib import Path
 
 from . import git, tmux
 from .context import session_name
-from .proc import which
+from .proc import is_dry_run, say, which
 
 STATES = ("permission", "idle", "stop", "start", "running")
 
@@ -101,6 +101,23 @@ def all_states() -> dict[str, dict]:
         if data.get("session"):
             out[data["session"]] = data
     return out
+
+
+def live_states() -> dict[str, dict]:
+    """The states of sessions that still exist, and only those.
+
+    A session killed from tmux never runs settle, so its state file stays
+    behind. Nothing wants a state whose session is gone, so drop it here, once,
+    and clear the file with it.
+    """
+    states = all_states()
+    if not tmux.available():
+        return states
+    live = set(tmux.list_sessions())
+    for name in [n for n in states if n not in live]:
+        del states[name]
+        clear_state(name)
+    return states
 
 
 def write_state(session: str, state: str, message: str = "") -> None:
@@ -201,6 +218,9 @@ def handle(state: str, *, cwd: Path | None = None) -> int:
     """Called by the agent's hook. Reads the hook payload on stdin."""
     if state not in STATES:
         return 2
+    if is_dry_run():
+        say(f"would record {state} and notify the desktop")
+        return 0
     payload = payload_from_stdin()
     where = Path(payload.get("cwd") or cwd or Path.cwd())
     session = session_for(where)
@@ -270,6 +290,11 @@ TERMINALS = (
 
 def id_file(session: str) -> Path:
     return state_dir() / f"{safe_name(session)}.id"
+
+
+def write_id(session: str, ident: str, pid: int) -> None:
+    with contextlib.suppress(OSError):
+        id_file(session).write_text(f"{ident} {pid}")
 
 
 def read_id(session: str) -> tuple[str, int]:
@@ -471,8 +496,11 @@ def worker(session: str, state: str, message: str, cwd: str = "") -> int:
     already gone, and a click then wakes several at once.
     """
     previous_id, previous_pid = read_id(session)
-    if previous_pid != os.getpid():
-        _stop_worker(previous_pid)
+    _stop_worker(previous_pid)
+    # Claim the file before sending, not after. A hook that fires in the gap
+    # would otherwise read the pid of the worker just killed, and the banner
+    # this one is about to raise would never be closed.
+    write_id(session, previous_id, os.getpid())
 
     if which("gdbus") is None:
         return _worker_notify_send(session, state, message, cwd, previous_id)
@@ -482,8 +510,7 @@ def worker(session: str, state: str, message: str, cwd: str = "") -> int:
         ident = _send(session, state, message, previous_id)
         if not ident:
             return 0
-        with contextlib.suppress(OSError):
-            id_file(session).write_text(f"{ident} {os.getpid()}")
+        write_id(session, ident, os.getpid())
         if watcher is not None and _clicked(watcher, ident):
             _open_session(session, cwd)
     finally:
@@ -509,8 +536,7 @@ def _worker_notify_send(session: str, state: str, message: str, cwd: str, previo
         return 0
     lines = [ln.strip() for ln in proc.stdout.splitlines() if ln.strip()]
     if lines and lines[0].isdigit():
-        with contextlib.suppress(OSError):
-            id_file(session).write_text(f"{lines[0]} {os.getpid()}")
+        write_id(session, lines[0], os.getpid())
     if "default" in proc.stdout:
         _open_session(session, cwd)
     return 0
@@ -543,13 +569,9 @@ def status_line(max_items: int = 4) -> str:
     """One line for tmux status-right: the sessions waiting on you."""
     waiting = [
         (data.get("since", 0), name, data.get("state", ""))
-        for name, data in all_states().items()
+        for name, data in live_states().items()
         if data.get("state") in WAITING
     ]
-    if not waiting:
-        return ""
-    live = set(tmux.list_sessions()) if tmux.available() else set()
-    waiting = [w for w in waiting if not live or w[1] in live]
     if not waiting:
         return ""
     waiting.sort(reverse=True)

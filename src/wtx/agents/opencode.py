@@ -15,7 +15,7 @@ import json
 from importlib import resources
 from pathlib import Path
 
-from .base import PROMPT_FILE, PROMPT_SENT, RenderContext
+from .base import PROMPT_FILE, PROMPT_SENT, RenderContext, write_file
 
 SETTINGS_PATH = "opencode.json"
 SCHEMA = "https://opencode.ai/config.json"
@@ -114,16 +114,8 @@ class OpencodeAgent:
         return out
 
     def render_settings(self, ctx: RenderContext) -> list[Path]:
-        target = ctx.root / SETTINGS_PATH
         payload = json.dumps(self.build_settings(ctx), indent=2) + "\n"
-        try:
-            target.write_text(payload)
-        except OSError as exc:
-            from ..proc import warn
-
-            warn(f"could not write {target}: {exc}")
-            return []
-        return [target]
+        return write_file(ctx.root / SETTINGS_PATH, payload)
 
     def launch_cmd(self, ctx: RenderContext, *, brief: bool) -> str:
         """opencode's TUI takes no starting message, so a brief runs headless
@@ -139,7 +131,9 @@ class OpencodeAgent:
         model = "" if ctx.cfg.agent.orchestration.enabled else self._model(ctx, ctx.model)
         flags = f" -m {model}" if model else ""
         if brief:
-            variant = f" --variant {ctx.cfg.agent.effort}" if ctx.cfg.agent.effort else ""
+            # ctx.effort, not the repo default: a plan brief runs at the plan
+            # effort and a build brief at the one the planner asked for.
+            variant = f" --variant {ctx.effort}" if ctx.effort else ""
             oc = ctx.cfg.agent.opencode
             agent = oc.build_agent if ctx.phase == "build" else oc.plan_agent
             agent_flag = f" --agent {agent}" if agent else ""

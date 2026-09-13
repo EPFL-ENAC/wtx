@@ -15,7 +15,7 @@ import shlex
 from importlib import resources
 from pathlib import Path
 
-from .base import PROMPT_FILE, PROMPT_SENT, RenderContext
+from .base import PROMPT_FILE, PROMPT_SENT, RenderContext, write_file
 
 SETTINGS_PATH = ".claude/settings.local.json"
 EXPLORE_PATH = ".claude/agents/Explore.md"
@@ -224,42 +224,17 @@ class ClaudeAgent:
         return out
 
     def render_settings(self, ctx: RenderContext) -> list[Path]:
-        written: list[Path] = []
-        target = ctx.root / SETTINGS_PATH
-        target.parent.mkdir(parents=True, exist_ok=True)
         payload = json.dumps(self.build_settings(ctx), indent=2) + "\n"
-        tmp = target.with_suffix(".json.wtx-tmp")
-        try:
-            tmp.write_text(payload)
-            tmp.replace(target)
-            written.append(target)
-        except OSError as exc:  # a sandboxed agent cannot write here, not fatal
-            from ..proc import warn
-
-            warn(f"could not write {target}: {exc}")
-            tmp.unlink(missing_ok=True)
+        written = write_file(ctx.root / SETTINGS_PATH, payload)
 
         rules = worktree_rules(ctx)
         if rules:
-            written += self._write(ctx.root / RULES_PATH, rules)
+            written += write_file(ctx.root / RULES_PATH, rules)
 
         model = ctx.cfg.agent.explore_agent_model
         if model:
-            written += self._write(ctx.root / EXPLORE_PATH, EXPLORE_AGENT.format(model=model))
+            written += write_file(ctx.root / EXPLORE_PATH, EXPLORE_AGENT.format(model=model))
         return written
-
-    def _write(self, target: Path, text: str) -> list[Path]:
-        """A file a sandboxed agent cannot write. Not being able to is a
-        warning, not a failure: everything else about the worktree still works."""
-        try:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(text)
-        except OSError as exc:
-            from ..proc import warn
-
-            warn(f"could not write {target}: {exc}")
-            return []
-        return [target]
 
     # -- running ---------------------------------------------------------
     def launch_cmd(self, ctx: RenderContext, *, brief: bool) -> str:

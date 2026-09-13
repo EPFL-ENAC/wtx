@@ -339,8 +339,14 @@ def drain(session: str, *, delay: float = 0.0) -> bool:
         return False
     trace(f"handoff: {session} claimed {running.name}")
     if not _spawn(running, delay=delay):
-        warn("could not fork the handoff, running it in the hook's own pane")
-        run(running)
+        # Never run it here. The handoff respawns the agent pane and this is a
+        # hook running in that pane, so it would kill itself halfway through.
+        # Put the record back instead: `wtx status` still shows it pending.
+        with contextlib.suppress(OSError):
+            running.rename(record_file(session))
+        warn("could not fork the handoff. It stays pending, see `wtx status`")
+        trace(f"handoff: {session} could not fork, record put back")
+        return False
     return True
 
 

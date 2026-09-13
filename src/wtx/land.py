@@ -100,7 +100,10 @@ def land(
             f"rebase onto origin/{base} has conflicts. Resolve them in {path} "
             f"(git rebase origin/{base}), then run wtx land again"
         ) from exc
-    run(["git", "push", "--force-with-lease"], cwd=path)
+    # Name the ref. A branch cut with wt tracks its base until setup repairs
+    # that, and a bare push then refuses to guess. land must work on a worktree
+    # setup never touched. --force-with-lease still guards origin/<branch>.
+    run(["git", "push", "--force-with-lease", "origin", branch], cwd=path)
 
     if local:
         _land_local(ctx, branch, path, base, skip_checks=skip_checks)

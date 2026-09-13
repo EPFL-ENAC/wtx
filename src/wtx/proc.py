@@ -32,6 +32,18 @@ def is_dry_run() -> bool:
     return DRY_RUN
 
 
+def would_write(path: Path) -> bool:
+    """True when a dry run should skip writing this file.
+
+    A file write does not go through run(), so every one of them asks this
+    instead. Call it, never import DRY_RUN: see is_dry_run.
+    """
+    if not DRY_RUN:
+        return False
+    print(f"would write: {path}")
+    return True
+
+
 def say(msg: str) -> None:
     print(f"wtx: {msg}", file=sys.stderr)
 

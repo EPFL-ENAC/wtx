@@ -9,7 +9,7 @@ from pathlib import Path
 
 from . import git, guard, tmux
 from .config import CONFIG_NAME
-from .proc import capture, which
+from .proc import capture, capture_code, which
 
 
 @dataclass
@@ -109,16 +109,10 @@ def run(cwd: Path | None = None) -> Report:
         )
 
     if which("gh"):
-        code = capture(["gh", "auth", "status"])
-        checks.append(
-            Check(
-                "gh authenticated",
-                "Logged in" in code or "logged in" in code,
-                "",
-                "gh auth login",
-                hard=False,
-            )
-        )
+        # The exit code, not the text: older gh prints the whole status to
+        # stderr and a check that reads stdout then always says no.
+        ok, _, _ = capture_code(["gh", "auth", "status"])
+        checks.append(Check("gh authenticated", ok == 0, "", "gh auth login", hard=False))
 
     agents = [name for name in ("claude", "opencode") if which(name)]
     checks.append(

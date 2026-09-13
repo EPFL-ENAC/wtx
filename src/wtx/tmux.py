@@ -9,6 +9,7 @@ pane title as it works, and a title is not a tmux target anyway.
 from __future__ import annotations
 
 import os
+import shlex
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -16,7 +17,7 @@ from . import envfile
 from .agents.base import PROMPT_FILE, Agent, RenderContext
 from .config import Pane
 from .context import Ctx
-from .proc import capture, capture_code, run, say, warn
+from .proc import capture, capture_code, is_dry_run, run, say, warn
 
 STATE_OPTION = "@wtx_state"
 ROLE_OPTION = "@wt_role"
@@ -33,7 +34,12 @@ def _tmux(args: list[str], *, check: bool = False) -> int:
     return run(["tmux", *args], check=check, quiet=True)
 
 
-def _tmux_out(args: list[str]) -> str:
+def _tmux_out(args: list[str], *, mutating: bool = False) -> str:
+    """What tmux printed. Reading is always safe, so only a query that also
+    changes something (a split that prints the new pane id) honours dry run."""
+    if mutating and is_dry_run():
+        print(f"would run: {shlex.join(['tmux', *args])}")
+        return ""
     return capture(["tmux", *args])
 
 
@@ -339,7 +345,8 @@ def ensure_session(
                 target,
                 "-c",
                 str(ctx.root / pane.cwd),
-            ]
+            ],
+            mutating=True,
         )
         ids.append(new_id)
 

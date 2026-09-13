@@ -49,35 +49,20 @@ def _age(since: float) -> str:
 
 
 def _rows() -> list[dict]:
-    states = notify.all_states()
-    sessions = tmux.list_sessions() if tmux.available() else []
-    rows: list[dict] = []
-    for name in sessions:
-        if name == SESSION:
-            continue
-        data = states.get(name, {})
-        rows.append(
-            {
-                "session": name,
-                "state": data.get("state", ""),
-                "since": data.get("since", 0),
-                "message": data.get("message", ""),
-                "live": True,
-            }
-        )
-    for name, data in states.items():
-        if sessions and name in sessions:
-            continue
-        if not sessions:
-            rows.append(
-                {
-                    "session": name,
-                    "state": data.get("state", ""),
-                    "since": data.get("since", 0),
-                    "message": data.get("message", ""),
-                    "live": False,
-                }
-            )
+    """One row per live session. A state file whose session is gone is stale,
+    and live_states clears it."""
+    states = notify.live_states()
+    names = tmux.list_sessions() if tmux.available() else list(states)
+    rows = [
+        {
+            "session": name,
+            "state": states.get(name, {}).get("state", ""),
+            "since": states.get(name, {}).get("since", 0),
+            "message": states.get(name, {}).get("message", ""),
+        }
+        for name in names
+        if name != SESSION
+    ]
     rows.sort(key=lambda r: (ORDER.get(r["state"], 3), r["session"]))
     return rows
 
@@ -99,8 +84,7 @@ def _ports_for(session: str) -> str:
     return " ".join(ports)
 
 
-def render(width: int = 100) -> str:
-    rows = _rows()
+def render(rows: list[dict], width: int = 100) -> str:
     header = f"wtx monitor   {time.strftime('%H:%M:%S')}   q quit, r refresh, 1-9 jump"
     lines = [header, "-" * min(width, 100)]
     if not rows:
@@ -109,9 +93,9 @@ def render(width: int = 100) -> str:
     for index, row in enumerate(rows, start=1):
         icon = notify.EMOJI.get(row["state"], "  ")
         key = str(index) if index < 10 else " "
-        state = row["state"] or ("running" if row["live"] else "gone")
+        state = row["state"] or "running"
         age = _age(row["since"])
-        ports = _ports_for(row["session"]) if row["live"] else ""
+        ports = _ports_for(row["session"])
         line = f"{key} {icon} {row['session']:<38} {state:<11} {age:>5}  {ports}"
         lines.append(line.rstrip())
         if row["message"]:
@@ -127,8 +111,9 @@ def render(width: int = 100) -> str:
     return "\n".join(lines)
 
 
-def jump(index: int) -> None:
-    rows = _rows()
+def jump(rows: list[dict], index: int) -> None:
+    """Index into the rows that were drawn, not into a fresh list: a state
+    change between the redraw and the key press would move the target."""
     if 1 <= index <= len(rows):
         target = rows[index - 1]["session"]
         if tmux.available() and tmux.has_session(target):
@@ -148,7 +133,8 @@ def serve(interval: float = 2.0) -> int:
     try:
         while True:
             width = shutil.get_terminal_size((100, 40)).columns
-            sys.stdout.write("\x1b[H\x1b[2J" + render(width) + "\n")
+            rows = _rows()
+            sys.stdout.write("\x1b[H\x1b[2J" + render(rows, width) + "\n")
             sys.stdout.flush()
             if fd is None:
                 time.sleep(interval)
@@ -160,7 +146,7 @@ def serve(interval: float = 2.0) -> int:
             if key in ("q", "\x03", "\x04"):
                 return 0
             if key.isdigit() and key != "0":
-                jump(int(key))
+                jump(rows, int(key))
     finally:
         if fd is not None and old is not None:
             termios.tcsetattr(fd, termios.TCSADRAIN, old)
@@ -174,7 +160,7 @@ def _wtx_cmd() -> str:
 def open_board(*, grid: bool = False, interval: float = 2.0) -> int:
     """Create or attach the monitor session."""
     if not tmux.available():
-        print(render())
+        print(render(_rows()))
         return 0
     if not tmux.has_session(SESSION):
         run(
@@ -205,7 +191,7 @@ def open_board(*, grid: bool = False, interval: float = 2.0) -> int:
 
 def _build_grid(limit: int = GRID_LIMIT) -> None:
     """One tile per live session, each peeking at that session's agent pane."""
-    rows = [r for r in _rows() if r["live"]][:limit]
+    rows = _rows()[:limit]
     if not rows:
         warn("no sessions to show in the grid")
         return
@@ -227,7 +213,8 @@ def _build_grid(limit: int = GRID_LIMIT) -> None:
                 "-F",
                 "#{pane_id}",
                 f"{wtx} monitor --peek {shlex.quote(rows[0]['session'])}",
-            ]
+            ],
+            mutating=True,
         )
     ]
     for row in rows[1:]:
@@ -241,7 +228,8 @@ def _build_grid(limit: int = GRID_LIMIT) -> None:
                     "-F",
                     "#{pane_id}",
                     f"{wtx} monitor --peek {shlex.quote(row['session'])}",
-                ]
+                ],
+                mutating=True,
             )
         )
         # Re-tile after every split. Past four panes tmux refuses the next

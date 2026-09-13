@@ -579,6 +579,29 @@ def test_opencode_orchestration_passes_no_model_on_the_command_line() -> None:
             assert " -m " not in agent.launch_cmd(ctx, brief=brief), (phase, brief)
 
 
+def test_opencode_briefs_run_at_the_effort_the_phase_asks_for() -> None:
+    """--variant is opencode's effort. Reading the repo default here threw away
+    --plan-effort and whatever the planner asked the build for."""
+    from wtx.agents.opencode import OpencodeAgent
+
+    cfg = _oc_orchestrated()
+    agent = OpencodeAgent()
+    plan = replace(_rctx(cfg), phase="plan", plan_effort="high")
+    build = replace(_rctx(cfg), phase="build", effort_override="max")
+    assert " --variant high" in agent.launch_cmd(plan, brief=True)
+    assert " --variant max" in agent.launch_cmd(build, brief=True)
+
+
+def test_every_generated_file_is_in_both_ignore_lists() -> None:
+    """A file wtx writes into a checkout and git does not ignore makes the
+    worktree dirty, and `wtx land` then refuses to land it."""
+    from wtx import init, machine
+
+    assert [f"**/{line}" for line in init.GITIGNORE_LINES] == machine.GIT_IGNORE_LINES
+    for name in (".env.worktree", "PROMPT.md", "PROMPT.sent.md", "opencode.json"):
+        assert name in init.GITIGNORE_LINES
+
+
 def test_opencode_without_orchestration_still_gets_its_model_flag() -> None:
     """Nothing else picks the model then, so the flag has to stay."""
     from wtx.agents.opencode import OpencodeAgent

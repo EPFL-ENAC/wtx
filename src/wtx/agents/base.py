@@ -12,7 +12,29 @@ from pathlib import Path
 from typing import Protocol
 
 from ..config import WtxConfig
+from ..proc import warn, would_write
 from ..repos import Resolved
+
+
+def write_file(target: Path, text: str) -> list[Path]:
+    """Write one generated file. Returns what it wrote, for the caller to say.
+
+    Atomic, so a half written settings file never starts an agent. A sandboxed
+    agent cannot write some of these, and that is a warning, not a failure:
+    everything else about the worktree still works.
+    """
+    if would_write(target):
+        return []
+    tmp = target.with_name(target.name + ".wtx-tmp")
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_text(text)
+        tmp.replace(target)
+    except OSError as exc:
+        warn(f"could not write {target}: {exc}")
+        tmp.unlink(missing_ok=True)
+        return []
+    return [target]
 
 
 @dataclass
