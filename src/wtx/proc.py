@@ -13,6 +13,7 @@ import subprocess
 import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+from shutil import which as shutil_which
 
 DRY_RUN = False
 
@@ -48,8 +49,8 @@ def say(msg: str) -> None:
     print(f"wtx: {msg}", file=sys.stderr)
 
 
-def warn(msg: str) -> None:
-    print(f"wtx: {msg}", file=sys.stderr)
+# Same line, two names: the caller says which one it meant.
+warn = say
 
 
 class CommandError(Exception):
@@ -141,6 +142,4 @@ def capture_code(cmd: Sequence[str], *, cwd: Path | None = None) -> tuple[int, s
 
 
 def which(name: str) -> str | None:
-    from shutil import which as _which
-
-    return _which(name)
+    return shutil_which(name)

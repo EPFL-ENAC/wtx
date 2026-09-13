@@ -32,14 +32,6 @@ from .proc import is_dry_run, say, which
 
 STATES = ("permission", "idle", "stop", "start", "running")
 
-ICONS = {
-    "permission": "[!]",
-    "idle": "[?]",
-    "stop": "[ok]",
-    "running": "",
-    "start": "",
-}
-
 EMOJI = {
     "permission": "\N{CLOSED LOCK WITH KEY}",
     "idle": "\N{SPEECH BALLOON}",
@@ -545,7 +537,7 @@ def _worker_notify_send(session: str, state: str, message: str, cwd: str, previo
 def _open_terminal(args: list[str]) -> None:
     for name, _, flag in TERMINALS:
         if which(name):
-            line = [name, *([flag] if flag else []), *args] if args else [name]
+            line = [name, *([flag] if flag else []), *args]
             subprocess.Popen(  # noqa: S603
                 line,
                 start_new_session=True,

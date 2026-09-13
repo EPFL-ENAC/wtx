@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from . import git, guard, tmux
@@ -19,15 +19,6 @@ class Check:
     detail: str = ""
     fix: str = ""
     hard: bool = True
-
-    def as_dict(self) -> dict:
-        return {
-            "name": self.name,
-            "ok": self.ok,
-            "detail": self.detail,
-            "fix": self.fix,
-            "hard": self.hard,
-        }
 
 
 @dataclass
@@ -45,7 +36,7 @@ class Report:
     def as_dict(self) -> dict:
         return {
             "ok": not self.failed,
-            "checks": [c.as_dict() for c in self.checks],
+            "checks": [asdict(c) for c in self.checks],
         }
 
 

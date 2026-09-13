@@ -110,7 +110,7 @@ def _write_prompt(path: Path, prompt: str, cfg: config_mod.WtxConfig) -> None:
     text = candidate.read_text() if candidate.is_file() else prompt
     text = text.rstrip() + "\n"
     if cfg.agent.orchestration.enabled:
-        text += orchestrate.plan_instruction()
+        text += orchestrate.PLAN_INSTRUCTION
     (path / PROMPT_FILE).write_text(text)
 
 

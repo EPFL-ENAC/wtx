@@ -31,7 +31,6 @@ def session_name(repo: str, branch: str) -> str:
 
 @dataclass
 class Ctx:
-    cwd: Path
     main: Path
     root: Path
     branch: str
@@ -102,7 +101,6 @@ def load(cwd: Path | None = None, *, root: Path | None = None) -> Ctx:
     name = cfg.repo.name or git.repo_name(main)
     branch = git.current_branch(top)
     ctx = Ctx(
-        cwd=here,
         main=main,
         root=top,
         branch=branch,
@@ -117,7 +115,6 @@ def for_worktree(main: Path, path: Path, branch: str, cfg: WtxConfig) -> Ctx:
     """Context for a worktree we are setting up, before it can describe itself."""
     name = cfg.repo.name or git.repo_name(main)
     return Ctx(
-        cwd=path,
         main=main,
         root=path,
         branch=branch,

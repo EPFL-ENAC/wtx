@@ -113,7 +113,6 @@ def test_uv_no_sync_is_added_when_a_repo_installs_editable() -> None:
         }
     )
     assert cfg.env_extra["UV_NO_SYNC"] == "1"
-    assert cfg.needs_uv_no_sync
 
 
 def test_lab_and_repo_are_expanded_in_paths() -> None:

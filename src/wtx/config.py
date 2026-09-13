@@ -252,7 +252,6 @@ class WtxConfig:
     hooks: HooksCfg = field(default_factory=HooksCfg)
     schema_version: int = SCHEMA_VERSION
     min_wtx_version: str = ""
-    source: Path | None = None
 
     # -- derived ---------------------------------------------------------
     @property
@@ -274,19 +273,6 @@ class WtxConfig:
                 out.append(k)
         return tuple(out)
 
-    @property
-    def needs_uv_no_sync(self) -> bool:
-        """uv re-syncs the venv before every `uv run`, which puts the locked
-        wheel back over an editable install. Any repo doing an editable install
-        needs UV_NO_SYNC=1."""
-        return any(r.editable_install for r in self.repos)
-
-    def repo_by_name(self, name: str) -> ExtRepo | None:
-        for r in self.repos:
-            if r.name == name:
-                return r
-        return None
-
 
 # ---------------------------------------------------------------------------
 # parsing
@@ -307,7 +293,7 @@ def _table(data: dict[str, Any], key: str) -> dict[str, Any]:
     return value
 
 
-def parse(data: dict[str, Any], *, source: Path | None = None, default_name: str = "") -> WtxConfig:
+def parse(data: dict[str, Any], *, default_name: str = "") -> WtxConfig:
     """Turn a parsed wtx.toml into a WtxConfig. Raises ConfigError.
 
     default_name fills [repo].name when the file has none. It must be known
@@ -477,7 +463,6 @@ def parse(data: dict[str, Any], *, source: Path | None = None, default_name: str
         hooks=hooks,
         schema_version=int(data.get("schema_version", SCHEMA_VERSION)),
         min_wtx_version=str(data.get("min_wtx_version", "")),
-        source=source,
     )
     return _post_process(cfg)
 
@@ -492,16 +477,6 @@ def _post_process(cfg: WtxConfig) -> WtxConfig:
     return replace(cfg, repos=repos, env_extra=env_extra)
 
 
-def find_config(start: Path) -> Path | None:
-    """Look for wtx.toml at the git main checkout, then walk up from start."""
-    cur = start.resolve()
-    for candidate in [cur, *cur.parents]:
-        f = candidate / CONFIG_NAME
-        if f.is_file():
-            return f
-    return None
-
-
 def load(path: Path) -> WtxConfig:
     try:
         with path.open("rb") as fh:
@@ -510,7 +485,7 @@ def load(path: Path) -> WtxConfig:
         raise ConfigError(f"no {path}") from exc
     except tomllib.TOMLDecodeError as exc:
         raise ConfigError(f"{path}: {exc}") from exc
-    return parse(data, source=path, default_name=_default_name(path.parent))
+    return parse(data, default_name=_default_name(path.parent))
 
 
 def _default_name(main: Path) -> str:

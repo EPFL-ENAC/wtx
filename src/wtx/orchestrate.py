@@ -86,10 +86,6 @@ HANDOFF_PROMPT = (
 )
 
 
-def plan_instruction() -> str:
-    return PLAN_INSTRUCTION
-
-
 def _marker_word(plan: str, marker: str, allowed: tuple[str, ...]) -> str:
     """The word a marker line carries, read from the end of the plan.
 

@@ -57,11 +57,6 @@ def server_reachable() -> bool:
     return code in (0, 1) and not err
 
 
-def server_up() -> bool:
-    code, _, err = capture_code(["tmux", "has-session"])
-    return code == 0 and not err
-
-
 def has_session(name: str) -> bool:
     code, _, err = capture_code(["tmux", "has-session", "-t", f"={name}"])
     return code == 0 and not err
