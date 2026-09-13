@@ -855,11 +855,16 @@ def test_the_banner_carries_no_action(monkeypatch) -> None:
 
     monkeypatch.setattr(notify, "_desktop_entry", lambda: "org.gnome.Terminal")
     monkeypatch.setattr(notify.subprocess, "run", lambda args, **kw: seen.append(args) or Done())
-    assert notify._send("app/feat-x", "permission", "", "") == "12"
+    assert notify._send("app/feat-x", "permission", "", "") == ("12", "12\n")
     args = seen[0]
     assert "-A" not in args
     assert "string:desktop-entry:org.gnome.Terminal" in args
     assert "-e" not in args, "a waiting session belongs in the list"
+
+    # The fallback for a machine with no bus to watch is the one that asks for
+    # an action, and it pays for it with the focus.
+    notify._send("app/feat-x", "permission", "", "", action=True)
+    assert "-A" in seen[1]
 
     seen.clear()
     notify._send("app/feat-x", "stop", "", "12")

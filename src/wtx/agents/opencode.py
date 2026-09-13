@@ -121,12 +121,9 @@ class OpencodeAgent:
         """opencode's TUI takes no starting message, so a brief runs headless
         first and the TUI then continues that same session.
 
-        With orchestration on there is no `-m` at all. `-m` is the first thing
-        opencode reads when it picks a model, ahead of the config file, so a
-        planner passed on the command line would stay the model for the whole
-        session and accepting the plan would switch the agent and nothing else.
-        The models sit in `agent` in opencode.json instead, and each agent
-        brings its own. See docs/traps.md.
+        With orchestration on there is no `-m`: it beats the config file, so a
+        planner passed there would stay the model for the whole session. The
+        models ride `agent` in opencode.json instead. See docs/traps.md.
         """
         model = "" if ctx.cfg.agent.orchestration.enabled else self._model(ctx, ctx.model)
         flags = f" -m {model}" if model else ""

@@ -69,30 +69,26 @@ def state_file(session: str) -> Path:
     return state_dir() / f"{safe_name(session)}.json"
 
 
-def read_state(session: str) -> dict:
-    f = state_file(session)
-    if not f.is_file():
-        return {}
+def _load(path: Path) -> dict:
+    """One state file. A missing or half written one reads as no state."""
     try:
-        return json.loads(f.read_text())
+        data = json.loads(path.read_text())
     except (json.JSONDecodeError, OSError):
         return {}
+    return data if isinstance(data, dict) else {}
+
+
+def read_state(session: str) -> dict:
+    return _load(state_file(session))
 
 
 def all_states() -> dict[str, dict]:
-    out: dict[str, dict] = {}
     try:
         files = sorted(state_dir().glob("*.json"))
     except OSError:
-        return out
-    for f in files:
-        try:
-            data = json.loads(f.read_text())
-        except (json.JSONDecodeError, OSError):
-            continue
-        if data.get("session"):
-            out[data["session"]] = data
-    return out
+        return {}
+    states = (_load(f) for f in files)
+    return {d["session"]: d for d in states if d.get("session")}
 
 
 def live_states() -> dict[str, dict]:
@@ -172,16 +168,16 @@ def session_for(cwd: Path) -> str:
     worktree's branch as soon as an agent is launched from one. It is only a
     fallback for a checkout git cannot name (a detached head).
     """
+    if not tmux.available():
+        return ""
     main = git.main_checkout(cwd)
     branch = ""
     if main is not None:
         branch = git.current_branch(cwd) or os.environ.get("WT_BRANCH", "")
     if main is not None and branch:
         name = session_name(repo_name_for(main), branch)
-        if tmux.available() and tmux.has_session(name):
+        if tmux.has_session(name):
             return name
-    if not tmux.available():
-        return ""
     out = tmux.out(["list-panes", "-a", "-F", "#{session_name}\t#{pane_current_path}"])
     target = str(cwd.resolve())
     for line in out.splitlines():
@@ -383,19 +379,23 @@ def _text(session: str, state: str, message: str) -> tuple[str, str]:
     return title, body
 
 
-def _send(session: str, state: str, message: str, replace: str) -> str:
-    """Show the banner and return its id.
+def _send(
+    session: str, state: str, message: str, replace: str, *, action: bool = False
+) -> tuple[str, str]:
+    """Show the banner. Returns its id and what notify-send printed.
 
-    It carries no action on purpose. GNOME only raises the app named by
-    desktop-entry when the notification has no default action: with one it
+    Without action it carries none, on purpose: GNOME only raises the app named
+    by desktop-entry when the notification has no default action. With one it
     emits ActionInvoked and nothing else, which is why clicking used to leave
     you on the wrong workspace. The click is caught on the bus instead, see
-    _clicked.
+    _clicked. action=True is the fallback for a machine with no bus to watch.
     """
     title, body = _text(session, state, message)
     args = ["notify-send", "-p", "-a", "wtx"]
     if replace:
         args += ["-r", replace]
+    if action:
+        args += ["-A", "default=Open session"]
     entry = _desktop_entry()
     if entry:
         args += ["-h", f"string:desktop-entry:{entry}"]
@@ -406,9 +406,10 @@ def _send(session: str, state: str, message: str, replace: str) -> str:
     try:
         proc = subprocess.run(args, capture_output=True, text=True, check=False)  # noqa: S603
     except OSError:
-        return ""
+        return "", ""
     lines = [ln.strip() for ln in proc.stdout.splitlines() if ln.strip()]
-    return lines[0] if lines and lines[0].isdigit() else ""
+    ident = lines[0] if lines and lines[0].isdigit() else ""
+    return ident, proc.stdout
 
 
 def closed_reason(line: str, ident: str) -> int:
@@ -495,11 +496,20 @@ def worker(session: str, state: str, message: str, cwd: str = "") -> int:
     write_id(session, previous_id, os.getpid())
 
     if which("gdbus") is None:
-        return _worker_notify_send(session, state, message, cwd, previous_id)
+        # No bus to watch, so the banner carries the action itself. It costs
+        # the focus: a notification with an action is not allowed to raise its
+        # app, so a click only moves the tmux client. notify-send blocks until
+        # then and prints the action name.
+        ident, printed = _send(session, state, message, previous_id, action=True)
+        if ident:
+            write_id(session, ident, os.getpid())
+        if "default" in printed:
+            _open_session(session, cwd)
+        return 0
 
     watcher = _start_monitor()
     try:
-        ident = _send(session, state, message, previous_id)
+        ident, _ = _send(session, state, message, previous_id)
         if not ident:
             return 0
         write_id(session, ident, os.getpid())
@@ -507,30 +517,6 @@ def worker(session: str, state: str, message: str, cwd: str = "") -> int:
             _open_session(session, cwd)
     finally:
         _end(watcher)
-    return 0
-
-
-def _worker_notify_send(session: str, state: str, message: str, cwd: str, previous_id: str) -> int:
-    """The fallback for a machine without gdbus.
-
-    notify-send -A blocks until the click and prints the action name. It costs
-    the focus: a notification that carries an action is not allowed to raise
-    its app, so this only moves the tmux client.
-    """
-    title, body = _text(session, state, message)
-    args = ["notify-send", "-p", "-a", "wtx", "-A", "default=Open session"]
-    if previous_id:
-        args[1:1] = ["-r", previous_id]
-    args += [title, body]
-    try:
-        proc = subprocess.run(args, capture_output=True, text=True, check=False)  # noqa: S603
-    except OSError:
-        return 0
-    lines = [ln.strip() for ln in proc.stdout.splitlines() if ln.strip()]
-    if lines and lines[0].isdigit():
-        write_id(session, lines[0], os.getpid())
-    if "default" in proc.stdout:
-        _open_session(session, cwd)
     return 0
 
 
@@ -576,11 +562,8 @@ def status_line(max_items: int = 4) -> str:
 
 def main(argv: list[str]) -> int:  # pragma: no cover - process entry point
     if argv and argv[0] == "--worker":
-        session = argv[1] if len(argv) > 1 else ""
-        state = argv[2] if len(argv) > 2 else ""
-        message = argv[3] if len(argv) > 3 else ""
-        cwd = argv[4] if len(argv) > 4 else ""
-        return worker(session, state, message, cwd)
+        # _spawn_desktop is the only caller and always passes all four.
+        return worker(*argv[1:5])
     return handle(argv[0] if argv else "idle")
 
 

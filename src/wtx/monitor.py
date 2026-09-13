@@ -10,11 +10,13 @@ the agent pane is where the work actually happens.
 from __future__ import annotations
 
 import re
+import select
 import shlex
 import shutil
 import sys
 import time
 import unicodedata
+from collections.abc import Iterator
 from pathlib import Path
 
 from . import envfile, git, notify, tmux
@@ -118,9 +120,12 @@ def jump(rows: list[dict], index: int) -> None:
             tmux.attach(target)
 
 
-def serve(interval: float = 2.0) -> int:
-    """The loop that runs inside the monitor pane."""
-    import select
+def _keys(interval: float) -> Iterator[str]:
+    """One item per interval: the key that was typed, or "" for a timeout.
+
+    Puts the terminal in cbreak mode and always puts it back. Both loops below
+    act on the key and then redraw, so every item is one frame.
+    """
     import termios
     import tty
 
@@ -129,25 +134,32 @@ def serve(interval: float = 2.0) -> int:
     if fd is not None:
         tty.setcbreak(fd)
     try:
+        yield ""  # draw once before the first wait
         while True:
-            width = shutil.get_terminal_size((100, 40)).columns
-            rows = _rows()
-            sys.stdout.write("\x1b[H\x1b[2J" + render(rows, width) + "\n")
-            sys.stdout.flush()
             if fd is None:
                 time.sleep(interval)
+                yield ""
                 continue
             ready, _, _ = select.select([sys.stdin], [], [], interval)
-            if not ready:
-                continue
-            key = sys.stdin.read(1)
-            if key in ("q", "\x03", "\x04"):
-                return 0
-            if key.isdigit() and key != "0":
-                jump(rows, int(key))
+            yield sys.stdin.read(1) if ready else ""
     finally:
         if fd is not None and old is not None:
             termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+
+def serve(interval: float = 2.0) -> int:
+    """The loop that runs inside the monitor pane."""
+    rows: list[dict] = []
+    for key in _keys(interval):
+        if key in ("q", "\x03", "\x04"):
+            return 0
+        if key.isdigit() and key != "0":
+            jump(rows, int(key))
+        width = shutil.get_terminal_size((100, 40)).columns
+        rows = _rows()
+        sys.stdout.write("\x1b[H\x1b[2J" + render(rows, width) + "\n")
+        sys.stdout.flush()
+    return 0
 
 
 def _wtx_cmd() -> str:
@@ -328,48 +340,30 @@ def peek(session: str, interval: float = PEEK_INTERVAL) -> int:
     real session down to the size of the tile, and it shows the top of the
     window while the part worth reading is the prompt at the bottom.
     """
-    import select
-    import termios
-    import tty
-
-    fd = sys.stdin.fileno() if sys.stdin.isatty() else None
-    old = termios.tcgetattr(fd) if fd is not None else None
-    if fd is not None:
-        tty.setcbreak(fd)
     pane = ""
     looked = 0.0
-    try:
-        while True:
-            now = time.time()
-            if not pane or now - looked > 3:
-                # A handoff respawns the agent pane, so its id changes under us.
-                pane = tmux.agent_pane_id(session) if tmux.available() else ""
-                looked = now
-            size = shutil.get_terminal_size((80, 24))
-            data = notify.read_state(session)
-            frame = render_peek(
-                _capture(pane) if pane else ["(no agent pane)"],
-                session=session,
-                state=data.get("state", ""),
-                age=_age(data.get("since", 0)),
-                rows=size.lines,
-                width=size.columns,
-            )
-            sys.stdout.write("\x1b[H" + frame.replace("\n", "\x1b[K\r\n") + "\x1b[K\x1b[J")
-            sys.stdout.flush()
-            if fd is None:
-                time.sleep(interval)
-                continue
-            ready, _, _ = select.select([sys.stdin], [], [], interval)
-            if not ready:
-                continue
-            key = sys.stdin.read(1)
-            if key in ("q", "\x03", "\x04"):
-                return 0
-            if key in ("\r", "\n", "o"):
-                # This runs in a pane, so TMUX is set and attach() switches the
-                # client that is looking at the grid.
-                tmux.attach(session)
-    finally:
-        if fd is not None and old is not None:
-            termios.tcsetattr(fd, termios.TCSADRAIN, old)
+    for key in _keys(interval):
+        if key in ("q", "\x03", "\x04"):
+            return 0
+        if key in ("\r", "\n", "o"):
+            # This runs in a pane, so TMUX is set and attach() switches the
+            # client that is looking at the grid.
+            tmux.attach(session)
+        now = time.time()
+        if not pane or now - looked > 3:
+            # A handoff respawns the agent pane, so its id changes under us.
+            pane = tmux.agent_pane_id(session) if tmux.available() else ""
+            looked = now
+        size = shutil.get_terminal_size((80, 24))
+        data = notify.read_state(session)
+        frame = render_peek(
+            _capture(pane) if pane else ["(no agent pane)"],
+            session=session,
+            state=data.get("state", ""),
+            age=_age(data.get("since", 0)),
+            rows=size.lines,
+            width=size.columns,
+        )
+        sys.stdout.write("\x1b[H" + frame.replace("\n", "\x1b[K\r\n") + "\x1b[K\x1b[J")
+        sys.stdout.flush()
+    return 0
