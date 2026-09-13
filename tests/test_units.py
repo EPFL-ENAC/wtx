@@ -166,34 +166,40 @@ def test_protected_branch_rules_cover_both_push_spellings() -> None:
     assert "Bash(git push *:dev)" in rules
 
 
-def test_baseline_has_no_bare_interpreter_in_ask() -> None:
-    """An ask rule beats everything, even auto mode. A bare interpreter there
-    prompts on every heredoc edit, which is how an agent writes files."""
+def test_no_ask_rule_catches_an_ordinary_edit_or_test_run() -> None:
+    """An ask rule beats everything, even auto mode, and no allow overrides it.
+    One that matches how an agent writes files would prompt on every edit.
+
+    Matched the way the rules are, as globs over the whole command text, so a
+    rule like `python3 -*` is caught however it is spelled."""
+    from fnmatch import fnmatch
+
     from wtx.agents.claude import _baseline
 
-    ask = _baseline()["permissions"]["ask"]
-    for bad in ("Bash(python -)", "Bash(python3 -)", "Bash(node -)", "Bash(perl -)"):
-        assert bad not in ask
+    ordinary = (
+        "python3 - <<'EOF'",
+        "python3 -m pytest tests/ -q",
+        'node -e "console.log(1)"',
+        "cat > src/x.py <<'EOF'",
+        "sh -c 'ls'",
+        "uv run pytest -q",
+        "git commit -m x",
+    )
+    ask = [r.removeprefix("Bash(").removesuffix(")") for r in _baseline()["permissions"]["ask"]]
+    for cmd in ordinary:
+        caught = [r for r in ask if fnmatch(cmd, r)]
+        assert not caught, f"{cmd!r} would prompt, caught by {caught}"
 
 
 def test_a_repo_cannot_remove_a_baseline_rule() -> None:
     """wtx.toml appends. If it could subtract, one typo reopens force pushes."""
-    from wtx.agents.base import RenderContext
-
     cfg = parse(
         {
             "repo": {"base_branch": "dev", "protected_branches": ["dev"]},
             "permissions": {"allow": ["Bash(git push * --force*)"]},
         }
     )
-    ctx = RenderContext(
-        root=__import__("pathlib").Path("/tmp/x"),
-        main=__import__("pathlib").Path("/tmp/x"),
-        branch="b",
-        session="s",
-        cfg=cfg,
-    )
-    settings = ClaudeAgent().build_settings(ctx)
+    settings = ClaudeAgent().build_settings(_rctx(cfg))
     assert "Bash(git push * --force*)" in settings["permissions"]["deny"]
 
 
@@ -233,9 +239,25 @@ def test_no_module_reads_wt_main() -> None:
     import re
 
     src = pathlib.Path(__file__).resolve().parents[1] / "src" / "wtx"
-    reads = re.compile(r"""environ(?:\.get\(|\[)\s*['"]WT_MAIN['"]""")
+    # Every way a module could read it, not just os.environ["WT_MAIN"].
+    reads = re.compile(
+        r"""environ(?:\.get\(|\[)\s*['"]WT_MAIN"""
+        r"""|getenv\(\s*['"]WT_MAIN"""
+        r"""|['"]WT_MAIN['"]\s+in\s+os\.environ"""
+    )
     hits = [f.name for f in src.rglob("*.py") if reads.search(f.read_text())]
     assert hits == [], f"WT_MAIN is read in {hits}"
+
+
+def test_no_module_copies_the_dry_run_flag() -> None:
+    """`from .proc import DRY_RUN` copies the value at import time, so a later
+    set_dry_run never reaches that module and a dry run removes things for
+    real. Every caller asks proc.is_dry_run()."""
+    import pathlib
+
+    src = pathlib.Path(__file__).resolve().parents[1] / "src" / "wtx"
+    hits = [f.name for f in src.rglob("*.py") if f.name != "proc.py" and "DRY_RUN" in f.read_text()]
+    assert hits == [], f"DRY_RUN is copied in {hits}"
 
 
 def test_repo_placeholder_survives_a_missing_name(tmp_path) -> None:
@@ -267,34 +289,35 @@ def test_marker_is_always_written_and_a_key_under_it_survives(tmp_path) -> None:
     assert envfile.read(f)["MINE"] == "1"
 
 
+def _settings(tmp_path: Path, **events: list[tuple[str, str]]) -> Path:
+    """A settings.json carrying these hooks: event -> [(matcher, command)]."""
+    hooks = {
+        event: [
+            {"matcher": matcher, "hooks": [{"type": "command", "command": command}]}
+            for matcher, command in entries
+        ]
+        for event, entries in events.items()
+    }
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps({"hooks": hooks}))
+    return path
+
+
+def _wtx_fragment() -> dict:
+    from wtx import machine
+
+    return json.loads(machine.planned("claude")[-1].body)["hooks"]
+
+
 def test_install_machine_replaces_the_old_notify_hooks_and_keeps_others(tmp_path) -> None:
     from wtx import machine
 
-    settings = tmp_path / "settings.json"
-    settings.write_text(
-        json.dumps(
-            {
-                "hooks": {
-                    "Stop": [
-                        {"matcher": "", "hooks": [{"type": "command", "command": "/x/persist.sh"}]},
-                        {
-                            "matcher": "*",
-                            "hooks": [{"type": "command", "command": "/x/claude-notify stop"}],
-                        },
-                    ],
-                    "Notification": [
-                        {
-                            "matcher": "permission_prompt",
-                            "hooks": [
-                                {"type": "command", "command": "/x/claude-notify permission"}
-                            ],
-                        },
-                    ],
-                }
-            }
-        )
+    settings = _settings(
+        tmp_path,
+        Stop=[("", "/x/persist.sh"), ("*", "/x/claude-notify stop")],
+        Notification=[("permission_prompt", "/x/claude-notify permission")],
     )
-    fragment = json.loads(machine.planned("claude")[-1].body)["hooks"]
+    fragment = _wtx_fragment()
     assert machine._merge_hooks(settings, fragment)
     hooks = json.loads(settings.read_text())["hooks"]
     text = json.dumps(hooks)
@@ -309,26 +332,8 @@ def test_install_machine_drops_an_old_hook_sitting_next_to_ours(tmp_path) -> Non
     run must still remove the old ones, even though ours are already there."""
     from wtx import machine
 
-    settings = tmp_path / "settings.json"
-    settings.write_text(
-        json.dumps(
-            {
-                "hooks": {
-                    "Stop": [
-                        {
-                            "matcher": "*",
-                            "hooks": [{"type": "command", "command": "/x/claude-notify stop"}],
-                        },
-                        {
-                            "matcher": "*",
-                            "hooks": [{"type": "command", "command": "wtx notify stop"}],
-                        },
-                    ],
-                }
-            }
-        )
-    )
-    fragment = json.loads(machine.planned("claude")[-1].body)["hooks"]
+    settings = _settings(tmp_path, Stop=[("*", "/x/claude-notify stop"), ("*", "wtx notify stop")])
+    fragment = _wtx_fragment()
     assert machine._merge_hooks(settings, fragment)
     text = json.dumps(json.loads(settings.read_text()))
     assert "claude-notify" not in text

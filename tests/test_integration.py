@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 
 import pytest
-from conftest import calls_of
+from conftest import calls_of, commit, fake_sessions
 
 from wtx import config as config_mod
 from wtx import context, envfile, git, guard
@@ -140,16 +141,23 @@ def test_edit_answers_reports_a_service_the_repo_grew(repo: Path) -> None:
     assert [f["name"] for f in merged["ports"]["family"]] == ["backend"]
 
 
-def test_edit_answers_stays_quiet_about_what_the_file_dropped(repo: Path) -> None:
-    """A pane the human deleted is a choice, not drift."""
+def test_edit_answers_keeps_a_pane_the_human_deleted_and_says_so(repo: Path) -> None:
+    """The file wins, so the pane stays gone. It is still named in _changes,
+    with a file of None: wtx cannot tell a pane dropped on purpose from one
+    that did not exist yet, so the skill asks instead of guessing."""
     answers = init_mod.scan(repo)
     answers.pop("_notes", None)
     init_mod.write_all(repo, answers)
     text = (repo / "wtx.toml").read_text()
-    (repo / "wtx.toml").write_text(text)
+    assert "[[panes.pane]]" in text
+    # Drop the last pane the way a human would, by deleting its block.
+    dropped = answers["panes"]["pane"][-1]["name"]
+    (repo / "wtx.toml").write_text(text.rpartition("[[panes.pane]]")[0])
 
     merged = init_mod.edit_answers(repo)
-    assert merged["_changes"] == []
+    assert dropped not in [p["name"] for p in merged["panes"]["pane"]]
+    marked = {c["what"]: c for c in merged["_changes"]}
+    assert marked[f"panes.{dropped}"]["file"] is None
 
 
 def test_edit_answers_without_wtx_toml_is_a_plain_scan(repo: Path) -> None:
@@ -307,12 +315,7 @@ def test_seeded_file_is_not_overwritten(wtx_repo: Path, fake_bin: Path) -> None:
 def guarded(wtx_repo: Path, fake_bin: Path) -> Path:
     path = make_worktree(wtx_repo, "feat/guard")
     setup_mod.run_setup(context.load(root=path), start_tmux=False)
-    subprocess.run(
-        ["git", "commit", "-q", "--allow-empty", "-m", "work"],
-        cwd=path,
-        check=True,
-        capture_output=True,
-    )
+    commit(path)
     return path
 
 
@@ -344,12 +347,7 @@ def test_worktree_may_not_push_anything_else(guarded: Path, args) -> None:
 
 
 def test_main_checkout_is_unrestricted(guarded: Path, wtx_repo: Path) -> None:
-    subprocess.run(
-        ["git", "commit", "-q", "--allow-empty", "-m", "on dev"],
-        cwd=wtx_repo,
-        check=True,
-        capture_output=True,
-    )
+    commit(wtx_repo, "on dev")
     assert push(wtx_repo, "origin", "dev").returncode == 0
 
 
@@ -363,12 +361,7 @@ def test_an_existing_pre_push_hook_still_runs(wtx_repo: Path, fake_bin: Path) ->
     assert (hooks / "pre-push.before-wt").is_file()
 
     path = make_worktree(wtx_repo, "feat/chain")
-    subprocess.run(
-        ["git", "commit", "-q", "--allow-empty", "-m", "w"],
-        cwd=path,
-        check=True,
-        capture_output=True,
-    )
+    commit(path)
     result = push(path, "origin", "HEAD:refs/heads/feat/chain")
     assert result.returncode == 0
     assert "CHAINED" in result.stderr
@@ -499,7 +492,7 @@ def test_opencode_orchestration_writes_a_model_per_agent(wtx_repo: Path, fake_bi
     """The TUI switches agents itself when the plan is accepted, and the model
     follows the agent through `mode`: the top level model stays the
     worktree's own one."""
-    _enable_orchestration(wtx_repo, plan_model='"planner"', build_model='"worker"')
+    _enable_orchestration(wtx_repo, plan_model="planner", build_model="worker")
     path = make_worktree(wtx_repo, "feat/oc-plan")
     setup_mod.run_setup(
         context.load(root=path), agent_tool="opencode", llm="qwen", start_tmux=False
@@ -514,9 +507,10 @@ def test_opencode_orchestration_writes_a_model_per_agent(wtx_repo: Path, fake_bi
 
 def test_a_session_is_built_with_one_pane_per_config_entry(wtx_repo: Path, fake_bin: Path) -> None:
     path = make_worktree(wtx_repo, "feat/tmux")
-    setup_mod.run_setup(context.load(root=path), start_tmux=True)
+    ctx = context.load(root=path)
+    setup_mod.run_setup(ctx, start_tmux=True)
     roles = [c for c in calls_of(fake_bin, "tmux") if "@wt_role" in c]
-    assert len(roles) == 4
+    assert len(roles) == len(ctx.cfg.panes.panes)
     assert any(c.endswith("@wt_role agent") for c in roles)
     scrub = [c for c in calls_of(fake_bin, "tmux") if "set-environment -gu" in c]
     assert any("ROOT" in c for c in scrub)
@@ -565,7 +559,7 @@ def test_land_refuses_from_a_worktree(wtx_repo: Path, fake_bin: Path, monkeypatc
 def test_dry_run_changes_nothing(wtx_repo: Path, fake_bin: Path, monkeypatch, capsys) -> None:
     path = make_worktree(wtx_repo, "feat/dry")
     setup_mod.run_setup(context.load(root=path), start_tmux=False)
-    subprocess.run(["git", "commit", "-q", "--allow-empty", "-m", "w"], cwd=path, check=True)
+    commit(path)
     before = git_out(["rev-parse", "dev"], wtx_repo)
     monkeypatch.chdir(wtx_repo)
     run(["--dry-run", "land", "feat/dry", "--local"])
@@ -625,17 +619,31 @@ def test_go_refuses_an_invalid_config(wtx_repo: Path, fake_bin: Path, monkeypatc
     assert git.worktree_path_for(wtx_repo, "feat/bad") is None
 
 
+@pytest.fixture
+def quiet_notify(monkeypatch):
+    """handle() as a hook sees it: a known session, no desktop fork, no stdin.
+
+    Without the stdin stub the payload reader blocks on pytest's capture.
+    """
+    from wtx import notify
+
+    def patch(session: str) -> None:
+        monkeypatch.setattr(notify, "session_for", lambda cwd: session)
+        monkeypatch.setattr(notify, "_spawn_desktop", lambda *a, **k: None)
+        monkeypatch.setattr("sys.stdin", type("S", (), {"isatty": lambda s: True})())
+
+    return patch
+
+
 def test_notify_writes_a_state_and_the_status_line(
-    wtx_repo: Path, fake_bin: Path, monkeypatch
+    wtx_repo: Path, fake_bin: Path, quiet_notify
 ) -> None:
     from wtx import notify
 
     path = make_worktree(wtx_repo, "feat/notify")
     setup_mod.run_setup(context.load(root=path), start_tmux=True)
     ctx = context.load(root=path)
-    monkeypatch.setattr(notify, "session_for", lambda cwd: ctx.session)
-    monkeypatch.setattr(notify, "_spawn_desktop", lambda *a, **k: None)
-    monkeypatch.setattr("sys.stdin", type("S", (), {"isatty": lambda s: True})())
+    quiet_notify(ctx.session)
     notify.handle("permission", cwd=path)
 
     assert notify.read_state(ctx.session)["state"] == "permission"
@@ -646,7 +654,7 @@ def test_notify_writes_a_state_and_the_status_line(
 
 
 def test_a_settled_session_drops_its_notification(
-    wtx_repo: Path, fake_bin: Path, monkeypatch
+    wtx_repo: Path, fake_bin: Path, quiet_notify
 ) -> None:
     """Every permission prompt used to leave a banner in the GNOME list. A day
     of agents filled it, and a full list makes the shell crawl."""
@@ -655,9 +663,7 @@ def test_a_settled_session_drops_its_notification(
     path = make_worktree(wtx_repo, "feat/close")
     setup_mod.run_setup(context.load(root=path), start_tmux=True)
     ctx = context.load(root=path)
-    monkeypatch.setattr(notify, "session_for", lambda cwd: ctx.session)
-    monkeypatch.setattr(notify, "_spawn_desktop", lambda *a, **k: None)
-    monkeypatch.setattr("sys.stdin", type("S", (), {"isatty": lambda s: True})())
+    quiet_notify(ctx.session)
 
     # pid 0 is nobody, so nothing is killed. The id is what matters here.
     notify.id_file(ctx.session).write_text("7 0")
@@ -668,6 +674,22 @@ def test_a_settled_session_drops_its_notification(
     assert len(closed) == 1
     assert closed[0].endswith(" 7")
     assert not notify.id_file(ctx.session).exists()
+
+
+def test_the_worker_records_the_banner_it_raised_without_gdbus(
+    wtx_repo: Path, fake_bin: Path, monkeypatch
+) -> None:
+    """The fallback for a machine with no bus to watch. The id has to land in
+    the file either way, or the next hook cannot close the banner."""
+    from wtx import notify
+
+    monkeypatch.setattr(notify, "which", lambda name: None if name == "gdbus" else f"/bin/{name}")
+    assert notify.worker("app/feat-x", "permission", "needs you") == 0
+
+    sent = calls_of(fake_bin, "notify-send")
+    assert len(sent) == 1
+    assert "-A default=Open session" in sent[0], "no bus, so the banner carries the action"
+    assert notify.read_id("app/feat-x") == ("7", os.getpid())
 
 
 def test_a_dead_session_drops_its_notification(wtx_repo: Path, fake_bin: Path, monkeypatch) -> None:
@@ -694,11 +716,10 @@ def test_the_grid_shows_the_waiting_sessions_first(
     wtx_repo: Path, fake_bin: Path, monkeypatch
 ) -> None:
     """One tile per session, and the one asking for something is tile one."""
-    import os
 
     from wtx import monitor, notify
 
-    Path(os.environ["WTX_TEST_SESSIONS"]).write_text("app/calm\napp/asking\n")
+    fake_sessions("app/calm", "app/asking")
     notify.write_state("app/asking", "permission")
 
     monitor._build_grid()
@@ -715,11 +736,10 @@ def test_the_grid_never_tiles_the_monitor_itself(
     wtx_repo: Path, fake_bin: Path, monkeypatch
 ) -> None:
     """A tile peeking at the monitor session draws the grid inside the grid."""
-    import os
 
     from wtx import monitor
 
-    Path(os.environ["WTX_TEST_SESSIONS"]).write_text(f"{monitor.SESSION}\napp/one\n")
+    fake_sessions(monitor.SESSION, "app/one")
     monitor._build_grid()
     peeked = [c.split("--peek ", 1)[1] for c in calls_of(fake_bin, "tmux") if "--peek " in c]
     assert peeked == ["app/one"]
@@ -730,17 +750,32 @@ def test_a_state_file_outlives_its_session_only_until_something_reads_it(
 ) -> None:
     """A session killed from tmux never runs settle, so its state file stays.
     It used to surface in the status bar on the day no session was live."""
-    import os
 
     from wtx import notify
 
-    Path(os.environ["WTX_TEST_SESSIONS"]).write_text("app/live\n")
+    fake_sessions("app/live")
     notify.write_state("app/live", "permission")
     notify.write_state("app/killed", "permission")
 
     assert "app/killed" not in notify.status_line()
     assert "app/live" in notify.status_line()
     assert not notify.state_file("app/killed").exists()
+
+
+def test_a_worktrees_own_wtx_toml_does_not_change_its_rules(wtx_repo: Path, fake_bin: Path) -> None:
+    """Setup reads the config from the main checkout. A feature branch that
+    could edit its own wtx.toml could widen what the agent working on it is
+    allowed to do."""
+    path = make_worktree(wtx_repo, "feat/sneaky")
+    (path / "wtx.toml").write_text(
+        (wtx_repo / "wtx.toml").read_text()
+        + '\n[permissions]\nallow = ["Bash(git push * --force*)"]\n'
+    )
+    assert "--force" in (path / "wtx.toml").read_text()
+    setup_mod.run_setup(context.load(root=path), start_tmux=False)
+
+    settings = json.loads((path / ".claude" / "settings.local.json").read_text())
+    assert "Bash(git push * --force*)" not in settings["permissions"]["allow"]
 
 
 def test_wt_toml_hooks_are_lists(wtx_repo: Path) -> None:
@@ -835,7 +870,7 @@ def test_land_refuses_a_branch_cut_from_a_newer_protected_branch(
         check=True,
         capture_output=True,
     )
-    subprocess.run(["git", "commit", "-q", "--allow-empty", "-m", "w"], cwd=path, check=True)
+    commit(path)
 
     monkeypatch.chdir(wtx_repo)
     assert run(["land", "feat/drag", "--local", "--skip-checks"]) == 1
@@ -849,8 +884,8 @@ def test_land_asks_for_a_merge_commit_not_a_squash(
     """The branch history must survive on the base branch. A squash would
     flatten it into one commit."""
     path = make_worktree(wtx_repo, "feat/merge")
-    subprocess.run(["git", "commit", "-q", "--allow-empty", "-m", "one"], cwd=path, check=True)
-    subprocess.run(["git", "commit", "-q", "--allow-empty", "-m", "two"], cwd=path, check=True)
+    commit(path, "one")
+    commit(path, "two")
 
     # A gh that answers OPEN until the merge, MERGED after it, so the poll ends.
     marker = fake_bin.parent / "merged"
@@ -904,21 +939,14 @@ def test_help_is_a_word_too(capsys) -> None:
 # -- orchestration ------------------------------------------------------------
 
 
-@pytest.fixture(autouse=True)
-def no_fork(monkeypatch):
-    """capture() fires the handoff itself. A test must never fork the real
-    process that respawns a pane, so keep the records it would have run."""
-    from wtx import orchestrate
-
-    fired: list[Path] = []
-    monkeypatch.setattr(orchestrate, "_spawn", lambda record, **kw: fired.append(record) or True)
-    return fired
-
-
 def _enable_orchestration(root: Path, **over) -> None:
-    """Replace the block `wtx init` writes, which is there but switched off."""
-    keys = {"enabled": "true", **over}
-    body = "\n".join(f"{k} = {v}" for k, v in keys.items())
+    """Replace the block `wtx init` writes, which is there but switched off.
+
+    Takes Python values: json.dumps is valid TOML for strings and booleans, so
+    a caller does not spell out the inner quotes.
+    """
+    keys = {"enabled": True, **over}
+    body = "\n".join(f"{k} = {json.dumps(v)}" for k, v in keys.items())
     kept, skipping = [], False
     for line in (root / "wtx.toml").read_text().splitlines():
         if line.startswith("["):
@@ -947,11 +975,13 @@ def test_an_accepted_plan_continues_on_the_implementation_model(
     """The whole point: plan on fable, accept, implement on opus, no typing.
 
     And in the same conversation, so the implementation still has everything
-    the planner read.
+    the planner read. The hook fires the handoff itself: stopping the turn
+    means Claude Code never runs the Stop hook, and a record left for it would
+    sit there for ever. Checked against 2.1.267.
     """
     from wtx import orchestrate
 
-    _enable_orchestration(wtx_repo, plan_model='"fable"', build_model='"opus"')
+    _enable_orchestration(wtx_repo, plan_model="fable", build_model="opus")
     path = make_worktree(wtx_repo, "feat/plan")
     setup_mod.run_setup(context.load(root=path), start_tmux=True)
 
@@ -977,7 +1007,7 @@ def test_a_small_plan_lowers_the_effort_not_the_model(
     change with the size of the job."""
     from wtx import orchestrate
 
-    _enable_orchestration(wtx_repo, build_model='"opus"', build_effort='"xhigh"')
+    _enable_orchestration(wtx_repo, build_model="opus", build_effort="xhigh")
     path = make_worktree(wtx_repo, "feat/small")
     setup_mod.run_setup(context.load(root=path), start_tmux=True)
 
@@ -1019,9 +1049,9 @@ def test_a_plan_the_planner_can_implement_itself_is_not_handed_over(
     """Same model, same effort: respawning the pane would only cost a restart."""
     _enable_orchestration(
         wtx_repo,
-        plan_model='"opus"',
-        plan_effort='"xhigh"',
-        build_model='"opus"',
+        plan_model="opus",
+        plan_effort="xhigh",
+        build_model="opus",
     )
     path = make_worktree(wtx_repo, "feat/same-model")
     setup_mod.run_setup(context.load(root=path), start_tmux=True)
@@ -1067,7 +1097,7 @@ def test_a_brief_asks_the_planner_for_an_effort(
 def test_a_briefed_session_starts_on_the_planning_model(
     wtx_repo: Path, fake_bin: Path, monkeypatch
 ) -> None:
-    _enable_orchestration(wtx_repo, plan_model='"fable"')
+    _enable_orchestration(wtx_repo, plan_model="fable")
     path = make_worktree(wtx_repo, "feat/planner")
     setup_mod.run_setup(context.load(root=path), start_tmux=True)
 
@@ -1075,19 +1105,6 @@ def test_a_briefed_session_starts_on_the_planning_model(
     run(["brief", "feat/planner", "--prompt", "Add a health endpoint."])
     sent = [c for c in calls_of(fake_bin, "tmux") if "send-keys" in c]
     assert any("--model fable --permission-mode plan" in c for c in sent)
-
-
-def test_the_hook_fires_the_handoff_itself(wtx_repo: Path, fake_bin: Path, no_fork: list) -> None:
-    """Stopping the turn from a hook means Claude Code never runs the Stop
-    hook, so a handoff left for it sits there forever. Checked against 2.1.267,
-    where the record was written and nothing ever claimed it."""
-    _enable_orchestration(wtx_repo)
-    path = make_worktree(wtx_repo, "feat/stop")
-    setup_mod.run_setup(context.load(root=path), start_tmux=True)
-
-    _accept(path, "1. do it\n\nwtx-effort: xhigh\n")
-
-    assert len(no_fork) == 1
 
 
 def test_a_handoff_that_cannot_fork_stays_pending(
@@ -1111,7 +1128,7 @@ def test_a_handoff_that_cannot_fork_stays_pending(
 
 
 def test_the_stop_hook_still_fires_a_handoff_left_behind(
-    wtx_repo: Path, fake_bin: Path, monkeypatch, no_fork: list
+    wtx_repo: Path, fake_bin: Path, quiet_notify, no_fork: list
 ) -> None:
     """The backup path: a record written by an older wtx, or one whose fork
     failed. The session must not be reported as waiting on a human either."""
@@ -1121,9 +1138,7 @@ def test_the_stop_hook_still_fires_a_handoff_left_behind(
     path = make_worktree(wtx_repo, "feat/left")
     setup_mod.run_setup(context.load(root=path), start_tmux=True)
     ctx = context.load(root=path)
-    monkeypatch.setattr(notify, "session_for", lambda cwd: ctx.session)
-    monkeypatch.setattr(notify, "_spawn_desktop", lambda *a, **k: None)
-    monkeypatch.setattr("sys.stdin", type("S", (), {"isatty": lambda s: True})())
+    quiet_notify(ctx.session)
 
     orchestrate.write_record(
         ctx.session,
@@ -1164,81 +1179,46 @@ def test_the_handoff_command_answers_the_hook(
     assert json.loads(capsys.readouterr().out)["continue"] is False
 
 
-def test_the_plan_is_read_from_the_file_when_the_tool_does_not_carry_it(
-    wtx_repo: Path, fake_bin: Path, tmp_path: Path, no_fork: list
+@pytest.mark.parametrize(
+    "section,key",
+    [
+        ("tool_input", "plan"),
+        ("tool_input", "planFilePath"),
+        ("tool_response", "filePath"),
+        ("tool_response", "plan"),
+    ],
+)
+def test_the_plan_is_found_wherever_the_tool_left_it(
+    wtx_repo: Path, fake_bin: Path, tmp_path: Path, no_fork: list, section: str, key: str
 ) -> None:
-    """Claude Code 2.1.267 dropped `plan` from the ExitPlanMode schema: the
-    plan goes to a file and the tool only says it is ready. Reading the input
-    key alone makes every handoff a silent no-op."""
+    """Claude Code 2.1.267 dropped `plan` from the ExitPlanMode schema: the plan
+    goes to a file and the tool only says it is ready. The call names it
+    planFilePath, the result names it filePath, and either may still carry the
+    plan itself. Reading one key alone makes every handoff a silent no-op."""
     from wtx import orchestrate
 
-    _enable_orchestration(wtx_repo, build_model='"opus"')
+    _enable_orchestration(wtx_repo, build_model="opus")
     path = make_worktree(wtx_repo, "feat/planfile")
     setup_mod.run_setup(context.load(root=path), start_tmux=True)
+    plan = "1. write it\n\nwtx-effort: xhigh\n"
     plan_file = tmp_path / "the-plan.md"
-    plan_file.write_text("1. write it\n\nwtx-effort: xhigh\n")
+    plan_file.write_text(plan)
 
     answer = orchestrate.capture(
         {
             "cwd": str(path),
             "session_id": "conv-file",
             "tool_name": "ExitPlanMode",
-            "tool_input": {"planFilePath": str(plan_file)},
+            "tool_input": {},
+            section: {key: str(plan_file) if key.lower().endswith("filepath") else plan},
         }
     )
 
     assert json.loads(answer)["continue"] is False
     record = json.loads(no_fork[0].read_text())
+    assert record["model"] == "opus"
     assert record["effort"] == "xhigh"
     assert record["conversation"] == "conv-file"
-
-
-def test_the_plan_file_can_come_from_the_tool_response(
-    wtx_repo: Path, fake_bin: Path, tmp_path: Path
-) -> None:
-    """The accepted-plan result names it `filePath`, the call names it
-    `planFilePath`. Both are in the same transcript, so read both."""
-    from wtx import orchestrate
-
-    _enable_orchestration(wtx_repo)
-    path = make_worktree(wtx_repo, "feat/response")
-    setup_mod.run_setup(context.load(root=path), start_tmux=True)
-    plan_file = tmp_path / "from-response.md"
-    plan_file.write_text("1. do it\n\nwtx-effort: medium\n")
-
-    answer = orchestrate.capture(
-        {
-            "cwd": str(path),
-            "session_id": "conv-resp",
-            "tool_name": "ExitPlanMode",
-            "tool_input": {"plan": ""},
-            "tool_response": {"filePath": str(plan_file)},
-        }
-    )
-
-    assert json.loads(answer)["continue"] is False
-
-
-def test_the_tool_can_carry_nothing_but_the_response(wtx_repo: Path, fake_bin: Path) -> None:
-    """The shape a model that follows the 2.1.267 tool description produces:
-    ExitPlanMode called with no arguments, the plan only in the result."""
-    from wtx import orchestrate
-
-    _enable_orchestration(wtx_repo)
-    path = make_worktree(wtx_repo, "feat/bare")
-    setup_mod.run_setup(context.load(root=path), start_tmux=True)
-
-    answer = orchestrate.capture(
-        {
-            "cwd": str(path),
-            "session_id": "conv-bare",
-            "tool_name": "ExitPlanMode",
-            "tool_input": {},
-            "tool_response": {"plan": "1. do it\n\nwtx-effort: xhigh\n"},
-        }
-    )
-
-    assert json.loads(answer)["continue"] is False
 
 
 def test_a_leaked_wt_branch_does_not_rename_the_session(
@@ -1276,7 +1256,7 @@ def test_the_log_records_a_handoff_end_to_end(
 ) -> None:
     from wtx import orchestrate
 
-    _enable_orchestration(wtx_repo, build_model='"opus"')
+    _enable_orchestration(wtx_repo, build_model="opus")
     path = make_worktree(wtx_repo, "feat/logged")
     setup_mod.run_setup(context.load(root=path), start_tmux=True)
     ctx = context.load(root=path)
@@ -1326,7 +1306,7 @@ def test_a_pending_handoff_shows_in_status(
     wtx_repo: Path, fake_bin: Path, monkeypatch, capsys
 ) -> None:
     """A handoff that never fires must not be invisible."""
-    _enable_orchestration(wtx_repo, build_model='"opus"')
+    _enable_orchestration(wtx_repo, build_model="opus")
     path = make_worktree(wtx_repo, "feat/visible")
     setup_mod.run_setup(context.load(root=path), start_tmux=True)
 
@@ -1340,7 +1320,7 @@ def test_a_pending_handoff_shows_in_status(
 def test_plan_effort_survives_a_later_setup(wtx_repo: Path, fake_bin: Path, monkeypatch) -> None:
     """A flag passed once to `wtx go` has nowhere to live but .env.worktree.
     The handoff and every later setup rebuild the context from scratch."""
-    _enable_orchestration(wtx_repo, plan_model='"fable"')
+    _enable_orchestration(wtx_repo, plan_model="fable")
     make_worktree(wtx_repo, "feat/big-plan")
     monkeypatch.chdir(wtx_repo)
     run(
@@ -1373,7 +1353,7 @@ def test_a_briefed_session_plans_at_the_plan_effort(
     wtx_repo: Path, fake_bin: Path, monkeypatch
 ) -> None:
     """Planning is reading and thinking. Low unless the caller said otherwise."""
-    _enable_orchestration(wtx_repo, plan_model='"fable"', plan_effort='"low"')
+    _enable_orchestration(wtx_repo, plan_model="fable", plan_effort="low")
     path = make_worktree(wtx_repo, "feat/plan-effort")
     setup_mod.run_setup(context.load(root=path), start_tmux=True)
 
@@ -1389,9 +1369,7 @@ def test_the_plan_names_the_effort_the_build_runs_at(
     """The planner has just read the code. It knows better than small/large."""
     from wtx import orchestrate
 
-    _enable_orchestration(
-        wtx_repo, plan_model='"fable"', build_model='"opus"', large_effort='"xhigh"'
-    )
+    _enable_orchestration(wtx_repo, plan_model="fable", build_model="opus", large_effort="xhigh")
     path = make_worktree(wtx_repo, "feat/named-effort")
     setup_mod.run_setup(context.load(root=path), start_tmux=True)
 
@@ -1411,7 +1389,7 @@ def test_go_says_when_llm_is_not_what_a_brief_will_use(
 ) -> None:
     """--llm names the model for a plain session; a brief takes its models from
     the orchestration block. Silently ignoring the flag is worse than saying so."""
-    _enable_orchestration(wtx_repo, plan_model='"fable"', build_model='"opus"')
+    _enable_orchestration(wtx_repo, plan_model="fable", build_model="opus")
     make_worktree(wtx_repo, "feat/llm-note")
     monkeypatch.chdir(wtx_repo)
     capsys.readouterr()
