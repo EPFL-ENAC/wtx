@@ -376,8 +376,17 @@ def _orchestrated(**over) -> config.WtxConfig:
 
 
 def _rctx(cfg: config.WtxConfig) -> RenderContext:
+    """What tmux.render_ctx builds: the plan keys arrive already resolved, the
+    way context.Ctx resolves them from .env.worktree and the config."""
+    orch = cfg.agent.orchestration
     return RenderContext(
-        root=Path("/w"), main=Path("/m"), branch="feat/x", session="app/feat-x", cfg=cfg
+        root=Path("/w"),
+        main=Path("/m"),
+        branch="feat/x",
+        session="app/feat-x",
+        cfg=cfg,
+        plan_model=orch.plan_model,
+        plan_effort=orch.plan_effort,
     )
 
 

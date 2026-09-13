@@ -52,8 +52,9 @@ class RenderContext:
     # Which side of the plan/build handoff this launch is on. Empty means a
     # plain session, which is neither. See orchestrate.py.
     phase: str = ""
-    # This worktree's own plan model and plan effort, from .env.worktree. Empty
-    # means the repo config decides.
+    # The plan model and plan effort this launch uses, already resolved:
+    # context.Ctx reads .env.worktree and falls back to the repo config, so
+    # nothing below resolves them a second time.
     plan_model: str = ""
     plan_effort: str = ""
     # The effort the planner asked for, on a build launch.
@@ -76,10 +77,8 @@ class RenderContext:
         settings file included, keeps the worktree's model.
         """
         orch = self.cfg.agent.orchestration
-        if self.phase == "plan" and orch.enabled:
-            planner = self.plan_model or orch.plan_model
-            if planner:
-                return planner
+        if self.phase == "plan" and orch.enabled and self.plan_model:
+            return self.plan_model
         return self.llm or self.cfg.agent.llm
 
     @property
@@ -102,7 +101,7 @@ class RenderContext:
         """
         orch = self.cfg.agent.orchestration
         if self.phase == "plan" and orch.enabled:
-            return self.plan_effort or orch.plan_effort or self.cfg.agent.effort
+            return self.plan_effort or self.cfg.agent.effort
         if self.phase == "build" and orch.enabled and self.effort_override:
             return self.effort_override
         return self.cfg.agent.effort

@@ -99,7 +99,7 @@ class OpencodeAgent:
         orch = ctx.cfg.agent.orchestration
         plan_model = build_model = ""
         if orch.enabled:
-            plan_model = self._model(ctx, ctx.plan_model or orch.plan_model)
+            plan_model = self._model(ctx, ctx.plan_model)
             build_model = self._model(ctx, orch.build_model)
         if model:
             out["model"] = model
