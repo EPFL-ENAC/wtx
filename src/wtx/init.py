@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import re
 import tomllib
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -98,9 +99,7 @@ def _package_manager(root: Path) -> str:
         return "pnpm"
     if (root / "yarn.lock").is_file():
         return "yarn"
-    if (root / "package-lock.json").is_file():
-        return "npm"
-    if (root / "package.json").is_file():
+    if (root / "package-lock.json").is_file() or (root / "package.json").is_file():
         return "npm"
     return ""
 
@@ -296,7 +295,11 @@ def scan(main: Path) -> dict[str, Any]:
     ).splitlines()
     remote = {b.removeprefix("origin/") for b in branches}
     base = "dev" if "dev" in remote else ("main" if "main" in remote else git.current_branch(main))
-    protected = [base] + [b for b in _workflow_branches(main) if b != base]
+    # Read once, both for the config below and for the notes at the end.
+    workflow_branches = _workflow_branches(main)
+    siblings = _sibling_repos(main)
+    publishes_tags = _publishes_tags(main)
+    protected = [base] + [b for b in workflow_branches if b != base]
     if "main" in remote and "main" not in protected:
         protected.append("main")
 
@@ -376,7 +379,7 @@ def scan(main: Path) -> dict[str, Any]:
         allow += ["Bash(uv run ruff *)", "Bash(uv run pytest *)"]
 
     deny = []
-    if _publishes_tags(main):
+    if publishes_tags:
         deny += ["Bash(git tag *)", "Bash(git push * --tags)"]
 
     k8s = _k8s_entry(name, main.name)
@@ -385,7 +388,7 @@ def scan(main: Path) -> dict[str, Any]:
         ext_repos.append(
             {"name": "k8s", "path": k8s["path"], "access": "pair", "base_branch": "main"}
         )
-    for sib in _sibling_repos(main):
+    for sib in siblings:
         # The GitOps repo is already covered by the k8s entry above, which points
         # at this repo's folder inside it rather than the whole thing.
         if sib["name"] == K8S_ROOT.name:
@@ -443,9 +446,9 @@ def scan(main: Path) -> dict[str, Any]:
             "package_manager": root_manager or manager,
             "uses_uv": uses_uv,
             "k8s_found": k8s.get("found", ""),
-            "siblings": _sibling_repos(main),
-            "workflow_branches": _workflow_branches(main),
-            "publishes_tags": _publishes_tags(main),
+            "siblings": siblings,
+            "workflow_branches": workflow_branches,
+            "publishes_tags": publishes_tags,
             "make_targets": root_targets,
         },
     }
@@ -566,21 +569,58 @@ def _v(value: Any) -> str:
     return json.dumps(str(value))
 
 
+# The inline note a key earns, where the key alone does not explain itself.
+_NOTES = {
+    "lab": "fills {lab} in the paths below",
+    "main": "what the main checkout keeps",
+    "python_version_file": "uv does not look up the tree for it",
+    "computed": "written by a hook, wtx carries them over",
+    "log": "mirrored to .wt-logs/, the agent reads it",
+}
+
+_EMPTY = (None, "", 0, [], {}, False)
+
+
+def _keys(table: dict[str, Any], keys: Sequence[str], always: Sequence[str] = ()) -> list[str]:
+    """`key = value` for the keys that carry one, with their note."""
+    out = []
+    for k in keys:
+        if table.get(k) in _EMPTY and k not in always:
+            continue
+        note = f"   # {_NOTES[k]}" if k in _NOTES else ""
+        out.append(f"{k} = {_v(table.get(k, ''))}{note}")
+    return out
+
+
+def _block(
+    name: str,
+    table: dict[str, Any],
+    keys: Sequence[str],
+    *,
+    note: str = "",
+    always: Sequence[str] = (),
+) -> list[str]:
+    """One [section]. Nothing at all when it would carry no key."""
+    body = _keys(table, keys, always)
+    if not body:
+        return []
+    head = [f"# {line}" for line in note.splitlines()] if note else []
+    return [*head, f"[{name}]", *body, ""]
+
+
 def render_toml(answers: dict[str, Any]) -> str:
     a = answers
-    repo = a.get("repo", {})
     lines: list[str] = [
         "# wtx: every branch gets its own worktree, ports, tmux session and agent.",
         "# Reference for every key: https://github.com/EPFL-ENAC/wtx/blob/main/docs/schema.md",
         f"schema_version = {SCHEMA_VERSION}",
         "",
-        "[repo]",
-        f"name = {_v(repo.get('name', ''))}",
     ]
-    if repo.get("lab"):
-        lines.append(f"lab = {_v(repo['lab'])}   # fills {{lab}} in the paths below")
+
+    repo = a.get("repo", {})
     lines += [
-        f"base_branch = {_v(repo.get('base_branch', 'main'))}",
+        "[repo]",
+        *_keys(repo, ("name", "lab", "base_branch"), always=("name", "base_branch")),
         "# The single source for the push guard, the completion and the deny rules.",
         f"protected_branches = {_v(repo.get('protected_branches', ['main']))}",
         "",
@@ -590,54 +630,25 @@ def render_toml(answers: dict[str, Any]) -> str:
     if families:
         lines += ["# One offset per worktree, one port per family at that offset.", "[ports]"]
         for f in families:
-            lines += [
-                "",
-                "[[ports.family]]",
-                f"name = {_v(f['name'])}",
-                f"main = {_v(f['main'])}   # what the main checkout keeps",
-            ]
-            if f.get("env"):
-                lines.append(f"env = {_v(f['env'])}")
+            lines += ["", "[[ports.family]]", *_keys(f, ("name", "main", "env"))]
         lines.append("")
 
-    seed = a.get("seed", {})
-    if any(seed.get(k) for k in ("copy", "symlink", "required")):
-        lines.append("# Gitignored files a fresh worktree needs. Never overwritten.")
-        lines.append("[seed]")
-        for key in ("copy", "symlink", "required"):
-            if seed.get(key):
-                lines.append(f"{key} = {_v(seed[key])}")
-        lines.append("")
+    lines += _block(
+        "seed",
+        a.get("seed", {}),
+        ("copy", "symlink", "required"),
+        note="Gitignored files a fresh worktree needs. Never overwritten.",
+    )
 
     deps = a.get("deps", {})
-    if deps.get("step") or deps.get("python_version_file") or deps.get("post_install"):
-        lines.append("[deps]")
-        if deps.get("python_version_file"):
-            lines.append(
-                f"python_version_file = {_v(deps['python_version_file'])}"
-                "   # uv does not look up the tree for it"
-            )
-        if deps.get("post_install"):
-            lines.append(f"post_install = {_v(deps['post_install'])}")
+    head = _keys(deps, ("python_version_file", "post_install"))
+    if head or deps.get("step"):
+        lines += ["[deps]", *head]
         for step in deps.get("step", []):
-            lines += ["", "[[deps.step]]"]
-            if step.get("if_missing"):
-                lines.append(f"if_missing = {_v(step['if_missing'])}")
-            if step.get("cwd", ".") != ".":
-                lines.append(f"cwd = {_v(step['cwd'])}")
-            lines.append(f"run = {_v(step['run'])}")
+            lines += ["", "[[deps.step]]", *_keys(step, ("if_missing", "cwd", "run"))]
         lines.append("")
 
-    env = a.get("env", {})
-    if env.get("extra") or env.get("computed"):
-        lines.append("[env]")
-        if env.get("extra"):
-            lines.append(f"extra = {_v(env['extra'])}")
-        if env.get("computed"):
-            lines.append(
-                f"computed = {_v(env['computed'])}   # written by a hook, wtx carries them over"
-            )
-        lines.append("")
+    lines += _block("env", a.get("env", {}), ("extra", "computed"))
 
     panes = a.get("panes", {}).get("pane", [])
     if panes:
@@ -645,104 +656,80 @@ def render_toml(answers: dict[str, Any]) -> str:
             "# The agent pane fills the left half, the rest stack on the right.",
             "[panes]",
         ]
-        for p in panes:
+        for pane in panes:
             lines += [
                 "",
                 "[[panes.pane]]",
-                f"name = {_v(p['name'])}",
-                f"role = {_v(p.get('role', 'shell'))}",
+                *_keys(pane, ("name", "role", "cwd", "cmd", "log"), always=("name", "role")),
             ]
-            if p.get("cwd", ".") != ".":
-                lines.append(f"cwd = {_v(p['cwd'])}")
-            if p.get("cmd"):
-                lines.append(f"cmd = {_v(p['cmd'])}")
-            if p.get("log"):
-                lines.append("log = true   # mirrored to .wt-logs/, the agent reads it")
         lines.append("")
 
     agent = a.get("agent", {})
-    lines.append("[agent]")
-    for key in (
-        "tool",
-        "llm",
-        "brief_permission_mode",
-        "subagent_model",
-        "effort",
-        "auto_compact_window",
-        "explore_agent_model",
-    ):
-        if agent.get(key) not in (None, "", 0):
-            lines.append(f"{key} = {_v(agent[key])}")
-    if agent.get("disabled_mcp_servers"):
-        lines.append(f"disabled_mcp_servers = {_v(agent['disabled_mcp_servers'])}")
+    lines += [
+        "[agent]",
+        *_keys(
+            agent,
+            (
+                "tool",
+                "llm",
+                "brief_permission_mode",
+                "subagent_model",
+                "effort",
+                "auto_compact_window",
+                "explore_agent_model",
+                "disabled_mcp_servers",
+            ),
+        ),
+        "",
+    ]
     orch = agent.get("orchestration", {})
-    if orch:
-        lines += [
-            "",
-            "# Plan on one model, implement on another. A brief starts on",
-            "# plan_model in plan mode. With Claude, accepting the plan carries",
-            "# the same conversation on to build_model, at the effort the plan",
-            "# asked for. With opencode the agent switch does it, and the",
-            "# effort routing does not apply.",
-            "[agent.orchestration]",
-        ]
-        for key, value in orch.items():
-            lines.append(f"{key} = {_v(value)}")
+    lines += _block(
+        "agent.orchestration",
+        orch,
+        tuple(orch),
+        # enabled = false is the switch a reader has to see to know it is there.
+        always=("enabled",),
+        note=(
+            "Plan on one model, implement on another. A brief starts on\n"
+            "plan_model in plan mode. With Claude, accepting the plan carries\n"
+            "the same conversation on to build_model, at the effort the plan\n"
+            "asked for. With opencode the agent switch does it, and the\n"
+            "effort routing does not apply."
+        ),
+    )
+    lines += _block("agent.opencode", agent.get("opencode", {}), tuple(agent.get("opencode", {})))
 
-    oc = agent.get("opencode", {})
-    if oc:
-        lines += ["", "[agent.opencode]"]
-        for key, value in oc.items():
-            if value:
-                lines.append(f"{key} = {_v(value)}")
-    lines.append("")
-
-    perms = a.get("permissions", {})
-    if any(perms.get(k) for k in ("allow", "ask", "deny", "allowed_domains")):
-        lines += [
-            "# Added to the baseline wtx ships. A repo can tighten, never loosen.",
-            "[permissions]",
-        ]
-        for key in ("allow", "ask", "deny", "allowed_domains"):
-            if perms.get(key):
-                lines.append(f"{key} = {_v(perms[key])}")
-        lines.append("")
-
-    checks = a.get("checks", {})
-    if checks.get("lint") or checks.get("test"):
-        lines += ["# Run by `wtx land --local`.", "[checks]"]
-        for key in ("lint", "test"):
-            if checks.get(key):
-                lines.append(f"{key} = {_v(checks[key])}")
-        lines.append("")
+    lines += _block(
+        "permissions",
+        a.get("permissions", {}),
+        ("allow", "ask", "deny", "allowed_domains"),
+        note="Added to the baseline wtx ships. A repo can tighten, never loosen.",
+    )
+    lines += _block(
+        "checks", a.get("checks", {}), ("lint", "test"), note="Run by `wtx land --local`."
+    )
 
     for r in a.get("repos", []):
+        access = r.get("access", "read")
+        note = (
+            "read free, edits only through a paired worktree"
+            if access == "pair"
+            else "read free, never writable"
+        )
         lines += [
             "[[repos]]",
-            f"name = {_v(r['name'])}",
-            f"path = {_v(r['path'])}",
-            f"access = {_v(r.get('access', 'read'))}"
-            + (
-                "   # read free, edits only through a paired worktree"
-                if r.get("access") == "pair"
-                else "   # read free, never writable"
-            ),
+            *_keys(r, ("name", "path"), always=("name", "path")),
+            f"access = {_v(access)}   # {note}",
+            *_keys(r, ("base_branch", "env_prefix", "editable_install")),
+            "",
         ]
-        if r.get("base_branch"):
-            lines.append(f"base_branch = {_v(r['base_branch'])}")
-        if r.get("env_prefix"):
-            lines.append(f"env_prefix = {_v(r['env_prefix'])}")
-        if r.get("editable_install"):
-            lines.append(f"editable_install = {_v(r['editable_install'])}")
-        lines.append("")
 
-    hooks = a.get("hooks", {})
-    if hooks.get("post_setup") or hooks.get("pre_teardown"):
-        lines += ["# This repo's own steps, run by wtx setup and teardown.", "[hooks]"]
-        for key in ("post_setup", "pre_teardown"):
-            if hooks.get(key):
-                lines.append(f"{key} = {_v(hooks[key])}")
-        lines.append("")
+    lines += _block(
+        "hooks",
+        a.get("hooks", {}),
+        ("post_setup", "pre_teardown"),
+        note="This repo's own steps, run by wtx setup and teardown.",
+    )
 
     return "\n".join(lines).rstrip() + "\n"
 
@@ -760,13 +747,15 @@ def update_gitignore(main: Path) -> bool:
     return True
 
 
+def _env_key(family: dict[str, Any]) -> str:
+    """The same rule as config.PortFamily.env_key, on the answers dict."""
+    return family.get("env") or f"{family['name'].upper()}_PORT"
+
+
 def claude_section(answers: dict[str, Any]) -> str:
     repo = answers.get("repo", {})
     panes = [p["name"] for p in answers.get("panes", {}).get("pane", [])]
-    keys = [
-        f.get("env") or f"{f['name'].upper()}_PORT"
-        for f in answers.get("ports", {}).get("family", [])
-    ]
+    keys = [_env_key(f) for f in answers.get("ports", {}).get("family", [])]
     protected = " and ".join(f"`{b}`" for b in repo.get("protected_branches", []))
     text = CLAUDE_SECTION.format(
         repo=repo.get("name", "the repo"),
@@ -809,7 +798,7 @@ def app_patches(answers: dict[str, Any]) -> list[str]:
     """What a human still has to change in the app so ports are variables."""
     out: list[str] = []
     for f in answers.get("ports", {}).get("family", []):
-        key = f.get("env") or f"{f['name'].upper()}_PORT"
+        key = _env_key(f)
         out.append(
             f"{f['name']}: read the port from ${key}, defaulting to {f['main']}. "
             f"Every place that hardcodes {f['main']} needs it "
