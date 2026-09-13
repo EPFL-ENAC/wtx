@@ -329,14 +329,14 @@ def cmd_done(args: argparse.Namespace) -> int:
         not args.from_tmux
         and os.environ.get("TMUX")
         and tmux.available()
-        and tmux._tmux_out(["display-message", "-p", "#{session_name}"]) == session
+        and tmux.out(["display-message", "-p", "#{session_name}"]) == session
     )
     if inside:
         # Removing the worktree kills the shell running this command. Hand the
         # job to the tmux server so it outlives the session.
         say("handing off to the tmux server, this session is about to close")
         force = " --force" if args.force else ""
-        tmux._tmux(
+        tmux.cmd(
             [
                 "run-shell",
                 "-b",

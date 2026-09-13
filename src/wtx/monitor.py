@@ -71,9 +71,7 @@ def _ports_for(session: str) -> str:
     """Ports of the checkout behind a session, read from its agent pane's path."""
     if not tmux.available():
         return ""
-    path = tmux._tmux_out(
-        ["list-panes", "-t", f"={session}", "-F", "#{pane_current_path}"]
-    ).splitlines()
+    path = tmux.out(["list-panes", "-t", f"={session}", "-F", "#{pane_current_path}"]).splitlines()
     if not path:
         return ""
     top = git.toplevel(Path(path[0]))
@@ -179,7 +177,7 @@ def open_board(*, grid: bool = False, interval: float = 2.0) -> int:
         tmux.server_options()
     if grid:
         _build_grid()
-        tmux._tmux(["select-window", "-t", f"={SESSION}:{GRID_WINDOW}"])
+        tmux.cmd(["select-window", "-t", f"={SESSION}:{GRID_WINDOW}"])
     # prefix+g runs this from a `run-shell` job. That job has TMUX in its
     # environment but no terminal of its own, so `switch-client` with no -c has
     # to guess which client it meant. Name the client that was used last
@@ -195,14 +193,14 @@ def _build_grid(limit: int = GRID_LIMIT) -> None:
     if not rows:
         warn("no sessions to show in the grid")
         return
-    windows = tmux._tmux_out(["list-windows", "-t", f"={SESSION}", "-F", "#{window_name}"])
+    windows = tmux.out(["list-windows", "-t", f"={SESSION}", "-F", "#{window_name}"])
     if GRID_WINDOW in windows.split():
-        tmux._tmux(["kill-window", "-t", f"={SESSION}:{GRID_WINDOW}"])
+        tmux.cmd(["kill-window", "-t", f"={SESSION}:{GRID_WINDOW}"])
 
     wtx = _wtx_cmd()
     target = f"={SESSION}:{GRID_WINDOW}"
     ids = [
-        tmux._tmux_out(
+        tmux.out(
             [
                 "new-window",
                 "-t",
@@ -219,7 +217,7 @@ def _build_grid(limit: int = GRID_LIMIT) -> None:
     ]
     for row in rows[1:]:
         ids.append(
-            tmux._tmux_out(
+            tmux.out(
                 [
                     "split-window",
                     "-t",
@@ -234,13 +232,13 @@ def _build_grid(limit: int = GRID_LIMIT) -> None:
         )
         # Re-tile after every split. Past four panes tmux refuses the next
         # one with "no space for new pane" if the layout is left alone.
-        tmux._tmux(["select-layout", "-t", target, "tiled"])
+        tmux.cmd(["select-layout", "-t", target, "tiled"])
 
-    tmux._tmux(["select-layout", "-t", target, "tiled"])
-    tmux._tmux(["set-option", "-w", "-t", target, "pane-border-status", "top"])
+    tmux.cmd(["select-layout", "-t", target, "tiled"])
+    tmux.cmd(["set-option", "-w", "-t", target, "pane-border-status", "top"])
     for pane_id, row in zip(ids, rows, strict=False):
         if pane_id:
-            tmux._tmux(["select-pane", "-t", pane_id, "-T", row["session"]])
+            tmux.cmd(["select-pane", "-t", pane_id, "-T", row["session"]])
     say(f"grid shows {len(rows)} session(s), Enter on a tile to go there")
 
 
@@ -316,7 +314,7 @@ def _capture(pane: str) -> list[str]:
     Without dropping the blanks, a pane whose prompt sits high leaves the tile
     showing nothing but empty rows.
     """
-    out = tmux._tmux_out(["capture-pane", "-p", "-e", "-t", pane])
+    out = tmux.out(["capture-pane", "-p", "-e", "-t", pane])
     lines = out.split("\n")
     while lines and not plain(lines[-1]).strip():
         lines.pop()

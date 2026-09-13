@@ -182,7 +182,7 @@ def session_for(cwd: Path) -> str:
             return name
     if not tmux.available():
         return ""
-    out = tmux._tmux_out(["list-panes", "-a", "-F", "#{session_name}\t#{pane_current_path}"])
+    out = tmux.out(["list-panes", "-a", "-F", "#{session_name}\t#{pane_current_path}"])
     target = str(cwd.resolve())
     for line in out.splitlines():
         name, _, path = line.partition("\t")
@@ -552,7 +552,7 @@ def _open_session(session: str, cwd: str = "") -> None:
         return
     pane = tmux.agent_pane_id(session)
     if pane:
-        tmux._tmux(["select-pane", "-t", pane])
+        tmux.cmd(["select-pane", "-t", pane])
     if not tmux.focus_session(session):
         _open_terminal(["tmux", "attach-session", "-t", f"={session}"])
 

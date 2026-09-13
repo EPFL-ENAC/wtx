@@ -30,11 +30,11 @@ def available() -> bool:
     return which("tmux") is not None and server_reachable()
 
 
-def _tmux(args: list[str], *, check: bool = False) -> int:
+def cmd(args: list[str], *, check: bool = False) -> int:
     return run(["tmux", *args], check=check, quiet=True)
 
 
-def _tmux_out(args: list[str], *, mutating: bool = False) -> str:
+def out(args: list[str], *, mutating: bool = False) -> str:
     """What tmux printed. Reading is always safe, so only a query that also
     changes something (a split that prints the new pane id) honours dry run."""
     if mutating and is_dry_run():
@@ -63,21 +63,21 @@ def has_session(name: str) -> bool:
 
 
 def list_sessions() -> list[str]:
-    out = _tmux_out(["list-sessions", "-F", "#{session_name}"])
-    return [line for line in out.splitlines() if line]
+    names = out(["list-sessions", "-F", "#{session_name}"])
+    return [line for line in names.splitlines() if line]
 
 
 def set_session_option(session: str, key: str, value: str) -> None:
-    _tmux(["set-option", "-t", f"={session}", key, value])
+    cmd(["set-option", "-t", f"={session}", key, value])
 
 
 def get_session_option(session: str, key: str) -> str:
-    return _tmux_out(["show-options", "-v", "-t", f"={session}", key])
+    return out(["show-options", "-v", "-t", f"={session}", key])
 
 
 def kill_session(session: str) -> None:
     if has_session(session):
-        _tmux(["kill-session", "-t", f"={session}"])
+        cmd(["kill-session", "-t", f"={session}"])
 
 
 def scrub_environment(keys: Sequence[str]) -> None:
@@ -92,7 +92,7 @@ def scrub_environment(keys: Sequence[str]) -> None:
     from .repos import WITH_ENV
 
     for key in ("ROOT", WITH_ENV, GO_AGENT_ENV, GO_LLM_ENV, GO_DRIVING_ENV, *keys):
-        _tmux(["set-environment", "-gu", key])
+        cmd(["set-environment", "-gu", key])
 
 
 def server_options() -> None:
@@ -107,14 +107,14 @@ def server_options() -> None:
     tmux parses the snippet before sh does, so it uses no dollar signs and no
     double quotes.
     """
-    _tmux(["set-option", "-g", "detach-on-destroy", "off"])
+    cmd(["set-option", "-g", "detach-on-destroy", "off"])
     resolve = "wtx done --path '#{pane_current_path}' --from-tmux"
     close = f'run-shell -b "{resolve}"'
     discard = (
         "confirm-before -p 'discard uncommitted changes and remove the worktree? (y/n)' "
         f'"run-shell -b \\"{resolve} --force\\""'
     )
-    _tmux(
+    cmd(
         [
             "bind-key",
             "X",
@@ -136,17 +136,13 @@ def server_options() -> None:
 
 
 def agent_pane_id(session: str) -> str:
-    out = _tmux_out(["list-panes", "-t", f"={session}", "-F", "#{pane_id} #{" + ROLE_OPTION + "}"])
-    for line in out.splitlines():
+    lines = out(["list-panes", "-t", f"={session}", "-F", "#{pane_id} #{" + ROLE_OPTION + "}"])
+    panes: dict[str, str] = {}
+    for line in lines.splitlines():
         pane_id, _, role = line.partition(" ")
-        if role.strip() == "agent":
-            return pane_id
-    # sessions made by the old bash scripts tagged the pane "claude"
-    for line in out.splitlines():
-        pane_id, _, role = line.partition(" ")
-        if role.strip() == "claude":
-            return pane_id
-    return ""
+        panes.setdefault(role.strip(), pane_id)
+    # "claude" is what the old bash scripts tagged the pane.
+    return panes.get("agent") or panes.get("claude", "")
 
 
 def _split_percent(position: int, total: int) -> int:
@@ -206,7 +202,7 @@ def urls(ctx: Ctx) -> str:
 
 def attach(session: str) -> None:
     if os.environ.get("TMUX"):
-        _tmux(["switch-client", "-t", f"={session}"])
+        cmd(["switch-client", "-t", f"={session}"])
     else:
         run(["tmux", "attach-session", "-t", f"={session}"], check=False)
 
@@ -224,15 +220,15 @@ def focus_session(session: str) -> bool:
     """
     if not available() or not has_session(session):
         return False
-    clients = _tmux_out(["list-clients", "-F", "#{client_activity} #{client_name}"]).splitlines()
+    clients = out(["list-clients", "-F", "#{client_activity} #{client_name}"]).splitlines()
     newest = sorted(line for line in clients if " " in line)
     if not newest:
         return False
-    _tmux(["switch-client", "-c", newest[-1].split(" ", 1)[1], "-t", f"={session}"])
+    cmd(["switch-client", "-c", newest[-1].split(" ", 1)[1], "-t", f"={session}"])
     return True
 
 
-def respawn_agent(ctx: Ctx, cmd: str, *, note: str = "") -> bool:
+def respawn_agent(ctx: Ctx, line: str, *, note: str = "") -> bool:
     """Restart the agent pane on a new command line.
 
     Nothing reaches an agent that is already running, so the pane is respawned.
@@ -249,9 +245,9 @@ def respawn_agent(ctx: Ctx, cmd: str, *, note: str = "") -> bool:
     load = envfile.load_snippet(ctx.cfg.owned_env_keys)
     if note:
         say(note)
-    _tmux(["respawn-pane", "-k", "-t", pane, "-c", str(ctx.root)])
-    _tmux(["send-keys", "-t", pane, f"{load}; {cmd}", "C-m"])
-    _tmux(["select-pane", "-t", pane])
+    cmd(["respawn-pane", "-k", "-t", pane, "-c", str(ctx.root)])
+    cmd(["send-keys", "-t", pane, f"{load}; {line}", "C-m"])
+    cmd(["select-pane", "-t", pane])
     return True
 
 
@@ -305,7 +301,7 @@ def ensure_session(
     ordered = agent_panes + others
     first = ordered[0]
 
-    _tmux(
+    cmd(
         [
             "new-session",
             "-d",
@@ -320,14 +316,14 @@ def ensure_session(
     server_options()  # this run may have just started the server
 
     ids: list[str] = [
-        _tmux_out(["display-message", "-p", "-t", f"={ctx.session}:{WINDOW}", "#{pane_id}"])
+        out(["display-message", "-p", "-t", f"={ctx.session}:{WINDOW}", "#{pane_id}"])
     ]
     rest = ordered[1:]
     for index, pane in enumerate(rest, start=1):
         target = ids[-1]
         direction = "-h" if index == 1 else "-v"
         size = 50 if index == 1 else _split_percent(index, len(rest))
-        new_id = _tmux_out(
+        new_id = out(
             [
                 "split-window",
                 direction,
@@ -346,20 +342,20 @@ def ensure_session(
         ids.append(new_id)
 
     for pane_id, pane in zip(ids, ordered, strict=False):
-        _tmux(["select-pane", "-t", pane_id, "-T", pane.name])
-        _tmux(["set-option", "-p", "-t", pane_id, ROLE_OPTION, pane.role])
-    _tmux(["set-option", "-w", "-t", f"={ctx.session}:{WINDOW}", "pane-border-status", "top"])
+        cmd(["select-pane", "-t", pane_id, "-T", pane.name])
+        cmd(["set-option", "-p", "-t", pane_id, ROLE_OPTION, pane.role])
+    cmd(["set-option", "-w", "-t", f"={ctx.session}:{WINDOW}", "pane-border-status", "top"])
 
     logs = ctx.logs_dir
     load = envfile.load_snippet(ctx.cfg.owned_env_keys)
     want_brief = brief and (ctx.root / PROMPT_FILE).is_file()
     for pane_id, pane in zip(ids, ordered, strict=False):
-        cmd = pane_command(ctx, pane, agent, rctx, brief=want_brief and pane.role == "agent")
-        _tmux(["send-keys", "-t", pane_id, f"{load}; {cmd}", "C-m"])
+        line = pane_command(ctx, pane, agent, rctx, brief=want_brief and pane.role == "agent")
+        cmd(["send-keys", "-t", pane_id, f"{load}; {line}", "C-m"])
         if pane.log:
             _pipe_log(logs, pane.name, pane_id)
     if ids:
-        _tmux(["select-pane", "-t", ids[0]])
+        cmd(["select-pane", "-t", ids[0]])
 
     print(urls(ctx))
     if attach_after:
@@ -378,4 +374,4 @@ def _pipe_log(logs: Path, name: str, pane_id: str) -> None:
     except OSError as exc:
         warn(f"cannot write {logs}: {exc}")
         return
-    _tmux(["pipe-pane", "-t", pane_id, "-o", f"exec cat >> '{logs}/{name}.log'"])
+    cmd(["pipe-pane", "-t", pane_id, "-o", f"exec cat >> '{logs}/{name}.log'"])
