@@ -62,6 +62,9 @@ def run_hook(event: str) -> int:
         return 0  # a repo without wtx.toml is not ours to set up
     if branch and branch != ctx.branch:
         ctx.branch = branch
+    if not ctx.is_worktree:
+        warn(f"{path} is the main checkout, nothing to do")
+        return 0  # never fail wt over it
 
     if event == "pre-remove":
         run_teardown(ctx)

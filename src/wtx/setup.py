@@ -184,7 +184,13 @@ def run_setup(
     """The whole thing, in the order the traps demand."""
     cfg = ctx.cfg
     if not ctx.is_worktree:
-        warn(f"{ctx.root} is the main checkout, setting it up as one")
+        # Setup writes .env.worktree, whose ports then hide the family's `main`
+        # port, and the agent settings of a worktree, which deny the pushes
+        # `wtx land` makes from here.
+        raise SetupError(
+            f"{ctx.root} is the main checkout, wtx only sets up worktrees. "
+            "Its session is `wtx tmux`."
+        )
 
     # 0. Tracking repair. `wt create x origin/dev` leaves x tracking origin/dev,
     #    then `git pull` rebases the work onto dev and the next push is refused.

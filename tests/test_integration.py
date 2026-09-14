@@ -554,6 +554,23 @@ def test_go_refuses_a_protected_branch(wtx_repo: Path, fake_bin: Path, monkeypat
     assert "protected" in capsys.readouterr().err
 
 
+def test_setup_refuses_the_main_checkout(
+    wtx_repo: Path, fake_bin: Path, monkeypatch, capsys
+) -> None:
+    monkeypatch.chdir(wtx_repo)
+    assert run(["setup", "--no-tmux"]) == 1
+    assert "main checkout" in capsys.readouterr().err
+    assert not (wtx_repo / ".env.worktree").exists()
+    assert not (wtx_repo / ".claude" / "settings.local.json").exists()
+
+
+def test_hook_skips_the_main_checkout(wtx_repo: Path, fake_bin: Path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("WT_PATH", str(wtx_repo))
+    monkeypatch.setenv("WT_BRANCH", "dev")
+    assert run(["hook", "post-checkout"]) == 0
+    assert not (wtx_repo / ".env.worktree").exists()
+
+
 def test_land_refuses_from_a_worktree(wtx_repo: Path, fake_bin: Path, monkeypatch, capsys) -> None:
     path = make_worktree(wtx_repo, "feat/land")
     setup_mod.run_setup(context.load(root=path), start_tmux=False)
