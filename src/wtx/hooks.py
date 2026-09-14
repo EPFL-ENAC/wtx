@@ -35,9 +35,21 @@ GO_PLAN_MODEL_ENV = "WTX_GO_PLAN_MODEL"
 GO_PLAN_EFFORT_ENV = "WTX_GO_PLAN_EFFORT"
 GO_DRIVING_ENV = "WTX_GO_DRIVING"
 
+# Everything `wtx go` puts in the environment for the hook, so the two places
+# that clear it cannot fall out of step. A leftover key would reach the tmux
+# server and every pane started under it.
+GO_ENV_KEYS = (
+    WITH_ENV,
+    GO_AGENT_ENV,
+    GO_LLM_ENV,
+    GO_PLAN_MODEL_ENV,
+    GO_PLAN_EFFORT_ENV,
+    GO_DRIVING_ENV,
+)
 
-def _target(path_env: str = "WT_PATH") -> Path | None:
-    raw = os.environ.get(path_env, "")
+
+def _target() -> Path | None:
+    raw = os.environ.get("WT_PATH", "")
     return Path(raw) if raw else None
 
 
@@ -51,10 +63,6 @@ def run_hook(event: str) -> int:
         return 0
 
     branch = os.environ.get("WT_BRANCH", "") or git.current_branch(path)
-    main = git.main_checkout(path)
-    if main is None:
-        warn(f"{path} is not inside a git repository")
-        return 1
     try:
         ctx = context.load(root=path)
     except context.ContextError as exc:

@@ -113,7 +113,6 @@ def test_uv_no_sync_is_added_when_a_repo_installs_editable() -> None:
         }
     )
     assert cfg.env_extra["UV_NO_SYNC"] == "1"
-    assert cfg.needs_uv_no_sync
 
 
 def test_lab_and_repo_are_expanded_in_paths() -> None:
@@ -167,34 +166,40 @@ def test_protected_branch_rules_cover_both_push_spellings() -> None:
     assert "Bash(git push *:dev)" in rules
 
 
-def test_baseline_has_no_bare_interpreter_in_ask() -> None:
-    """An ask rule beats everything, even auto mode. A bare interpreter there
-    prompts on every heredoc edit, which is how an agent writes files."""
+def test_no_ask_rule_catches_an_ordinary_edit_or_test_run() -> None:
+    """An ask rule beats everything, even auto mode, and no allow overrides it.
+    One that matches how an agent writes files would prompt on every edit.
+
+    Matched the way the rules are, as globs over the whole command text, so a
+    rule like `python3 -*` is caught however it is spelled."""
+    from fnmatch import fnmatch
+
     from wtx.agents.claude import _baseline
 
-    ask = _baseline()["permissions"]["ask"]
-    for bad in ("Bash(python -)", "Bash(python3 -)", "Bash(node -)", "Bash(perl -)"):
-        assert bad not in ask
+    ordinary = (
+        "python3 - <<'EOF'",
+        "python3 -m pytest tests/ -q",
+        'node -e "console.log(1)"',
+        "cat > src/x.py <<'EOF'",
+        "sh -c 'ls'",
+        "uv run pytest -q",
+        "git commit -m x",
+    )
+    ask = [r.removeprefix("Bash(").removesuffix(")") for r in _baseline()["permissions"]["ask"]]
+    for cmd in ordinary:
+        caught = [r for r in ask if fnmatch(cmd, r)]
+        assert not caught, f"{cmd!r} would prompt, caught by {caught}"
 
 
 def test_a_repo_cannot_remove_a_baseline_rule() -> None:
     """wtx.toml appends. If it could subtract, one typo reopens force pushes."""
-    from wtx.agents.base import RenderContext
-
     cfg = parse(
         {
             "repo": {"base_branch": "dev", "protected_branches": ["dev"]},
             "permissions": {"allow": ["Bash(git push * --force*)"]},
         }
     )
-    ctx = RenderContext(
-        root=__import__("pathlib").Path("/tmp/x"),
-        main=__import__("pathlib").Path("/tmp/x"),
-        branch="b",
-        session="s",
-        cfg=cfg,
-    )
-    settings = ClaudeAgent().build_settings(ctx)
+    settings = ClaudeAgent().build_settings(_rctx(cfg))
     assert "Bash(git push * --force*)" in settings["permissions"]["deny"]
 
 
@@ -234,9 +239,25 @@ def test_no_module_reads_wt_main() -> None:
     import re
 
     src = pathlib.Path(__file__).resolve().parents[1] / "src" / "wtx"
-    reads = re.compile(r"""environ(?:\.get\(|\[)\s*['"]WT_MAIN['"]""")
+    # Every way a module could read it, not just os.environ["WT_MAIN"].
+    reads = re.compile(
+        r"""environ(?:\.get\(|\[)\s*['"]WT_MAIN"""
+        r"""|getenv\(\s*['"]WT_MAIN"""
+        r"""|['"]WT_MAIN['"]\s+in\s+os\.environ"""
+    )
     hits = [f.name for f in src.rglob("*.py") if reads.search(f.read_text())]
     assert hits == [], f"WT_MAIN is read in {hits}"
+
+
+def test_no_module_copies_the_dry_run_flag() -> None:
+    """`from .proc import DRY_RUN` copies the value at import time, so a later
+    set_dry_run never reaches that module and a dry run removes things for
+    real. Every caller asks proc.is_dry_run()."""
+    import pathlib
+
+    src = pathlib.Path(__file__).resolve().parents[1] / "src" / "wtx"
+    hits = [f.name for f in src.rglob("*.py") if f.name != "proc.py" and "DRY_RUN" in f.read_text()]
+    assert hits == [], f"DRY_RUN is copied in {hits}"
 
 
 def test_repo_placeholder_survives_a_missing_name(tmp_path) -> None:
@@ -268,34 +289,35 @@ def test_marker_is_always_written_and_a_key_under_it_survives(tmp_path) -> None:
     assert envfile.read(f)["MINE"] == "1"
 
 
+def _settings(tmp_path: Path, **events: list[tuple[str, str]]) -> Path:
+    """A settings.json carrying these hooks: event -> [(matcher, command)]."""
+    hooks = {
+        event: [
+            {"matcher": matcher, "hooks": [{"type": "command", "command": command}]}
+            for matcher, command in entries
+        ]
+        for event, entries in events.items()
+    }
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps({"hooks": hooks}))
+    return path
+
+
+def _wtx_fragment() -> dict:
+    from wtx import machine
+
+    return json.loads(machine.planned("claude")[-1].body)["hooks"]
+
+
 def test_install_machine_replaces_the_old_notify_hooks_and_keeps_others(tmp_path) -> None:
     from wtx import machine
 
-    settings = tmp_path / "settings.json"
-    settings.write_text(
-        json.dumps(
-            {
-                "hooks": {
-                    "Stop": [
-                        {"matcher": "", "hooks": [{"type": "command", "command": "/x/persist.sh"}]},
-                        {
-                            "matcher": "*",
-                            "hooks": [{"type": "command", "command": "/x/claude-notify stop"}],
-                        },
-                    ],
-                    "Notification": [
-                        {
-                            "matcher": "permission_prompt",
-                            "hooks": [
-                                {"type": "command", "command": "/x/claude-notify permission"}
-                            ],
-                        },
-                    ],
-                }
-            }
-        )
+    settings = _settings(
+        tmp_path,
+        Stop=[("", "/x/persist.sh"), ("*", "/x/claude-notify stop")],
+        Notification=[("permission_prompt", "/x/claude-notify permission")],
     )
-    fragment = json.loads(machine.planned("claude")[-1].body)["hooks"]
+    fragment = _wtx_fragment()
     assert machine._merge_hooks(settings, fragment)
     hooks = json.loads(settings.read_text())["hooks"]
     text = json.dumps(hooks)
@@ -310,26 +332,8 @@ def test_install_machine_drops_an_old_hook_sitting_next_to_ours(tmp_path) -> Non
     run must still remove the old ones, even though ours are already there."""
     from wtx import machine
 
-    settings = tmp_path / "settings.json"
-    settings.write_text(
-        json.dumps(
-            {
-                "hooks": {
-                    "Stop": [
-                        {
-                            "matcher": "*",
-                            "hooks": [{"type": "command", "command": "/x/claude-notify stop"}],
-                        },
-                        {
-                            "matcher": "*",
-                            "hooks": [{"type": "command", "command": "wtx notify stop"}],
-                        },
-                    ],
-                }
-            }
-        )
-    )
-    fragment = json.loads(machine.planned("claude")[-1].body)["hooks"]
+    settings = _settings(tmp_path, Stop=[("*", "/x/claude-notify stop"), ("*", "wtx notify stop")])
+    fragment = _wtx_fragment()
     assert machine._merge_hooks(settings, fragment)
     text = json.dumps(json.loads(settings.read_text()))
     assert "claude-notify" not in text
@@ -377,42 +381,18 @@ def _orchestrated(**over) -> config.WtxConfig:
 
 
 def _rctx(cfg: config.WtxConfig) -> RenderContext:
+    """What tmux.render_ctx builds: the plan keys arrive already resolved, the
+    way context.Ctx resolves them from .env.worktree and the config."""
+    orch = cfg.agent.orchestration
     return RenderContext(
-        root=Path("/w"), main=Path("/m"), branch="feat/x", session="app/feat-x", cfg=cfg
+        root=Path("/w"),
+        main=Path("/m"),
+        branch="feat/x",
+        session="app/feat-x",
+        cfg=cfg,
+        plan_model=orch.plan_model,
+        plan_effort=orch.plan_effort,
     )
-
-
-@pytest.mark.parametrize(
-    "line",
-    ["wtx-size: small", "- wtx-size: small", "**wtx-size:** small", "WTX-SIZE: Small"],
-)
-def test_the_planner_sizes_its_own_plan(line: str) -> None:
-    assert orchestrate.size_of(f"step one\nstep two\n\n{line}\n") == "small"
-
-
-def test_a_plan_with_no_marker_is_large() -> None:
-    """Guessing from the length is a guess, and guessing low costs quality
-    where guessing high only costs money."""
-    assert orchestrate.size_of("one two three") == "large"
-
-
-def test_the_marker_is_only_read_from_a_line_of_its_own() -> None:
-    """A plan that quotes the instruction must not be read as sizing itself."""
-    assert orchestrate.size_of("I will end with the wtx-size: small line.") == "large"
-
-
-def test_the_size_routes_effort_and_leaves_the_model_alone() -> None:
-    """Anthropic's guidance: effort is usually the better lever, so a smaller
-    model stays opt-in."""
-    cfg = _orchestrated(build_model="opus", small_effort="medium", large_effort="xhigh")
-    assert orchestrate.model_for(cfg, "small") == "opus"
-    assert orchestrate.model_for(cfg, "large") == "opus"
-
-    def effort(size: str) -> str:
-        return replace(_rctx(cfg), phase="build", size=size, llm="opus").effort
-
-    assert effort("small") == "medium"
-    assert effort("large") == "xhigh"
 
 
 @pytest.mark.parametrize(
@@ -428,27 +408,32 @@ def test_the_planner_names_the_effort_it_wants(line: str) -> None:
     assert orchestrate.effort_of(f"step one\nstep two\n\n{line}\n") == "high"
 
 
+def test_the_marker_is_only_read_from_a_line_of_its_own() -> None:
+    """A plan that quotes the instruction must not be read as marking itself."""
+    assert orchestrate.effort_of("I will end with the wtx-effort: low line.") == ""
+
+
 def test_an_effort_the_agent_does_not_know_is_ignored() -> None:
     """A made-up level on the command line is a failed launch, not a slow one."""
     assert orchestrate.effort_of("do it\n\nwtx-effort: turbo\n") == ""
     assert orchestrate.effort_of("do it\n") == ""
 
 
-def test_the_planner_effort_beats_the_size(tmp_path) -> None:
-    """The size is the fallback for a plan written before the marker existed."""
-    cfg = _orchestrated(small_effort="medium", large_effort="xhigh")
-    build = replace(_rctx(cfg), phase="build", llm="opus", size="large")
-    assert build.effort == "xhigh"
+def test_the_build_runs_at_the_effort_the_plan_asked_for() -> None:
+    """build_effort is only what an unmarked plan falls back to."""
+    cfg = _orchestrated(build_effort="xhigh")
+    build = replace(_rctx(cfg), phase="build", llm="opus")
+    assert orchestrate.effort_of("do it\n\nwtx-effort: low\n") == "low"
     assert replace(build, effort_override="low").effort == "low"
 
 
 def test_a_plan_brief_works_less_hard_than_the_build() -> None:
     """Planning is reading and thinking. The build is where the effort goes."""
-    cfg = _orchestrated(plan_effort="low", large_effort="xhigh")
+    cfg = _orchestrated(plan_effort="low")
     ctx = _rctx(cfg)
     assert replace(ctx, phase="plan").effort == "low"
     assert replace(ctx, phase="plan", plan_effort="high").effort == "high"
-    assert replace(ctx, phase="build", llm="opus", size="large").effort == "xhigh"
+    assert replace(ctx, phase="build", llm="opus", effort_override="xhigh").effort == "xhigh"
 
 
 def test_a_worktree_can_name_its_own_planning_model() -> None:
@@ -470,12 +455,6 @@ def test_the_settings_effort_is_the_one_the_pane_runs_at() -> None:
     assert ClaudeAgent().build_settings(ctx)["effortLevel"] == ctx.effort == "high"
 
 
-def test_a_repo_can_still_opt_into_a_smaller_model() -> None:
-    cfg = _orchestrated(small_model="sonnet")
-    assert orchestrate.model_for(cfg, "small") == "sonnet"
-    assert orchestrate.model_for(cfg, "large") == "opus"
-
-
 def test_a_plan_brief_runs_on_the_planning_model_the_settings_do_not() -> None:
     """The worktree keeps its own model. Only the plan phase is redirected, or
     a later `claude --continue` would come back on the planner."""
@@ -489,7 +468,7 @@ def test_a_plan_brief_runs_on_the_planning_model_the_settings_do_not() -> None:
 def test_a_build_starts_in_auto_mode_by_default() -> None:
     """The human has just read the plan and said yes. Asking again about every
     edit and command hands them back a job they thought they were done with."""
-    build = replace(_rctx(_orchestrated()), phase="build", llm="opus", size="large")
+    build = replace(_rctx(_orchestrated()), phase="build", llm="opus", effort_override="xhigh")
     assert build.permission_mode == "auto"
     assert "--permission-mode auto" in ClaudeAgent().handoff_cmd(
         build, session="abc-123", prompt="go"
@@ -501,7 +480,7 @@ def test_each_phase_starts_in_its_own_permission_mode() -> None:
     agent = ClaudeAgent()
     plan = agent.launch_cmd(replace(base, phase="plan"), brief=True)
     build = agent.handoff_cmd(
-        replace(base, phase="build", llm="opus", size="large"),
+        replace(base, phase="build", llm="opus", effort_override="xhigh"),
         session="abc-123",
         prompt="go",
     )
@@ -513,7 +492,7 @@ def test_the_handoff_resumes_the_planning_conversation() -> None:
     """Not a fresh one: everything the planner read is most of what the
     implementation needs, and Claude Code's own opusplan switches this way."""
     cmd = ClaudeAgent().handoff_cmd(
-        replace(_rctx(_orchestrated()), phase="build", llm="opus", size="large"),
+        replace(_rctx(_orchestrated()), phase="build", llm="opus", effort_override="xhigh"),
         session="abc 123",
         prompt="Implement it.",
     )
@@ -579,6 +558,29 @@ def test_opencode_orchestration_passes_no_model_on_the_command_line() -> None:
             assert " -m " not in agent.launch_cmd(ctx, brief=brief), (phase, brief)
 
 
+def test_opencode_briefs_run_at_the_effort_the_phase_asks_for() -> None:
+    """--variant is opencode's effort. Reading the repo default here threw away
+    --plan-effort and whatever the planner asked the build for."""
+    from wtx.agents.opencode import OpencodeAgent
+
+    cfg = _oc_orchestrated()
+    agent = OpencodeAgent()
+    plan = replace(_rctx(cfg), phase="plan", plan_effort="high")
+    build = replace(_rctx(cfg), phase="build", effort_override="max")
+    assert " --variant high" in agent.launch_cmd(plan, brief=True)
+    assert " --variant max" in agent.launch_cmd(build, brief=True)
+
+
+def test_every_generated_file_is_in_both_ignore_lists() -> None:
+    """A file wtx writes into a checkout and git does not ignore makes the
+    worktree dirty, and `wtx land` then refuses to land it."""
+    from wtx import init, machine
+
+    assert [f"**/{line}" for line in init.GITIGNORE_LINES] == machine.GIT_IGNORE_LINES
+    for name in (".env.worktree", "PROMPT.md", "PROMPT.sent.md", "opencode.json"):
+        assert name in init.GITIGNORE_LINES
+
+
 def test_opencode_without_orchestration_still_gets_its_model_flag() -> None:
     """Nothing else picks the model then, so the flag has to stay."""
     from wtx.agents.opencode import OpencodeAgent
@@ -613,8 +615,8 @@ def test_validate_catches_orchestration_with_nothing_to_hand_to() -> None:
 
 
 def test_validate_catches_an_effort_level_that_does_not_exist() -> None:
-    cfg = _orchestrated(large_effort="maximum")
-    assert any("large_effort" in e for e in validate(cfg))
+    cfg = _orchestrated(build_effort="maximum")
+    assert any("build_effort" in e for e in validate(cfg))
     assert any("effort" in e for e in validate(parse({"agent": {"effort": "huge"}})))
     assert any("plan_effort" in e for e in validate(_orchestrated(plan_effort="turbo")))
 
@@ -858,11 +860,16 @@ def test_the_banner_carries_no_action(monkeypatch) -> None:
 
     monkeypatch.setattr(notify, "_desktop_entry", lambda: "org.gnome.Terminal")
     monkeypatch.setattr(notify.subprocess, "run", lambda args, **kw: seen.append(args) or Done())
-    assert notify._send("app/feat-x", "permission", "", "") == "12"
+    assert notify._send("app/feat-x", "permission", "", "") == ("12", "12\n")
     args = seen[0]
     assert "-A" not in args
     assert "string:desktop-entry:org.gnome.Terminal" in args
     assert "-e" not in args, "a waiting session belongs in the list"
+
+    # The fallback for a machine with no bus to watch is the one that asks for
+    # an action, and it pays for it with the focus.
+    notify._send("app/feat-x", "permission", "", "", action=True)
+    assert "-A" in seen[1]
 
     seen.clear()
     notify._send("app/feat-x", "stop", "", "12")

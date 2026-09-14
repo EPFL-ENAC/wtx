@@ -8,9 +8,12 @@ filled in, so the rest of wtx never touches raw dicts.
 from __future__ import annotations
 
 import tomllib
-from dataclasses import dataclass, field, replace
+from collections.abc import Callable
+from dataclasses import MISSING, dataclass, field, fields, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
+
+T = TypeVar("T")
 
 CONFIG_NAME = "wtx.toml"
 SCHEMA_VERSION = 1
@@ -139,9 +142,9 @@ class OrchestrationCfg:
 
     Off by default: it changes what a brief does. See docs/schema.md.
 
-    A plan the planner called small gets less effort, not a smaller model.
-    Anthropic's own guidance is that effort is usually the better lever, so
-    small_model is empty until someone has measured that it is enough here.
+    Every plan implements on build_model. The plan's own `wtx-effort:` line
+    decides how hard it works, and build_effort is what an unmarked plan gets.
+    Effort is the better lever: that is Anthropic's own guidance.
     """
 
     enabled: bool = False
@@ -150,9 +153,8 @@ class OrchestrationCfg:
     # briefs, and `wtx go --plan-effort high` raises it for the ones it is not.
     plan_effort: str = "low"
     build_model: str = "opus"
-    small_model: str = ""
-    small_effort: str = "medium"
-    large_effort: str = "xhigh"
+    # What a plan with no wtx-effort: line implements at.
+    build_effort: str = "xhigh"
     # auto, not acceptEdits: the plan is already read and agreed, so stopping
     # the build to ask about every command puts the human back in the loop they
     # just stepped out of. The permission baseline is still what says no.
@@ -252,7 +254,6 @@ class WtxConfig:
     hooks: HooksCfg = field(default_factory=HooksCfg)
     schema_version: int = SCHEMA_VERSION
     min_wtx_version: str = ""
-    source: Path | None = None
 
     # -- derived ---------------------------------------------------------
     @property
@@ -268,28 +269,18 @@ class WtxConfig:
         keys += list(self.env_computed)
         for r in self.repos:
             keys += [r.path_key, r.branch_key]
-        out: list[str] = []
-        for k in keys:
-            if k not in out:
-                out.append(k)
-        return tuple(out)
-
-    @property
-    def needs_uv_no_sync(self) -> bool:
-        """uv re-syncs the venv before every `uv run`, which puts the locked
-        wheel back over an editable install. Any repo doing an editable install
-        needs UV_NO_SYNC=1."""
-        return any(r.editable_install for r in self.repos)
-
-    def repo_by_name(self, name: str) -> ExtRepo | None:
-        for r in self.repos:
-            if r.name == name:
-                return r
-        return None
+        return tuple(dict.fromkeys(keys))
 
 
 # ---------------------------------------------------------------------------
 # parsing
+
+
+def _as_int(value: Any, where: str) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise ConfigError(f"{where} must be a number") from exc
 
 
 def _as_str_tuple(value: Any, where: str) -> tuple[str, ...]:
@@ -307,7 +298,53 @@ def _table(data: dict[str, Any], key: str) -> dict[str, Any]:
     return value
 
 
-def parse(data: dict[str, Any], *, source: Path | None = None, default_name: str = "") -> WtxConfig:
+# How a scalar field is read, by the type it declares. A field whose type is
+# not here is a nested table and the caller passes it in.
+_SCALARS: dict[str, Callable[[Any, str], Any]] = {
+    "str": lambda v, where: str(v),
+    "int": _as_int,
+    "bool": lambda v, where: bool(v),
+    "tuple[str, ...]": _as_str_tuple,
+}
+
+
+def _build(cls: type[T], table: dict[str, Any], where: str, **override: Any) -> T:
+    """Build one config dataclass from its table.
+
+    Each key reads its own default off the field, so the defaults live on the
+    dataclass alone and adding a key is one line there. A field with no default
+    is required and the error names it. override carries what this cannot do:
+    a nested table, or a default that depends on another key.
+    """
+    values = dict(override)
+    for f in fields(cls):
+        read = _SCALARS.get(str(f.type))
+        if f.name in values or read is None:
+            continue
+        if f.name in table:
+            values[f.name] = read(table[f.name], f"{where}.{f.name}")
+        elif f.default is MISSING:
+            raise ConfigError(f"{where} needs {f.name}")
+        else:
+            values[f.name] = f.default
+    return cls(**values)
+
+
+def _build_all(cls: type[T], rows: Any, where: str) -> tuple[T, ...]:
+    """The same, for a [[section]] list."""
+    if rows is None:
+        return ()
+    if not isinstance(rows, list):
+        raise ConfigError(f"{where} must be a list of tables")
+    out = []
+    for raw in rows:
+        if not isinstance(raw, dict):
+            raise ConfigError(f"{where} must be a list of tables")
+        out.append(_build(cls, raw, where))
+    return tuple(out)
+
+
+def parse(data: dict[str, Any], *, default_name: str = "") -> WtxConfig:
     """Turn a parsed wtx.toml into a WtxConfig. Raises ConfigError.
 
     default_name fills [repo].name when the file has none. It must be known
@@ -316,10 +353,12 @@ def parse(data: dict[str, Any], *, source: Path | None = None, default_name: str
     placeholder back afterwards.
     """
     repo_t = _table(data, "repo")
-    repo = RepoCfg(
+    repo = _build(
+        RepoCfg,
+        repo_t,
+        "[repo]",
         name=repo_t.get("name", "") or default_name,
-        lab=repo_t.get("lab", ""),
-        base_branch=repo_t.get("base_branch", "main"),
+        # The base branch is protected unless the file says otherwise.
         protected_branches=_as_str_tuple(
             repo_t.get("protected_branches", [repo_t.get("base_branch", "main")]),
             "[repo].protected_branches",
@@ -327,159 +366,83 @@ def parse(data: dict[str, Any], *, source: Path | None = None, default_name: str
     )
 
     ports_t = _table(data, "ports")
-    families = []
-    for raw in ports_t.get("family", []) or []:
-        if "name" not in raw or "main" not in raw:
-            raise ConfigError("[[ports.family]] needs name and main")
-        families.append(PortFamily(name=raw["name"], main=int(raw["main"]), env=raw.get("env", "")))
-    ports = PortsCfg(
-        range_start=int(ports_t.get("range_start", 18000)),
-        step=int(ports_t.get("step", 1000)),
-        slots=int(ports_t.get("slots", 500)),
-        families=tuple(families),
-    )
-
-    seed_t = _table(data, "seed")
-    seed = SeedCfg(
-        copy=_as_str_tuple(seed_t.get("copy"), "[seed].copy"),
-        symlink=_as_str_tuple(seed_t.get("symlink"), "[seed].symlink"),
-        required=_as_str_tuple(seed_t.get("required"), "[seed].required"),
+    ports = _build(
+        PortsCfg,
+        ports_t,
+        "[ports]",
+        families=_build_all(PortFamily, ports_t.get("family"), "[[ports.family]]"),
     )
 
     deps_t = _table(data, "deps")
-    steps = []
-    for raw in deps_t.get("step", []) or []:
-        if "run" not in raw:
-            raise ConfigError("[[deps.step]] needs run")
-        steps.append(
-            DepStep(
-                run=raw["run"],
-                if_missing=raw.get("if_missing", ""),
-                cwd=raw.get("cwd", "."),
-            )
-        )
-    deps = DepsCfg(
-        python_version_file=deps_t.get("python_version_file", ""),
-        steps=tuple(steps),
-        post_install=_as_str_tuple(deps_t.get("post_install"), "[deps].post_install"),
+    deps = _build(
+        DepsCfg,
+        deps_t,
+        "[deps]",
+        steps=_build_all(DepStep, deps_t.get("step"), "[[deps.step]]"),
     )
 
     env_t = _table(data, "env")
     env_extra_raw = env_t.get("extra", {})
     if not isinstance(env_extra_raw, dict):
         raise ConfigError("[env].extra must be a table")
-    env_extra = {str(k): str(v) for k, v in env_extra_raw.items()}
-    env_computed = _as_str_tuple(env_t.get("computed"), "[env].computed")
 
     panes_t = _table(data, "panes")
-    pane_list = []
-    for raw in panes_t.get("pane", []) or []:
-        if "name" not in raw:
-            raise ConfigError("[[panes.pane]] needs name")
-        pane_list.append(
-            Pane(
-                name=raw["name"],
-                role=raw.get("role", "shell"),
-                cwd=raw.get("cwd", "."),
-                cmd=raw.get("cmd", ""),
-                log=bool(raw.get("log", False)),
-            )
-        )
-    panes = PanesCfg(layout=panes_t.get("layout", "agent-left-half"), panes=tuple(pane_list))
+    panes = _build(
+        PanesCfg,
+        panes_t,
+        "[panes]",
+        panes=_build_all(Pane, panes_t.get("pane"), "[[panes.pane]]"),
+    )
 
     agent_t = _table(data, "agent")
-    oc_t = _table(agent_t, "opencode")
-    orch_t = _table(agent_t, "orchestration")
-    agent = AgentCfg(
-        tool=agent_t.get("tool", "claude"),
-        llm=agent_t.get("llm", ""),
-        brief_permission_mode=agent_t.get("brief_permission_mode", "plan"),
-        subagent_model=agent_t.get("subagent_model", "sonnet"),
-        effort=agent_t.get("effort", ""),
-        auto_compact_window=int(agent_t.get("auto_compact_window", 0)),
-        disabled_mcp_servers=_as_str_tuple(
-            agent_t.get("disabled_mcp_servers"), "[agent].disabled_mcp_servers"
+    agent = _build(
+        AgentCfg,
+        agent_t,
+        "[agent]",
+        orchestration=_build(
+            OrchestrationCfg, _table(agent_t, "orchestration"), "[agent.orchestration]"
         ),
-        explore_agent_model=agent_t.get("explore_agent_model", ""),
-        orchestration=OrchestrationCfg(
-            enabled=bool(orch_t.get("enabled", False)),
-            plan_model=orch_t.get("plan_model", "fable"),
-            plan_effort=orch_t.get("plan_effort", "low"),
-            build_model=orch_t.get("build_model", "opus"),
-            small_model=orch_t.get("small_model", ""),
-            small_effort=orch_t.get("small_effort", "medium"),
-            large_effort=orch_t.get("large_effort", "xhigh"),
-            build_permission_mode=orch_t.get("build_permission_mode", "auto"),
-        ),
-        opencode=OpencodeCfg(
-            provider=oc_t.get("provider", ""),
-            small_model=oc_t.get("small_model", ""),
-            plan_agent=oc_t.get("plan_agent", "plan"),
-            build_agent=oc_t.get("build_agent", "build"),
-        ),
-    )
-
-    perm_t = _table(data, "permissions")
-    permissions = PermissionsCfg(
-        allow=_as_str_tuple(perm_t.get("allow"), "[permissions].allow"),
-        ask=_as_str_tuple(perm_t.get("ask"), "[permissions].ask"),
-        deny=_as_str_tuple(perm_t.get("deny"), "[permissions].deny"),
-        allowed_domains=_as_str_tuple(
-            perm_t.get("allowed_domains"), "[permissions].allowed_domains"
-        ),
-    )
-
-    checks_t = _table(data, "checks")
-    checks = ChecksCfg(
-        lint=_as_str_tuple(checks_t.get("lint"), "[checks].lint"),
-        test=_as_str_tuple(checks_t.get("test"), "[checks].test"),
+        opencode=_build(OpencodeCfg, _table(agent_t, "opencode"), "[agent.opencode]"),
     )
 
     ext_repos = []
-    for raw in data.get("repos", []) or []:
-        if "name" not in raw or "path" not in raw:
-            raise ConfigError("[[repos]] needs name and path")
-        ei_raw = raw.get("editable_install")
-        ei = None
-        if ei_raw:
-            if not isinstance(ei_raw, dict) or "run" not in ei_raw:
-                raise ConfigError(f"[[repos]] {raw['name']}: editable_install needs a run key")
-            ei = EditableInstall(run=ei_raw["run"], cwd=ei_raw.get("cwd", "."))
+    for raw in data.get("repos") or []:
+        if not isinstance(raw, dict):
+            raise ConfigError("[[repos]] must be a list of tables")
         ext_repos.append(
-            ExtRepo(
-                name=raw["name"],
-                path=raw["path"],
-                access=raw.get("access", "read"),
-                base_branch=raw.get("base_branch", "main"),
-                env_prefix=raw.get("env_prefix", ""),
-                editable_install=ei,
+            _build(
+                ExtRepo,
+                raw,
+                "[[repos]]",
+                editable_install=_editable(raw.get("editable_install"), raw.get("name", "")),
             )
         )
-
-    hooks_t = _table(data, "hooks")
-    hooks = HooksCfg(
-        post_setup=hooks_t.get("post_setup", ""),
-        pre_teardown=hooks_t.get("pre_teardown", ""),
-    )
 
     cfg = WtxConfig(
         repo=repo,
         ports=ports,
-        seed=seed,
+        seed=_build(SeedCfg, _table(data, "seed"), "[seed]"),
         deps=deps,
-        env_extra=env_extra,
-        env_computed=env_computed,
+        env_extra={str(k): str(v) for k, v in env_extra_raw.items()},
+        env_computed=_as_str_tuple(env_t.get("computed"), "[env].computed"),
         panes=panes,
         agent=agent,
-        permissions=permissions,
-        checks=checks,
+        permissions=_build(PermissionsCfg, _table(data, "permissions"), "[permissions]"),
+        checks=_build(ChecksCfg, _table(data, "checks"), "[checks]"),
         repos=tuple(ext_repos),
-        hooks=hooks,
-        schema_version=int(data.get("schema_version", SCHEMA_VERSION)),
+        hooks=_build(HooksCfg, _table(data, "hooks"), "[hooks]"),
+        schema_version=_as_int(data.get("schema_version", SCHEMA_VERSION), "schema_version"),
         min_wtx_version=str(data.get("min_wtx_version", "")),
-        source=source,
     )
     return _post_process(cfg)
+
+
+def _editable(raw: Any, name: str) -> EditableInstall | None:
+    if not raw:
+        return None
+    if not isinstance(raw, dict) or "run" not in raw:
+        raise ConfigError(f"[[repos]] {name}: editable_install needs a run key")
+    return _build(EditableInstall, raw, f"[[repos]] {name}.editable_install")
 
 
 def _post_process(cfg: WtxConfig) -> WtxConfig:
@@ -492,16 +455,6 @@ def _post_process(cfg: WtxConfig) -> WtxConfig:
     return replace(cfg, repos=repos, env_extra=env_extra)
 
 
-def find_config(start: Path) -> Path | None:
-    """Look for wtx.toml at the git main checkout, then walk up from start."""
-    cur = start.resolve()
-    for candidate in [cur, *cur.parents]:
-        f = candidate / CONFIG_NAME
-        if f.is_file():
-            return f
-    return None
-
-
 def load(path: Path) -> WtxConfig:
     try:
         with path.open("rb") as fh:
@@ -510,7 +463,7 @@ def load(path: Path) -> WtxConfig:
         raise ConfigError(f"no {path}") from exc
     except tomllib.TOMLDecodeError as exc:
         raise ConfigError(f"{path}: {exc}") from exc
-    return parse(data, source=path, default_name=_default_name(path.parent))
+    return parse(data, default_name=_default_name(path.parent))
 
 
 def _default_name(main: Path) -> str:
@@ -580,8 +533,7 @@ def validate(cfg: WtxConfig) -> list[str]:
     for key, effort in (
         ("[agent].effort", cfg.agent.effort),
         ("[agent.orchestration].plan_effort", orch.plan_effort),
-        ("[agent.orchestration].small_effort", orch.small_effort),
-        ("[agent.orchestration].large_effort", orch.large_effort),
+        ("[agent.orchestration].build_effort", orch.build_effort),
     ):
         if effort and effort not in EFFORT_LEVELS:
             errs.append(f"{key} '{effort}' is not one of {', '.join(EFFORT_LEVELS)}")

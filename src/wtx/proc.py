@@ -13,6 +13,7 @@ import subprocess
 import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+from shutil import which as shutil_which
 
 DRY_RUN = False
 
@@ -32,12 +33,24 @@ def is_dry_run() -> bool:
     return DRY_RUN
 
 
+def would_write(path: Path) -> bool:
+    """True when a dry run should skip writing this file.
+
+    A file write does not go through run(), so every one of them asks this
+    instead. Call it, never import DRY_RUN: see is_dry_run.
+    """
+    if not DRY_RUN:
+        return False
+    print(f"would write: {path}")
+    return True
+
+
 def say(msg: str) -> None:
     print(f"wtx: {msg}", file=sys.stderr)
 
 
-def warn(msg: str) -> None:
-    print(f"wtx: {msg}", file=sys.stderr)
+# Same line, two names: the caller says which one it meant.
+warn = say
 
 
 class CommandError(Exception):
@@ -129,6 +142,4 @@ def capture_code(cmd: Sequence[str], *, cwd: Path | None = None) -> tuple[int, s
 
 
 def which(name: str) -> str | None:
-    from shutil import which as _which
-
-    return _which(name)
+    return shutil_which(name)

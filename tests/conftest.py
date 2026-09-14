@@ -83,6 +83,16 @@ def _git(args: list[str], cwd: Path) -> str:
     ).stdout.strip()
 
 
+def commit(cwd: Path, message: str = "work") -> None:
+    """An empty commit, so a branch is ahead of its base."""
+    _git(["commit", "-q", "--allow-empty", "-m", message], cwd)
+
+
+def fake_sessions(*names: str) -> None:
+    """Tell the fake tmux which sessions exist."""
+    Path(os.environ["WTX_TEST_SESSIONS"]).write_text("".join(f"{n}\n" for n in names))
+
+
 @pytest.fixture
 def fake_bin(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A directory of recording stubs, put first on PATH."""
@@ -187,3 +197,18 @@ def _no_dry_run():
     proc.set_dry_run(False)
     yield
     proc.set_dry_run(False)
+
+
+@pytest.fixture(autouse=True)
+def no_fork(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
+    """capture() fires the handoff itself. No test may fork the real process
+    that respawns a pane, so keep the records it would have run instead.
+
+    autouse and in conftest, not in one module: a test that reaches capture()
+    by accident must not start forking either.
+    """
+    from wtx import orchestrate
+
+    fired: list[Path] = []
+    monkeypatch.setattr(orchestrate, "_spawn", lambda record, **kw: fired.append(record) or True)
+    return fired

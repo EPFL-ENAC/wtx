@@ -33,7 +33,13 @@ def tmux(*args: str) -> subprocess.CompletedProcess:
 
 
 @pytest.fixture
-def real_tmux(monkeypatch: pytest.MonkeyPatch):
+def real_tmux(monkeypatch: pytest.MonkeyPatch, fake_bin: Path):
+    """A private tmux server, on a socket of its own.
+
+    fake_bin is named so it is set up first: this reads WTX_TEST_CALLS, which
+    that fixture sets, and relying on the test's argument order to get it was a
+    trap waiting to spring.
+    """
     if shutil.which("tmux") is None:
         pytest.skip("no tmux")
     # "no server running" and "cannot reach the socket" look alike from the

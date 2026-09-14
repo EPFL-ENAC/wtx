@@ -10,11 +10,13 @@ the agent pane is where the work actually happens.
 from __future__ import annotations
 
 import re
+import select
 import shlex
 import shutil
 import sys
 import time
 import unicodedata
+from collections.abc import Iterator
 from pathlib import Path
 
 from . import envfile, git, notify, tmux
@@ -49,35 +51,20 @@ def _age(since: float) -> str:
 
 
 def _rows() -> list[dict]:
-    states = notify.all_states()
-    sessions = tmux.list_sessions() if tmux.available() else []
-    rows: list[dict] = []
-    for name in sessions:
-        if name == SESSION:
-            continue
-        data = states.get(name, {})
-        rows.append(
-            {
-                "session": name,
-                "state": data.get("state", ""),
-                "since": data.get("since", 0),
-                "message": data.get("message", ""),
-                "live": True,
-            }
-        )
-    for name, data in states.items():
-        if sessions and name in sessions:
-            continue
-        if not sessions:
-            rows.append(
-                {
-                    "session": name,
-                    "state": data.get("state", ""),
-                    "since": data.get("since", 0),
-                    "message": data.get("message", ""),
-                    "live": False,
-                }
-            )
+    """One row per live session. A state file whose session is gone is stale,
+    and live_states clears it."""
+    states = notify.live_states()
+    names = tmux.list_sessions() if tmux.available() else list(states)
+    rows = [
+        {
+            "session": name,
+            "state": states.get(name, {}).get("state", ""),
+            "since": states.get(name, {}).get("since", 0),
+            "message": states.get(name, {}).get("message", ""),
+        }
+        for name in names
+        if name != SESSION
+    ]
     rows.sort(key=lambda r: (ORDER.get(r["state"], 3), r["session"]))
     return rows
 
@@ -86,9 +73,7 @@ def _ports_for(session: str) -> str:
     """Ports of the checkout behind a session, read from its agent pane's path."""
     if not tmux.available():
         return ""
-    path = tmux._tmux_out(
-        ["list-panes", "-t", f"={session}", "-F", "#{pane_current_path}"]
-    ).splitlines()
+    path = tmux.out(["list-panes", "-t", f"={session}", "-F", "#{pane_current_path}"]).splitlines()
     if not path:
         return ""
     top = git.toplevel(Path(path[0]))
@@ -99,8 +84,7 @@ def _ports_for(session: str) -> str:
     return " ".join(ports)
 
 
-def render(width: int = 100) -> str:
-    rows = _rows()
+def render(rows: list[dict], width: int = 100) -> str:
     header = f"wtx monitor   {time.strftime('%H:%M:%S')}   q quit, r refresh, 1-9 jump"
     lines = [header, "-" * min(width, 100)]
     if not rows:
@@ -109,9 +93,9 @@ def render(width: int = 100) -> str:
     for index, row in enumerate(rows, start=1):
         icon = notify.EMOJI.get(row["state"], "  ")
         key = str(index) if index < 10 else " "
-        state = row["state"] or ("running" if row["live"] else "gone")
+        state = row["state"] or "running"
         age = _age(row["since"])
-        ports = _ports_for(row["session"]) if row["live"] else ""
+        ports = _ports_for(row["session"])
         line = f"{key} {icon} {row['session']:<38} {state:<11} {age:>5}  {ports}"
         lines.append(line.rstrip())
         if row["message"]:
@@ -127,17 +111,21 @@ def render(width: int = 100) -> str:
     return "\n".join(lines)
 
 
-def jump(index: int) -> None:
-    rows = _rows()
+def jump(rows: list[dict], index: int) -> None:
+    """Index into the rows that were drawn, not into a fresh list: a state
+    change between the redraw and the key press would move the target."""
     if 1 <= index <= len(rows):
         target = rows[index - 1]["session"]
         if tmux.available() and tmux.has_session(target):
             tmux.attach(target)
 
 
-def serve(interval: float = 2.0) -> int:
-    """The loop that runs inside the monitor pane."""
-    import select
+def _keys(interval: float) -> Iterator[str]:
+    """One item per interval: the key that was typed, or "" for a timeout.
+
+    Puts the terminal in cbreak mode and always puts it back. Both loops below
+    act on the key and then redraw, so every item is one frame.
+    """
     import termios
     import tty
 
@@ -146,24 +134,32 @@ def serve(interval: float = 2.0) -> int:
     if fd is not None:
         tty.setcbreak(fd)
     try:
+        yield ""  # draw once before the first wait
         while True:
-            width = shutil.get_terminal_size((100, 40)).columns
-            sys.stdout.write("\x1b[H\x1b[2J" + render(width) + "\n")
-            sys.stdout.flush()
             if fd is None:
                 time.sleep(interval)
+                yield ""
                 continue
             ready, _, _ = select.select([sys.stdin], [], [], interval)
-            if not ready:
-                continue
-            key = sys.stdin.read(1)
-            if key in ("q", "\x03", "\x04"):
-                return 0
-            if key.isdigit() and key != "0":
-                jump(int(key))
+            yield sys.stdin.read(1) if ready else ""
     finally:
         if fd is not None and old is not None:
             termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+
+def serve(interval: float = 2.0) -> int:
+    """The loop that runs inside the monitor pane."""
+    rows: list[dict] = []
+    for key in _keys(interval):
+        if key in ("q", "\x03", "\x04"):
+            return 0
+        if key.isdigit() and key != "0":
+            jump(rows, int(key))
+        width = shutil.get_terminal_size((100, 40)).columns
+        rows = _rows()
+        sys.stdout.write("\x1b[H\x1b[2J" + render(rows, width) + "\n")
+        sys.stdout.flush()
+    return 0
 
 
 def _wtx_cmd() -> str:
@@ -174,7 +170,7 @@ def _wtx_cmd() -> str:
 def open_board(*, grid: bool = False, interval: float = 2.0) -> int:
     """Create or attach the monitor session."""
     if not tmux.available():
-        print(render())
+        print(render(_rows()))
         return 0
     if not tmux.has_session(SESSION):
         run(
@@ -193,7 +189,7 @@ def open_board(*, grid: bool = False, interval: float = 2.0) -> int:
         tmux.server_options()
     if grid:
         _build_grid()
-        tmux._tmux(["select-window", "-t", f"={SESSION}:{GRID_WINDOW}"])
+        tmux.cmd(["select-window", "-t", f"={SESSION}:{GRID_WINDOW}"])
     # prefix+g runs this from a `run-shell` job. That job has TMUX in its
     # environment but no terminal of its own, so `switch-client` with no -c has
     # to guess which client it meant. Name the client that was used last
@@ -205,18 +201,18 @@ def open_board(*, grid: bool = False, interval: float = 2.0) -> int:
 
 def _build_grid(limit: int = GRID_LIMIT) -> None:
     """One tile per live session, each peeking at that session's agent pane."""
-    rows = [r for r in _rows() if r["live"]][:limit]
+    rows = _rows()[:limit]
     if not rows:
         warn("no sessions to show in the grid")
         return
-    windows = tmux._tmux_out(["list-windows", "-t", f"={SESSION}", "-F", "#{window_name}"])
+    windows = tmux.out(["list-windows", "-t", f"={SESSION}", "-F", "#{window_name}"])
     if GRID_WINDOW in windows.split():
-        tmux._tmux(["kill-window", "-t", f"={SESSION}:{GRID_WINDOW}"])
+        tmux.cmd(["kill-window", "-t", f"={SESSION}:{GRID_WINDOW}"])
 
     wtx = _wtx_cmd()
     target = f"={SESSION}:{GRID_WINDOW}"
     ids = [
-        tmux._tmux_out(
+        tmux.out(
             [
                 "new-window",
                 "-t",
@@ -227,12 +223,13 @@ def _build_grid(limit: int = GRID_LIMIT) -> None:
                 "-F",
                 "#{pane_id}",
                 f"{wtx} monitor --peek {shlex.quote(rows[0]['session'])}",
-            ]
+            ],
+            mutating=True,
         )
     ]
     for row in rows[1:]:
         ids.append(
-            tmux._tmux_out(
+            tmux.out(
                 [
                     "split-window",
                     "-t",
@@ -241,18 +238,19 @@ def _build_grid(limit: int = GRID_LIMIT) -> None:
                     "-F",
                     "#{pane_id}",
                     f"{wtx} monitor --peek {shlex.quote(row['session'])}",
-                ]
+                ],
+                mutating=True,
             )
         )
         # Re-tile after every split. Past four panes tmux refuses the next
         # one with "no space for new pane" if the layout is left alone.
-        tmux._tmux(["select-layout", "-t", target, "tiled"])
+        tmux.cmd(["select-layout", "-t", target, "tiled"])
 
-    tmux._tmux(["select-layout", "-t", target, "tiled"])
-    tmux._tmux(["set-option", "-w", "-t", target, "pane-border-status", "top"])
+    tmux.cmd(["select-layout", "-t", target, "tiled"])
+    tmux.cmd(["set-option", "-w", "-t", target, "pane-border-status", "top"])
     for pane_id, row in zip(ids, rows, strict=False):
         if pane_id:
-            tmux._tmux(["select-pane", "-t", pane_id, "-T", row["session"]])
+            tmux.cmd(["select-pane", "-t", pane_id, "-T", row["session"]])
     say(f"grid shows {len(rows)} session(s), Enter on a tile to go there")
 
 
@@ -328,7 +326,7 @@ def _capture(pane: str) -> list[str]:
     Without dropping the blanks, a pane whose prompt sits high leaves the tile
     showing nothing but empty rows.
     """
-    out = tmux._tmux_out(["capture-pane", "-p", "-e", "-t", pane])
+    out = tmux.out(["capture-pane", "-p", "-e", "-t", pane])
     lines = out.split("\n")
     while lines and not plain(lines[-1]).strip():
         lines.pop()
@@ -342,48 +340,30 @@ def peek(session: str, interval: float = PEEK_INTERVAL) -> int:
     real session down to the size of the tile, and it shows the top of the
     window while the part worth reading is the prompt at the bottom.
     """
-    import select
-    import termios
-    import tty
-
-    fd = sys.stdin.fileno() if sys.stdin.isatty() else None
-    old = termios.tcgetattr(fd) if fd is not None else None
-    if fd is not None:
-        tty.setcbreak(fd)
     pane = ""
     looked = 0.0
-    try:
-        while True:
-            now = time.time()
-            if not pane or now - looked > 3:
-                # A handoff respawns the agent pane, so its id changes under us.
-                pane = tmux.agent_pane_id(session) if tmux.available() else ""
-                looked = now
-            size = shutil.get_terminal_size((80, 24))
-            data = notify.read_state(session)
-            frame = render_peek(
-                _capture(pane) if pane else ["(no agent pane)"],
-                session=session,
-                state=data.get("state", ""),
-                age=_age(data.get("since", 0)),
-                rows=size.lines,
-                width=size.columns,
-            )
-            sys.stdout.write("\x1b[H" + frame.replace("\n", "\x1b[K\r\n") + "\x1b[K\x1b[J")
-            sys.stdout.flush()
-            if fd is None:
-                time.sleep(interval)
-                continue
-            ready, _, _ = select.select([sys.stdin], [], [], interval)
-            if not ready:
-                continue
-            key = sys.stdin.read(1)
-            if key in ("q", "\x03", "\x04"):
-                return 0
-            if key in ("\r", "\n", "o"):
-                # This runs in a pane, so TMUX is set and attach() switches the
-                # client that is looking at the grid.
-                tmux.attach(session)
-    finally:
-        if fd is not None and old is not None:
-            termios.tcsetattr(fd, termios.TCSADRAIN, old)
+    for key in _keys(interval):
+        if key in ("q", "\x03", "\x04"):
+            return 0
+        if key in ("\r", "\n", "o"):
+            # This runs in a pane, so TMUX is set and attach() switches the
+            # client that is looking at the grid.
+            tmux.attach(session)
+        now = time.time()
+        if not pane or now - looked > 3:
+            # A handoff respawns the agent pane, so its id changes under us.
+            pane = tmux.agent_pane_id(session) if tmux.available() else ""
+            looked = now
+        size = shutil.get_terminal_size((80, 24))
+        data = notify.read_state(session)
+        frame = render_peek(
+            _capture(pane) if pane else ["(no agent pane)"],
+            session=session,
+            state=data.get("state", ""),
+            age=_age(data.get("since", 0)),
+            rows=size.lines,
+            width=size.columns,
+        )
+        sys.stdout.write("\x1b[H" + frame.replace("\n", "\x1b[K\r\n") + "\x1b[K\x1b[J")
+        sys.stdout.flush()
+    return 0

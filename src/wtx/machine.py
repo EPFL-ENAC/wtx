@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .agents.base import get as get_agent
+from .init import GITIGNORE_LINES
 from .proc import say, warn
 
 BASHRC_LINE = 'eval "$(wtx shell-init bash)"'
@@ -54,14 +55,9 @@ TMUX_LINES = [
     "bind g run-shell -b 'wtx monitor --grid'",
 ]
 
-GIT_IGNORE_LINES = [
-    "**/.claude/settings.local.json",
-    "**/.claude/agents/Explore.md",
-    "**/.claude/rules/wtx.md",
-    "**/.claude/worktrees/",
-    "**/.env.worktree",
-    "**/.wt-logs/",
-]
+# Derived, never typed out again: a file wtx generates has to be in both ignore
+# lists or an untracked file makes the worktree dirty and `wtx land` refuses it.
+GIT_IGNORE_LINES = [f"**/{line}" for line in GITIGNORE_LINES]
 
 WT_CONFIG = """strategy = "custom"
 pattern = "{.repo.Main}/.claude/worktrees/{.branch}"

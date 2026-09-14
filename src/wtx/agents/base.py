@@ -12,7 +12,29 @@ from pathlib import Path
 from typing import Protocol
 
 from ..config import WtxConfig
+from ..proc import warn, would_write
 from ..repos import Resolved
+
+
+def write_file(target: Path, text: str) -> list[Path]:
+    """Write one generated file. Returns what it wrote, for the caller to say.
+
+    Atomic, so a half written settings file never starts an agent. A sandboxed
+    agent cannot write some of these, and that is a warning, not a failure:
+    everything else about the worktree still works.
+    """
+    if would_write(target):
+        return []
+    tmp = target.with_name(target.name + ".wtx-tmp")
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_text(text)
+        tmp.replace(target)
+    except OSError as exc:
+        warn(f"could not write {target}: {exc}")
+        tmp.unlink(missing_ok=True)
+        return []
+    return [target]
 
 
 @dataclass
@@ -30,13 +52,12 @@ class RenderContext:
     # Which side of the plan/build handoff this launch is on. Empty means a
     # plain session, which is neither. See orchestrate.py.
     phase: str = ""
-    # What the planner called the job, on a build launch: small or large.
-    size: str = ""
-    # This worktree's own plan model and plan effort, from .env.worktree. Empty
-    # means the repo config decides.
+    # The plan model and plan effort this launch uses, already resolved:
+    # context.Ctx reads .env.worktree and falls back to the repo config, so
+    # nothing below resolves them a second time.
     plan_model: str = ""
     plan_effort: str = ""
-    # The effort the planner asked for, on a build launch. It beats the size.
+    # The effort the planner asked for, on a build launch.
     effort_override: str = ""
 
     @property
@@ -56,10 +77,8 @@ class RenderContext:
         settings file included, keeps the worktree's model.
         """
         orch = self.cfg.agent.orchestration
-        if self.phase == "plan" and orch.enabled:
-            planner = self.plan_model or orch.plan_model
-            if planner:
-                return planner
+        if self.phase == "plan" and orch.enabled and self.plan_model:
+            return self.plan_model
         return self.llm or self.cfg.agent.llm
 
     @property
@@ -75,19 +94,16 @@ class RenderContext:
         """How hard the agent works.
 
         Planning and implementing are not the same job. Planning is reading and
-        thinking, so it runs low unless the caller said the plan is a big one.
-        Implementing an accepted plan takes the effort the planner asked for.
-        That is the lever the plan routes, not the model: a smaller model is
-        the bigger bet and stays opt-in.
+        thinking, so it runs low unless the caller raised it. Implementing an
+        accepted plan takes the effort the planner asked for. That is the lever
+        the plan routes, not the model: a smaller model is the bigger bet and
+        stays opt-in.
         """
         orch = self.cfg.agent.orchestration
         if self.phase == "plan" and orch.enabled:
-            return self.plan_effort or orch.plan_effort or self.cfg.agent.effort
-        if self.phase == "build" and orch.enabled:
-            if self.effort_override:
-                return self.effort_override
-            if self.size:
-                return orch.small_effort if self.size == "small" else orch.large_effort
+            return self.plan_effort or self.cfg.agent.effort
+        if self.phase == "build" and orch.enabled and self.effort_override:
+            return self.effort_override
         return self.cfg.agent.effort
 
 

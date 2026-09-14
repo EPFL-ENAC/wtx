@@ -142,15 +142,8 @@ def repair_tracking(cwd: Path, branch: str, base_branch: str) -> None:
         ["git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
         cwd=cwd,
     )
-    if upstream and upstream != f"origin/{branch}":
-        wrong_base = upstream in (f"origin/{base_branch}", base_branch)
-        if wrong_base:
-            run(
-                ["git", "branch", "--unset-upstream"],
-                cwd=cwd,
-                check=False,
-                quiet=True,
-            )
+    if upstream in (f"origin/{base_branch}", base_branch):
+        run(["git", "branch", "--unset-upstream"], cwd=cwd, check=False, quiet=True)
 
 
 def fetch(cwd: Path, remote: str = "origin") -> None:

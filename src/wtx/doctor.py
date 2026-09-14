@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from . import git, guard, tmux
 from .config import CONFIG_NAME
-from .proc import capture, which
+from .proc import capture, capture_code, which
 
 
 @dataclass
@@ -19,15 +19,6 @@ class Check:
     detail: str = ""
     fix: str = ""
     hard: bool = True
-
-    def as_dict(self) -> dict:
-        return {
-            "name": self.name,
-            "ok": self.ok,
-            "detail": self.detail,
-            "fix": self.fix,
-            "hard": self.hard,
-        }
 
 
 @dataclass
@@ -45,7 +36,7 @@ class Report:
     def as_dict(self) -> dict:
         return {
             "ok": not self.failed,
-            "checks": [c.as_dict() for c in self.checks],
+            "checks": [asdict(c) for c in self.checks],
         }
 
 
@@ -109,16 +100,10 @@ def run(cwd: Path | None = None) -> Report:
         )
 
     if which("gh"):
-        code = capture(["gh", "auth", "status"])
-        checks.append(
-            Check(
-                "gh authenticated",
-                "Logged in" in code or "logged in" in code,
-                "",
-                "gh auth login",
-                hard=False,
-            )
-        )
+        # The exit code, not the text: older gh prints the whole status to
+        # stderr and a check that reads stdout then always says no.
+        ok, _, _ = capture_code(["gh", "auth", "status"])
+        checks.append(Check("gh authenticated", ok == 0, "", "gh auth login", hard=False))
 
     agents = [name for name in ("claude", "opencode") if which(name)]
     checks.append(

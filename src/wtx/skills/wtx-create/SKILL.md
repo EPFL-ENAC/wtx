@@ -53,9 +53,9 @@ wtx go feat/thing --prompt /path/to/brief.md --no-attach
 
 ## 4. Pick the plan effort
 
-The agent plans first, on a fast model, then hands the accepted plan to the
-implementation model by itself. `--plan-effort` is how hard it thinks while
-planning. The default is `low`.
+The agent plans first, on the repo's plan model, then hands the accepted plan
+to the implementation model by itself. `--plan-effort` is how hard it thinks
+while planning. The default is `low`.
 
 Keep `low` when the task is clear and lands in code the agent will find fast:
 one file, a known command, a bug with a stack trace, a rename, a test to add.

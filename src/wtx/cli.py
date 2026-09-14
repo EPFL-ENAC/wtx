@@ -43,6 +43,7 @@ from .agents.base import PROMPT_FILE
 from .hooks import (
     GO_AGENT_ENV,
     GO_DRIVING_ENV,
+    GO_ENV_KEYS,
     GO_LLM_ENV,
     GO_PLAN_EFFORT_ENV,
     GO_PLAN_MODEL_ENV,
@@ -103,14 +104,14 @@ def _require_valid(cfg: config_mod.WtxConfig) -> None:
 def _write_prompt(path: Path, prompt: str, cfg: config_mod.WtxConfig) -> None:
     """A brief is a file at the checkout root. The agent pane starts on it.
 
-    With orchestration on, the planner is also told to size the plan, so wtx
-    knows which model to hand it to.
+    With orchestration on, the planner is also told to mark the effort the
+    implementation needs, so wtx knows how hard to start it.
     """
     candidate = Path(prompt).expanduser()
     text = candidate.read_text() if candidate.is_file() else prompt
     text = text.rstrip() + "\n"
     if cfg.agent.orchestration.enabled:
-        text += orchestrate.plan_instruction()
+        text += orchestrate.PLAN_INSTRUCTION
     (path / PROMPT_FILE).write_text(text)
 
 
@@ -190,13 +191,7 @@ def cmd_go(args: argparse.Namespace) -> int:
     # The hook runs in a fresh process, so what wtx go decided travels in the
     # environment, the way wt passes everything else to its hooks. Under names
     # no pane exports: see hooks.py.
-    for key in (
-        repos.WITH_ENV,
-        GO_AGENT_ENV,
-        GO_LLM_ENV,
-        GO_PLAN_MODEL_ENV,
-        GO_PLAN_EFFORT_ENV,
-    ):
+    for key in GO_ENV_KEYS:
         os.environ.pop(key, None)
     if with_repos:
         os.environ[repos.WITH_ENV] = repos.encode_with(with_repos)
@@ -216,14 +211,7 @@ def cmd_go(args: argparse.Namespace) -> int:
         raise UserError(str(exc)) from exc
     # The hook has run. Drop what was meant for it: a tmux server started
     # below would inherit these, and every later pane would pass them on.
-    for key in (
-        repos.WITH_ENV,
-        GO_AGENT_ENV,
-        GO_LLM_ENV,
-        GO_PLAN_MODEL_ENV,
-        GO_PLAN_EFFORT_ENV,
-        GO_DRIVING_ENV,
-    ):
+    for key in GO_ENV_KEYS:
         os.environ.pop(key, None)
     if path is None:
         if is_dry_run():
@@ -329,14 +317,14 @@ def cmd_done(args: argparse.Namespace) -> int:
         not args.from_tmux
         and os.environ.get("TMUX")
         and tmux.available()
-        and tmux._tmux_out(["display-message", "-p", "#{session_name}"]) == session
+        and tmux.out(["display-message", "-p", "#{session_name}"]) == session
     )
     if inside:
         # Removing the worktree kills the shell running this command. Hand the
         # job to the tmux server so it outlives the session.
         say("handing off to the tmux server, this session is about to close")
         force = " --force" if args.force else ""
-        tmux._tmux(
+        tmux.cmd(
             [
                 "run-shell",
                 "-b",
@@ -468,7 +456,8 @@ def cmd_status(args: argparse.Namespace) -> int:
         handoff = row["handoff"]
         if handoff:
             print(
-                f"    handoff pending: {handoff.get('size', '')} plan -> {handoff.get('model', '')}"
+                f"    handoff pending: plan -> {handoff.get('model', '')} "
+                f"at {handoff.get('effort', '')}"
             )
         for name, info in row["repos"].items():
             if info["branch"]:

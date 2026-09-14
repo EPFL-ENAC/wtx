@@ -42,15 +42,14 @@ explore_agent_model = "haiku"
 
 # Plan on one model, implement on another. A brief starts on
 # plan_model in plan mode; accepting the plan carries the same
-# conversation on to build_model, at the effort its size asks for.
+# conversation on to build_model, at the effort the plan asked for.
 [agent.orchestration]
 enabled = true
 plan_model = "fable"
 plan_effort = "low"
 build_model = "opus"
-# Fallbacks, for a plan with no wtx-effort: line.
-small_effort = "medium"
-large_effort = "xhigh"
+# What a plan with no wtx-effort: line implements at.
+build_effort = "xhigh"
 
 # Added to the baseline wtx ships. A repo can tighten, never loosen.
 [permissions]

@@ -16,6 +16,8 @@ import shlex
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
+from .proc import would_write
+
 ENV_FILE = ".env.worktree"
 
 HEADER = "# written by wtx. Values below the marker are yours, wtx keeps them."
@@ -110,6 +112,8 @@ def write(path: Path, owned: Mapping[str, str], owned_keys: Sequence[str]) -> No
     it writes this time. A key wtx owns but does not set now is dropped, not
     treated as foreign.
     """
+    if would_write(path):
+        return
     old = path.read_text() if path.is_file() else ""
     foreign = _foreign_lines(old, owned_keys)
     path.write_text(render(owned, foreign))

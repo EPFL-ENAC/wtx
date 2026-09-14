@@ -19,7 +19,7 @@ from .agents import base as agents
 from .agents.base import RenderContext
 from .config import WtxConfig
 from .context import Ctx
-from .proc import CommandError, run_shell, say, warn
+from .proc import CommandError, run_shell, say, warn, would_write
 
 
 class SetupError(Exception):
@@ -38,7 +38,8 @@ def _python_version(cfg: WtxConfig, main: Path) -> str:
     f = main / cfg.deps.python_version_file
     if not f.is_file():
         return ""
-    return f.read_text().strip().splitlines()[0] if f.read_text().strip() else ""
+    lines = f.read_text().split()
+    return lines[0] if lines else ""
 
 
 def seed(ctx: Ctx) -> None:
@@ -55,14 +56,14 @@ def seed(ctx: Ctx) -> None:
             )
     for rel in cfg.seed.copy:
         src, dst = ctx.main / rel, ctx.root / rel
-        if dst.exists() or not src.is_file():
+        if dst.exists() or not src.is_file() or would_write(dst):
             continue
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, dst)
         say(f"seeded {rel}")
     for rel in cfg.seed.symlink:
         src, dst = ctx.main / rel, ctx.root / rel
-        if dst.exists() or dst.is_symlink() or not src.exists():
+        if dst.exists() or dst.is_symlink() or not src.exists() or would_write(dst):
             continue
         dst.parent.mkdir(parents=True, exist_ok=True)
         dst.symlink_to(src)

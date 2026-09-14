@@ -7,7 +7,7 @@ New:
 - `[agent.orchestration]`: plan on one model, implement on another. A brief
   starts the agent on `plan_model` in plan mode; accepting the plan carries the
   same conversation on to `build_model` with `claude -r`, at the effort the
-  plan's size asks for. Works with opencode too: opencode.json gets a model per
+  plan's own `wtx-effort:` line asks for (`build_effort` when it names none). Works with opencode too: opencode.json gets a model per
   agent under `agent`, so the TUI swaps the model with the agent when the plan
   is accepted (no `wtx-effort:` routing there). Off unless a repo turns it on.
   Claude needs the new `ExitPlanMode` hook, so re-run

@@ -16,7 +16,7 @@ import json
 from pathlib import Path
 
 from . import git
-from .proc import capture_code, is_dry_run, run, warn
+from .proc import capture_code, is_dry_run, run
 
 
 class WtError(Exception):
@@ -82,8 +82,5 @@ def remove(cwd: Path, branch: str, *, force: bool = False) -> None:
     args = ["remove", branch]
     if force:
         args.append("--force")
-    try:
-        _run_json(args, cwd)
-    except WtError as exc:
-        warn(f"wt remove {branch}: {exc}")
-        raise
+    # No warning here: every caller reports a failure in its own words.
+    _run_json(args, cwd)

@@ -13,7 +13,7 @@ from pathlib import Path
 
 from . import git, wt
 from .context import Ctx
-from .proc import CommandError, capture, capture_code, run, run_shell, say, warn
+from .proc import CommandError, capture, capture_code, is_dry_run, run, run_shell, say, warn, which
 
 
 class LandError(Exception):
@@ -100,7 +100,10 @@ def land(
             f"rebase onto origin/{base} has conflicts. Resolve them in {path} "
             f"(git rebase origin/{base}), then run wtx land again"
         ) from exc
-    run(["git", "push", "--force-with-lease"], cwd=path)
+    # Name the ref. A branch cut with wt tracks its base until setup repairs
+    # that, and a bare push then refuses to guess. land must work on a worktree
+    # setup never touched. --force-with-lease still guards origin/<branch>.
+    run(["git", "push", "--force-with-lease", "origin", branch], cwd=path)
 
     if local:
         _land_local(ctx, branch, path, base, skip_checks=skip_checks)
@@ -137,8 +140,6 @@ def _refuse_a_branch_cut_from_elsewhere(ctx: Ctx, branch: str, base: str) -> Non
 
 
 def _land_pr(ctx: Ctx, branch: str, base: str, *, poll_seconds: int, timeout_minutes: int) -> None:
-    from .proc import is_dry_run, which
-
     if which("gh") is None:
         raise LandError("gh is not installed, use --local or open the PR by hand")
 
@@ -195,14 +196,3 @@ def _land_local(ctx: Ctx, branch: str, path: Path, base: str, *, skip_checks: bo
     run(["git", "pull", "--ff-only"], cwd=ctx.main)
     run(["git", "merge", "--no-ff", branch], cwd=ctx.main)
     run(["git", "push", "origin", base], cwd=ctx.main)
-
-
-def status_line(ctx: Ctx, branch: str) -> str:
-    state, url = pr_state(ctx.main, branch)
-    if not state:
-        return "no pull request"
-    return f"{state.lower()} {url}".strip()
-
-
-def head_of(cwd: Path, ref: str) -> str:
-    return capture(["git", "rev-parse", "--short", ref], cwd=cwd)

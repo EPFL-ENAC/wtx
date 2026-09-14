@@ -19,7 +19,7 @@ import shlex
 from pathlib import Path
 
 from .config import WtxConfig
-from .proc import capture, say, warn
+from .proc import capture, say, warn, would_write
 
 MARKER = "# wtx push guard"
 PREVIOUS = "pre-push.before-wt"
@@ -105,6 +105,8 @@ def install(cfg: WtxConfig, main: Path) -> bool:
     """
     directory = hooks_dir(main)
     hook = directory / "pre-push"
+    if would_write(hook):
+        return True
     try:
         directory.mkdir(parents=True, exist_ok=True)
         if hook.is_file() and MARKER not in hook.read_text():
