@@ -916,3 +916,55 @@ def test_a_tile_with_no_room_shows_the_header() -> None:
 
     frame = render_peek(["one", "two"], session="s", state="", age="", rows=1, width=20)
     assert frame.split("\n") == ["s  running"]
+
+
+def test_no_tmux_socket_is_not_a_sandbox(monkeypatch) -> None:
+    """After a reboot there is no socket at all, and tmux says "error
+    connecting ... (No such file or directory)", not "no server running". wtx
+    took that for a sandbox and told the user to run it from a real terminal,
+    which is what they were doing."""
+    from wtx import tmux
+
+    def answers(err: str, code: int = 1):
+        return lambda cmd, **kw: (code, "", err)
+
+    monkeypatch.setattr(
+        tmux,
+        "capture_code",
+        answers("error connecting to /tmp/tmux-1000/default (No such file or directory)"),
+    )
+    assert tmux.server_status()[0] == "absent"
+    assert tmux.server_reachable()
+
+    monkeypatch.setattr(
+        tmux, "capture_code", answers("no server running on /tmp/tmux-1000/default")
+    )
+    assert tmux.server_status()[0] == "absent"
+    assert tmux.server_reachable()
+
+    monkeypatch.setattr(tmux, "capture_code", answers("", code=0))
+    assert tmux.server_status()[0] == "up"
+    assert tmux.server_reachable()
+
+
+def test_only_a_permission_error_blames_the_sandbox(monkeypatch) -> None:
+    """The sandbox advice is right for a blocked socket and wrong for anything
+    else, so an error wtx does not know is passed on as tmux worded it."""
+    from wtx import tmux
+
+    def answers(err: str):
+        return lambda cmd, **kw: (1, "", err)
+
+    blocked = "error connecting to /tmp/tmux-1000/default (Operation not permitted)"
+    monkeypatch.setattr(tmux, "capture_code", answers(blocked))
+    state, err = tmux.server_status()
+    assert state == "blocked"
+    assert not tmux.server_reachable()
+    assert "real terminal" in tmux.server_remedy(state, err)
+
+    odd = "error connecting to /tmp/tmux-1000/default (Connection timed out)"
+    monkeypatch.setattr(tmux, "capture_code", answers(odd))
+    state, err = tmux.server_status()
+    assert state == "unknown"
+    assert not tmux.server_reachable()
+    assert tmux.server_remedy(state, err) == f"tmux said: {odd}"

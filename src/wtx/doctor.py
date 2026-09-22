@@ -53,12 +53,13 @@ def run(cwd: Path | None = None) -> Report:
     checks.append(_binary("wt", "go install github.com/timvw/wt@latest, then wt init"))
     checks.append(_binary("tmux", "install tmux"))
     if which("tmux"):
+        tmux_state = tmux.server_status()
         checks.append(
             Check(
                 "tmux server reachable",
-                tmux.server_reachable(),
+                tmux_state[0] in ("up", "absent"),
                 "",
-                "run wtx from a real terminal, an agent sandbox blocks the tmux socket",
+                tmux.server_remedy(*tmux_state),
                 hard=False,
             )
         )

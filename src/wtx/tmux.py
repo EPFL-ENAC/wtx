@@ -43,18 +43,45 @@ def out(args: list[str], *, mutating: bool = False) -> str:
     return capture(["tmux", *args])
 
 
-def server_reachable() -> bool:
-    """Can we talk to the tmux server at all?
+def server_status() -> tuple[str, str]:
+    """How the tmux server looks from here, and what tmux said about it.
 
-    When the socket is unreachable, which is what an agent sandbox does, tmux
+    When the socket cannot be used, which is what an agent sandbox does, tmux
     still exits 0 and only complains on stderr. Believing the exit code makes
     every session look present, so wtx never creates one and quietly attaches to
     nothing.
+
+    The states:
+
+    - "up", a server answers
+    - "absent", no server yet, and new-session starts one. tmux says it two
+      ways: "no server running" when a socket is left with nothing behind it
+      (tmux removes it itself), and "error connecting ... (No such file or
+      directory)" when there is no socket at all, the usual case after a reboot
+    - "blocked", the socket cannot be used, which is the sandbox case
+    - "unknown", anything else, passed on as tmux worded it
     """
     code, _, err = capture_code(["tmux", "list-sessions"])
-    if err and "no server running" in err.lower():
-        return True
-    return code in (0, 1) and not err
+    if not err:
+        return ("up" if code == 0 else "absent"), ""
+    low = err.lower()
+    if "no server running" in low or "no such file or directory" in low:
+        return "absent", err
+    if "operation not permitted" in low or "permission denied" in low:
+        return "blocked", err
+    return "unknown", err
+
+
+def server_reachable() -> bool:
+    """True when wtx can use a server, or start one."""
+    return server_status()[0] in ("up", "absent")
+
+
+def server_remedy(state: str, err: str) -> str:
+    """What to do about a server wtx cannot use."""
+    if state == "blocked":
+        return "run wtx from a real terminal, an agent sandbox blocks the tmux socket"
+    return f"tmux said: {err}"
 
 
 def has_session(name: str) -> bool:
@@ -267,16 +294,14 @@ def ensure_session(
     brief: bool = False,
 ) -> None:
     """Create the session if it is not there, then optionally attach."""
-    if not available():
-        from .proc import which
+    from .proc import which
 
-        if which("tmux") is None:
-            warn("tmux is not installed, no session created")
-        else:
-            warn(
-                "cannot reach the tmux server, no session created. "
-                "A sandboxed agent cannot: run this from a real terminal."
-            )
+    if which("tmux") is None:
+        warn("tmux is not installed, no session created")
+        return
+    state, err = server_status()
+    if state not in ("up", "absent"):
+        warn(f"cannot reach the tmux server, no session created. {server_remedy(state, err)}")
         return
     panes = list(ctx.cfg.panes.panes)
     if not panes:
