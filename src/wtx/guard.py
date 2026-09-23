@@ -11,6 +11,10 @@ the refs on stdin.
 
 The branch list and the whole guard body are baked into the hook. It must not
 depend on a file that an old branch, or a branch someone reset, might not have.
+
+A hook manager runs every pre-push.* it finds (lefthook runs pre-push.old). A
+copy of the guard under another name then calls the chain, which calls the copy
+again, forever. So the guard stops on re-entry, and install removes the copies.
 """
 
 from __future__ import annotations
@@ -23,6 +27,9 @@ from .proc import capture, say, warn, would_write
 
 MARKER = "# wtx push guard"
 PREVIOUS = "pre-push.before-wt"
+# Set by the guard while it runs. A second guard in the same push sees it and
+# exits: a loop through lefthook once left 33,000 processes.
+REENTRY_VAR = "WTX_PUSH_GUARD_RUNNING"
 
 
 def hooks_dir(main: Path) -> Path:
@@ -49,6 +56,13 @@ def render_hook(cfg: WtxConfig) -> str:
 # The agent's own deny rules cover the same pushes, but this runs inside git,
 # so it holds for any process in the worktree and cannot be talked around.
 set -u
+# lefthook runs every pre-push.* it finds, a stale copy of this guard included.
+# Once is enough: a second entry exits before it can loop.
+if [ -n "${{{REENTRY_VAR}:-}}" ]; then
+  exit 0
+fi
+{REENTRY_VAR}=1
+export {REENTRY_VAR}
 refs=$(cat)
 
 wtx_guard() {{
@@ -97,6 +111,24 @@ def is_installed(main: Path) -> bool:
     return hook.is_file() and MARKER in hook.read_text()
 
 
+def stale_copies(directory: Path) -> list[Path]:
+    """Every pre-push.* in the hooks dir that holds the guard.
+
+    `lefthook install` moves the guard to pre-push.old and lefthook runs it
+    from there, so the guard runs twice and, through the chain, loops.
+    """
+    if not directory.is_dir():
+        return []
+    found = []
+    for p in sorted(directory.glob("pre-push.*")):
+        try:
+            if p.is_file() and MARKER in p.read_text(errors="replace"):
+                found.append(p)
+        except OSError:
+            continue
+    return found
+
+
 def install(cfg: WtxConfig, main: Path) -> bool:
     """Write the guard, chaining any hook that was already there.
 
@@ -109,6 +141,10 @@ def install(cfg: WtxConfig, main: Path) -> bool:
         return True
     try:
         directory.mkdir(parents=True, exist_ok=True)
+        for stale in stale_copies(directory):
+            stale.unlink()
+            say(f"removed {stale.name}, a stale copy of the push guard (a hook manager runs it)")
+        # Only a foreign hook is chained. The guard as PREVIOUS would run itself.
         if hook.is_file() and MARKER not in hook.read_text():
             hook.replace(directory / PREVIOUS)
             say(f"kept the existing pre-push hook as {PREVIOUS}, it still runs")

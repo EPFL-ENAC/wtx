@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import fnmatch
 import json
+import os
 import subprocess
 from dataclasses import replace
 from pathlib import Path
@@ -214,6 +215,30 @@ def test_guard_hook_is_valid_shell_and_names_the_branches(tmp_path) -> None:
     subprocess.run(["sh", "-n", str(f)], check=True)
     assert "dev main" in body
     assert guard.MARKER in body
+    assert guard.REENTRY_VAR in body
+
+
+def test_guard_hook_exits_at_once_when_reentered(tmp_path) -> None:
+    """A second guard in the same push (lefthook running pre-push.old) must
+    stop before it reads stdin or chains anything, or the push loops."""
+    cfg = parse({"repo": {"protected_branches": ["main"]}})
+    f = tmp_path / "pre-push"
+    f.write_text(guard.render_hook(cfg))
+    (tmp_path / guard.PREVIOUS).write_text("#!/bin/sh\necho CHAINED >&2\n")
+    (tmp_path / guard.PREVIOUS).chmod(0o755)
+    env = {**os.environ, guard.REENTRY_VAR: "1"}
+    result = subprocess.run(
+        ["sh", str(f), "origin", "url"],
+        input="refs/heads/x abc refs/heads/main def\n",
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert result.returncode == 0
+    assert result.stderr == ""
 
 
 def test_guard_does_not_read_a_file_from_the_repo() -> None:
