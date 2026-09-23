@@ -377,6 +377,109 @@ def test_installing_twice_does_not_chain_the_guard_to_itself(
     assert not (hooks / "pre-push.before-wt").is_file()
 
 
+def fake_lefthook(counter: Path) -> str:
+    """A pre-push hook that runs pre-push.old, like lefthook 1.13 does.
+
+    It counts its runs and gives up after a few, so a loop fails the test
+    instead of filling the machine with processes.
+    """
+    return f"""#!/bin/sh
+echo run >> {counter}
+[ "$(wc -l < {counter})" -le 5 ] || {{ echo LOOP >&2; exit 1; }}
+old="$(dirname "$0")/pre-push.old"
+[ -x "$old" ] || exit 0
+"$old" "$@"
+"""
+
+
+def test_install_removes_a_stale_guard_copy(
+    wtx_repo: Path, fake_bin: Path, tmp_path: Path, capsys
+) -> None:
+    """What happened in resslab-hub: wtx chained lefthook, `lefthook install`
+    then moved the guard to pre-push.old, and wtx installed again."""
+    cfg = config_mod.load(wtx_repo / "wtx.toml")
+    guard.install(cfg, wtx_repo)
+    hooks = guard.hooks_dir(wtx_repo)
+    (hooks / "pre-push").replace(hooks / "pre-push.old")
+    lefthook = fake_lefthook(tmp_path / "count")
+    (hooks / "pre-push").write_text(lefthook)
+    (hooks / "pre-push").chmod(0o755)
+
+    guard.install(cfg, wtx_repo)
+    assert not (hooks / "pre-push.old").exists()
+    assert (hooks / "pre-push.before-wt").read_text() == lefthook
+    assert guard.MARKER in (hooks / "pre-push").read_text()
+    assert guard.stale_copies(hooks) == []
+    assert "removed pre-push.old" in capsys.readouterr().err
+
+
+def test_guard_does_not_recurse(wtx_repo: Path, fake_bin: Path, tmp_path: Path) -> None:
+    """The loop itself: guard, then lefthook, then the guard again as
+    pre-push.old, then lefthook again... The push must end, and end well."""
+    cfg = config_mod.load(wtx_repo / "wtx.toml")
+    guard.install(cfg, wtx_repo)
+    hooks = guard.hooks_dir(wtx_repo)
+    (hooks / "pre-push.old").write_text(guard.render_hook(cfg))
+    (hooks / "pre-push.old").chmod(0o755)
+    counter = tmp_path / "count"
+    (hooks / "pre-push.before-wt").write_text(fake_lefthook(counter))
+    (hooks / "pre-push.before-wt").chmod(0o755)
+
+    path = make_worktree(wtx_repo, "feat/loop")
+    commit(path)
+    result = subprocess.run(
+        ["git", "push", "origin", "HEAD:refs/heads/feat/loop"],
+        cwd=path,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "LOOP" not in result.stderr
+    assert counter.read_text().count("run") == 1
+
+
+def test_the_guard_still_refuses_with_a_stale_copy_around(
+    wtx_repo: Path, fake_bin: Path, tmp_path: Path
+) -> None:
+    """Stopping the loop must not open the guard: the first guard still runs."""
+    cfg = config_mod.load(wtx_repo / "wtx.toml")
+    guard.install(cfg, wtx_repo)
+    hooks = guard.hooks_dir(wtx_repo)
+    (hooks / "pre-push.old").write_text(guard.render_hook(cfg))
+    (hooks / "pre-push.old").chmod(0o755)
+    (hooks / "pre-push.before-wt").write_text(fake_lefthook(tmp_path / "count"))
+    (hooks / "pre-push.before-wt").chmod(0o755)
+
+    path = make_worktree(wtx_repo, "feat/loop2")
+    commit(path)
+    result = push(path, "origin", "HEAD:dev")
+    assert result.returncode != 0
+    assert "push-guard" in result.stderr
+
+
+def test_doctor_warns_about_a_stale_guard_copy(wtx_repo: Path, fake_bin: Path, monkeypatch) -> None:
+    from wtx import doctor
+
+    monkeypatch.chdir(wtx_repo)
+    cfg = config_mod.load(wtx_repo / "wtx.toml")
+    guard.install(cfg, wtx_repo)
+
+    def stale_check():
+        report = doctor.run(wtx_repo)
+        return next(c for c in report.checks if c.name == "no stale push guard copy")
+
+    assert stale_check().ok
+
+    hooks = guard.hooks_dir(wtx_repo)
+    (hooks / "pre-push.old").write_text((hooks / "pre-push").read_text())
+    check = stale_check()
+    assert not check.ok
+    assert not check.hard
+    assert "pre-push.old" in check.detail
+
+
 # -- external repos -----------------------------------------------------------
 
 

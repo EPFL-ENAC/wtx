@@ -30,6 +30,13 @@ New:
 - Permission modes and effort levels in `wtx.toml` are checked against the ones
   the agent actually knows.
 
+Fixed:
+
+- The push guard could loop forever with lefthook: `lefthook install` moved
+  the guard to `pre-push.old` and lefthook ran it again from there (one push
+  left 33,000 processes). The hook now stops on re-entry, `wtx setup` removes
+  stale guard copies, and `wtx doctor` warns about them.
+
 Review fixes:
 
 - `{repo}` in a `[[repos]]` path was expanded to nothing when `[repo].name`

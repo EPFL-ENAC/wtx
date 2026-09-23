@@ -48,6 +48,14 @@ ignores never runs, so wtx follows the setting.
 **An existing pre-push hook is kept** as `pre-push.before-wt` and still runs,
 with the same refs on its stdin.
 
+**A copy of the guard under another name is a loop.** `lefthook install` moves
+the hook it finds to `pre-push.old`, and lefthook runs `pre-push.old`. When the
+hook it moved is the guard: guard, then lefthook (as `pre-push.before-wt`), then
+the guard again as `pre-push.old`, then lefthook... One push left 33,000
+processes. The guard sets `WTX_PUSH_GUARD_RUNNING` and exits at once when it is
+already set, install removes every `pre-push.*` that holds the guard, and
+`wtx doctor` warns about one.
+
 ## the agent sandbox
 
 **It cannot reach loopback.** Even with localhost in the allowed domains.

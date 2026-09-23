@@ -220,6 +220,17 @@ def run(cwd: Path | None = None) -> Report:
                     "wtx setup, from a real terminal",
                 )
             )
+            # lefthook runs pre-push.old: a guard copy there makes a push loop.
+            stale = guard.stale_copies(guard.hooks_dir(main))
+            checks.append(
+                Check(
+                    "no stale push guard copy",
+                    not stale,
+                    ", ".join(p.name for p in stale),
+                    "wtx setup, from a real terminal (it removes them)",
+                    hard=False,
+                )
+            )
         except config_mod.ConfigError as exc:
             checks.append(Check("config is valid", False, str(exc), "fix wtx.toml"))
 
