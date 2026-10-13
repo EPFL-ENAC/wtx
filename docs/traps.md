@@ -178,9 +178,15 @@ wtx creates none. Reachability is checked by looking at stderr too.
 **A pane cannot be found by its title.** An agent rewrites its own pane title as
 it works. Panes carry a `@wt_role` option instead.
 
-**The `prefix+X` binding is server wide** and the last run owns it, whatever repo
-it came from. It bakes in no path: the branch comes from the pane's own
-directory at key time.
+**`list-panes -t <session>` lists the window in front only.** It needs `-s` to
+see every window of the session. Without it, notes sent when hunk quits found
+no agent pane: the review window was in front.
+
+**The `prefix+X` and `prefix+r` bindings are server wide** and the last run owns
+them, whatever repo it came from. They bake in no path: the branch comes from
+the pane's own directory at key time. The server runs them with their output
+nowhere, so `prefix+r` only opens the review window and the slow part (asking
+the agent) runs in it, where the human sees it and its errors.
 
 **Closing the session you are sitting in kills the command doing the closing.**
 `wtx done` hands the job to the tmux server with `run-shell -b`.
@@ -219,7 +225,7 @@ record is claimed by renaming it, so exactly one wins.
 monitor read every `*.json` in the runtime directory and key them by session. A
 record named `<session>.handoff.json` would sit in that list with no state. It
 is `<session>.handoff`. Same for the review files, `<session>.review` and
-`<session>.review.meta`.
+the ones next to it (`.meta`, `.notes`, `.sent`).
 
 **A plan brief must not change the worktree's model.** The plan phase runs on
 `plan_model` at `plan_effort`, but `.claude/settings.local.json` and a later
@@ -304,6 +310,28 @@ always follows it in `review_cmd`.
 
 **hunk's `--type all` returns the agent's notes too.** `--notes` must send back
 what the human typed, not the agent's own notes, so it reads `--type user`.
+
+**hunk keeps the human's notes in memory only.** Quit hunk and they are gone,
+and quitting is how a review ends. The first version only had `--notes`, which
+needs hunk still open, and the first real note was lost that way. The review
+window runs `wtx review --hunk-window`: it runs hunk, copies the notes every
+second to `<session>.review.notes`, and sends them when hunk quits.
+`<session>.review.sent` holds what went already, so `--notes` then quit does
+not send a note twice. The copy only adds notes, it never drops one: hunk
+empties its notes while it shuts down, the copy taken in that moment was empty,
+and the second real note was lost that way. The cost: a note deleted in hunk
+after it was copied still goes. Closing the window (`Ctrl-b &`, or a new `wtx review`
+that replaces it) is a SIGHUP, which kills the watcher before it sends: it is
+caught and ends the review like quitting hunk. The window gets the PATH of the
+shell that opened it: with the tmux server's PATH, the copy may not find hunk
+and fail every second without a word. `prefix+r` only has the server's PATH,
+the one from when the server started, so wtx also looks in `~/.hunk/bin`, where
+hunk's installer puts it.
+
+**The agent cannot read hunk's notes itself.** hunk talks to its daemon on
+127.0.0.1, and the Linux sandbox cannot reach loopback: from the agent, hunk
+says no session is open. So wtx pushes the notes into the pane, the agent
+never pulls them.
 
 ## landing
 

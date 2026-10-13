@@ -111,6 +111,9 @@ def fake_bin(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("WTX_TEST_CALLS", str(calls))
     monkeypatch.setenv("WTX_TEST_SESSIONS", str(sessions))
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "run"))
+    # wtx looks for hunk in ~/.hunk/bin too. A test must not find the real one.
+    (tmp_path / "home").mkdir()
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.delenv("TMUX", raising=False)
     return bindir
 

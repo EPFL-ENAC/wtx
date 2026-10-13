@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -1778,7 +1780,10 @@ def test_review_asks_the_agent_once_and_opens_hunk(
     windows = [c for c in calls_of(fake_bin, "tmux") if c.startswith("new-window")]
     assert len(windows) == 1
     assert f"-n review -c {ctx.root} " in windows[0]
-    assert windows[0].endswith(f"/hunk diff origin/dev...HEAD --agent-context {sidecar}")
+    # The window runs this same wtx, which runs hunk and keeps the notes. With
+    # this PATH: the tmux server's one may not find hunk.
+    assert f" -e PATH={os.environ['PATH']} " in windows[0]
+    assert windows[0].endswith(f"{sys.executable} -m wtx review feat/rev --hunk-window")
 
     # The branch did not move: the notes are still right, no new run.
     assert run(["review", "feat/rev"]) == 0
@@ -1852,22 +1857,12 @@ def test_review_notes_go_back_to_the_agent_pane(
 ) -> None:
     """One bracketed paste then Enter. Typed with send-keys, the first newline
     would submit the message halfway."""
-    from conftest import BODIES
 
     make_worktree(wtx_repo, "feat/notes")
     path = git.worktree_path_for(wtx_repo, "feat/notes")
     fake_sessions(context.load(root=path).session)
-    comments = {
-        "comments": [
-            {"noteId": "1", "filePath": "backend/a.py", "newRange": [4, 4], "body": "rename this"},
-            {"noteId": "2", "filePath": "frontend/b.ts", "body": "why?"},
-        ]
-    }
-    out = fake_bin.parent / "hunk.out"
-    out.write_text(json.dumps(comments))
-    _fake(fake_bin, "hunk", f'cat "{out}"')
-    keep = '  load-buffer) cp "$4" "$WTX_TEST_CALLS.buffer";;\n  show-options)'
-    _fake(fake_bin, "tmux", BODIES["tmux"].replace("  show-options)", keep))
+    _hunk_has_notes(fake_bin)
+    _keep_the_paste(fake_bin)
     monkeypatch.chdir(wtx_repo)
 
     assert run(["review", "feat/notes", "--notes"]) == 0
@@ -1880,6 +1875,272 @@ def test_review_notes_go_back_to_the_agent_pane(
     assert "- backend/a.py:4 rename this" in text
     assert "- frontend/b.ts why?" in text
     assert "sent 2 notes" in capsys.readouterr().err
+
+    # Quitting hunk later must not send them a second time.
+    assert run(["review", "feat/notes", "--notes"]) == 0
+    assert len([c for c in calls_of(fake_bin, "tmux") if c.startswith("paste-buffer")]) == 1
+    assert "already sent" in capsys.readouterr().err
+
+
+COMMENTS = {
+    "comments": [
+        {"noteId": "1", "filePath": "backend/a.py", "newRange": [4, 4], "body": "rename this"},
+        {"noteId": "2", "filePath": "frontend/b.ts", "body": "why?"},
+    ]
+}
+
+
+def _hunk_has_notes(fake_bin: Path, diff: str = "") -> None:
+    """A hunk whose live session holds COMMENTS. `diff` is what `hunk diff`
+    does, the time the human spends reading."""
+    out = fake_bin.parent / "hunk.out"
+    out.write_text(json.dumps(COMMENTS))
+    _fake(fake_bin, "hunk", f'case "$1" in diff) {diff or ":"};; *) cat "{out}";; esac')
+
+
+def _hunk_is_closed(fake_bin: Path) -> None:
+    _fake(fake_bin, "hunk", 'echo "No active Hunk sessions are registered" >&2; exit 1')
+
+
+def _keep_the_paste(fake_bin: Path) -> None:
+    """A tmux that keeps what is pasted. The review window is in front, as
+    when hunk quits: list-panes sees that window only, -s sees them all."""
+    from conftest import BODIES
+
+    panes = """  list-panes) case " $* " in *" -s "*) printf '%s\\n' '%9 ' '%0 agent';;
+    *) echo '%9 ';; esac;;
+"""
+    keep = '  load-buffer) cp "$4" "$WTX_TEST_CALLS.buffer";;\n' + panes + "  show-options)"
+    body = BODIES["tmux"].replace("  list-panes) echo '%0 agent';;\n", "")
+    assert body != BODIES["tmux"]
+    _fake(fake_bin, "tmux", body.replace("  show-options)", keep))
+
+
+def _saved_review(path: Path) -> str:
+    from wtx import review
+
+    session = context.load(root=path).session
+    head = git_out(["rev-parse", "HEAD"], path)
+    review.save(session, SIDECAR, head=head, rng="origin/dev...HEAD", agent="claude")
+    return session
+
+
+def test_quitting_hunk_sends_the_notes_it_had(
+    wtx_repo: Path, fake_bin: Path, monkeypatch, capsys
+) -> None:
+    """hunk keeps the notes in memory only and quitting is how a review ends.
+    The review window copies them while hunk runs and sends them after."""
+    from wtx import review
+
+    path = make_worktree(wtx_repo, "feat/quit")
+    session = _saved_review(path)
+    fake_sessions(session)
+    _hunk_has_notes(fake_bin, diff="sleep 0.5")
+    _keep_the_paste(fake_bin)
+    monkeypatch.setattr(review, "POLL_SECONDS", 0.05)
+    monkeypatch.chdir(path)
+    before = signal.getsignal(signal.SIGINT)
+
+    assert run(["review", "feat/quit", "--hunk-window"]) == 0
+    hunk_calls = calls_of(fake_bin, "hunk")
+    sidecar = review.sidecar_file(session)
+    assert hunk_calls[0] == f"diff origin/dev...HEAD --agent-context {sidecar}"
+    assert f"session comment list --repo {path} --type user --json" in hunk_calls
+    text = Path(os.environ["WTX_TEST_CALLS"] + ".buffer").read_text()
+    assert "- backend/a.py:4 rename this" in text and "- frontend/b.ts why?" in text
+    assert "sent 2 notes" in capsys.readouterr().err
+    assert signal.getsignal(signal.SIGINT) is before
+
+    # hunk is closed now. --notes reads the copy, and it was all sent already.
+    _hunk_is_closed(fake_bin)
+    assert run(["review", "feat/quit", "--notes"]) == 0
+    assert "already sent" in capsys.readouterr().err
+    assert len([c for c in calls_of(fake_bin, "tmux") if c.startswith("paste-buffer")]) == 1
+
+
+def test_notes_hunk_drops_while_it_quits_still_go(
+    wtx_repo: Path, fake_bin: Path, monkeypatch
+) -> None:
+    """hunk empties its notes while it shuts down, and the copy taken then
+    lost the second real note. The copy only grows."""
+    from wtx import review
+
+    path = make_worktree(wtx_repo, "feat/drop")
+    session = _saved_review(path)
+    fake_sessions(session)
+    out = fake_bin.parent / "hunk.out"
+    empty = '{"comments": []}'
+    _hunk_has_notes(fake_bin, diff=f"sleep 0.3; echo '{empty}' > {out}; sleep 0.3")
+    _keep_the_paste(fake_bin)
+    monkeypatch.setattr(review, "POLL_SECONDS", 0.05)
+    monkeypatch.chdir(path)
+
+    assert run(["review", "feat/drop", "--hunk-window"]) == 0
+    text = Path(os.environ["WTX_TEST_CALLS"] + ".buffer").read_text()
+    assert "- backend/a.py:4 rename this" in text and "- frontend/b.ts why?" in text
+
+
+def test_closing_the_review_window_still_sends_the_notes(
+    wtx_repo: Path, fake_bin: Path, monkeypatch, capsys
+) -> None:
+    """Ctrl-b &, or a new wtx review replacing the window, is a SIGHUP. It
+    ends the review like quitting hunk does, it must not lose the notes."""
+    from wtx import review
+
+    path = make_worktree(wtx_repo, "feat/hangup")
+    session = _saved_review(path)
+    fake_sessions(session)
+    # hunk reads for a while, then the window closes: SIGHUP to wtx.
+    _hunk_has_notes(fake_bin, diff='sleep 0.4; kill -HUP "$PPID"; exec sleep 3')
+    _keep_the_paste(fake_bin)
+    monkeypatch.setattr(review, "POLL_SECONDS", 0.05)
+    monkeypatch.chdir(path)
+    before = signal.getsignal(signal.SIGHUP)
+
+    assert run(["review", "feat/hangup", "--hunk-window"]) == 0
+    text = Path(os.environ["WTX_TEST_CALLS"] + ".buffer").read_text()
+    assert "- backend/a.py:4 rename this" in text
+    assert signal.getsignal(signal.SIGHUP) is before
+
+
+def test_notes_with_no_agent_pane_are_kept_for_later(
+    wtx_repo: Path, fake_bin: Path, monkeypatch, capsys
+) -> None:
+    from wtx import review
+
+    path = make_worktree(wtx_repo, "feat/no-pane")
+    session = _saved_review(path)
+    _hunk_has_notes(fake_bin, diff="sleep 0.3")
+    _keep_the_paste(fake_bin)
+    monkeypatch.setattr(review, "POLL_SECONDS", 0.05)
+    monkeypatch.chdir(path)
+
+    assert run(["review", "feat/no-pane", "--hunk-window"]) == 1
+    assert "the notes are kept" in capsys.readouterr().err.lower()
+    assert not [c for c in calls_of(fake_bin, "tmux") if c.startswith("paste-buffer")]
+
+    # The agent is back, hunk is long closed: the copy still goes.
+    fake_sessions(session)
+    _hunk_is_closed(fake_bin)
+    assert run(["review", "feat/no-pane", "--notes"]) == 0
+    assert "sent 2 notes" in capsys.readouterr().err
+
+
+def test_notes_with_hunk_closed_and_nothing_kept_say_so(
+    wtx_repo: Path, fake_bin: Path, monkeypatch, capsys
+) -> None:
+    make_worktree(wtx_repo, "feat/closed")
+    _hunk_is_closed(fake_bin)
+    monkeypatch.chdir(wtx_repo)
+
+    assert run(["review", "feat/closed", "--notes"]) == 1
+    assert "hunk is not open on" in capsys.readouterr().err
+
+
+def test_review_with_the_session_down_runs_hunk_here(
+    wtx_repo: Path, fake_bin: Path, monkeypatch
+) -> None:
+    from wtx import review
+
+    _branch_with_a_change(wtx_repo, "feat/down")
+    _claude_answers(fake_bin, json.dumps(SIDECAR))
+    _hunk_has_notes(fake_bin)
+    monkeypatch.setattr(review, "POLL_SECONDS", 0.05)
+    monkeypatch.chdir(wtx_repo)
+
+    assert run(["review", "feat/down"]) == 0
+    assert calls_of(fake_bin, "hunk")[0].startswith("diff origin/dev...HEAD --agent-context ")
+    assert not [c for c in calls_of(fake_bin, "tmux") if c.startswith("new-window")]
+
+
+def test_prefix_r_opens_the_review_window_from_any_pane(
+    wtx_repo: Path, fake_bin: Path, monkeypatch
+) -> None:
+    """The tmux server runs prefix+r with its output nowhere. It only opens
+    the window, the window asks the agent where the human can see it."""
+    from wtx import tmux
+
+    path = _branch_with_a_change(wtx_repo, "feat/key")
+    session = context.load(root=path).session
+    fake_sessions(session)
+    _claude_answers(fake_bin, json.dumps(SIDECAR))
+    monkeypatch.chdir(wtx_repo.parent)
+    monkeypatch.setenv("TMUX", "/tmp/fake-tmux,1,0")  # a run-shell job has it
+
+    tmux.server_options()
+    binding = [c for c in calls_of(fake_bin, "tmux") if c.startswith("bind-key r ")]
+    assert binding == [
+        "bind-key r run-shell -b wtx review --path '#{pane_current_path}' --from-tmux"
+    ]
+
+    assert run(["review", "--path", str(path / "backend"), "--from-tmux"]) == 0
+    windows = [c for c in calls_of(fake_bin, "tmux") if c.startswith("new-window")]
+    assert len(windows) == 1
+    assert windows[0].endswith(f"{sys.executable} -m wtx review feat/key --hunk-window")
+    assert not calls_of(fake_bin, "claude")
+    # new-window already shows it to the client that pressed the key.
+    assert not [c for c in calls_of(fake_bin, "tmux") if c.startswith("switch-client")]
+
+
+def test_prefix_r_says_what_is_wrong_on_the_status_line(wtx_repo: Path, fake_bin: Path) -> None:
+    path = make_worktree(wtx_repo, "feat/nokey")
+
+    assert run(["review", "--path", str(wtx_repo), "--from-tmux"]) == 1
+    assert run(["review", "--path", str(path), "--from-tmux"]) == 1
+    shown = [c for c in calls_of(fake_bin, "tmux") if c.startswith("display-message")]
+    assert "dev is protected" in shown[0]
+    assert "no tmux session" in shown[1] and "wtx go feat/nokey" in shown[1]
+    assert not [c for c in calls_of(fake_bin, "tmux") if c.startswith("new-window")]
+
+
+def test_the_review_window_asks_the_agent_when_the_review_is_old(
+    wtx_repo: Path, fake_bin: Path, monkeypatch
+) -> None:
+    from wtx import review
+
+    path = _branch_with_a_change(wtx_repo, "feat/win")
+    session = context.load(root=path).session
+    review.save(session, SIDECAR, head="an-old-commit", rng="origin/dev...HEAD", agent="claude")
+    _claude_answers(fake_bin, json.dumps(SIDECAR))
+    _hunk_has_notes(fake_bin)
+    monkeypatch.setattr(review, "POLL_SECONDS", 0.05)
+    monkeypatch.chdir(path)
+
+    assert run(["review", "feat/win", "--hunk-window"]) == 0
+    assert len(calls_of(fake_bin, "claude")) == 1
+    assert calls_of(fake_bin, "hunk")[0].startswith("diff origin/dev...HEAD --agent-context ")
+    assert review.status(session, git_out(["rev-parse", "HEAD"], path)) == "ok"
+
+    # Now it matches the branch: hunk again, no new question.
+    assert run(["review", "feat/win", "--hunk-window"]) == 0
+    assert len(calls_of(fake_bin, "claude")) == 1
+
+
+def test_the_review_window_shows_why_it_has_nothing(
+    wtx_repo: Path, fake_bin: Path, monkeypatch, capsys
+) -> None:
+    path = make_worktree(wtx_repo, "feat/same")
+    monkeypatch.chdir(path)
+
+    assert run(["review", "feat/same", "--hunk-window"]) == 1
+    assert "nothing to review" in capsys.readouterr().err
+    assert not calls_of(fake_bin, "claude")
+    assert not calls_of(fake_bin, "hunk")
+
+
+def test_hunk_is_found_where_its_installer_puts_it(fake_bin: Path) -> None:
+    """prefix+r runs wtx with the tmux server's PATH, from before hunk was
+    installed maybe."""
+    from wtx import review
+
+    (fake_bin / "hunk").unlink()
+    assert review.hunk_binary() is None
+    installed = Path.home() / ".hunk" / "bin" / "hunk"
+    installed.parent.mkdir(parents=True)
+    installed.write_text("#!/bin/sh\n")
+    assert review.hunk_binary() is None  # not executable yet
+    installed.chmod(0o755)
+    assert review.hunk_binary() == str(installed)
 
 
 def test_land_warns_about_a_missing_or_stale_review(

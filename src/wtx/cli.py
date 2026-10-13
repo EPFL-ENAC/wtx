@@ -633,27 +633,19 @@ def cmd_brief(args: argparse.Namespace) -> int:
 
 def cmd_review(args: argparse.Namespace) -> int:
     """The branch agent's notes beside its diff, in hunk. See review.py."""
+    if args.from_tmux:
+        return _review_from_tmux(Path(args.path))
     main = _main_checkout()
     cfg = _load_cfg(main)
     branch = args.branch or git.current_branch(Path.cwd())
     path = _worktree_for(main, cfg, branch)
     ctx = context.for_worktree(main, path, branch, cfg)
     try:
+        if args.hunk_window:
+            return review.run_window(ctx)
         if args.notes:
             return _send_review_notes(ctx)
-        rng = review.diff_range(ctx, args.base)
-        if review.is_empty(path, rng):
-            hint = "" if git.is_clean(path) else ", commit the work first"
-            raise UserError(f"nothing to review, {rng} has no changes{hint}")
-        if not git.is_clean(path):
-            warn(f"{path} has uncommitted changes, the review only covers commits")
-        if not args.force and review.status(ctx.session, review.head(path), rng) == "ok":
-            say("the notes are up to date with the branch, --force asks again")
-            data = review.load(ctx.session)
-        else:
-            agent = agents.get(ctx.agent_tool)
-            rctx = tmux.render_ctx(ctx, repos.resolve_all(ctx))
-            data = review.generate(ctx, agent, rctx, rng)
+        data, rng = review.fresh(ctx, args.base, force=args.force)
     except review.ReviewError as exc:
         raise UserError(str(exc)) from exc
     if args.no_open:
@@ -666,14 +658,40 @@ def cmd_review(args: argparse.Namespace) -> int:
     return 0
 
 
+def _review_from_tmux(pane_dir: Path) -> int:
+    """prefix+r, from any pane of a branch session.
+
+    The tmux server runs this with its output nowhere, so it only opens the
+    review window, and the window asks the agent and shows what goes wrong.
+    What fails before that is shown on the status line.
+    """
+    try:
+        main = _main_checkout(pane_dir)
+        cfg = _load_cfg(main)
+        branch = git.current_branch(pane_dir)
+        if not branch:
+            raise UserError(f"{pane_dir} is not on a branch")
+        path = _worktree_for(main, cfg, branch)
+        ctx = context.for_worktree(main, path, branch, cfg)
+        if not tmux.has_session(ctx.session):
+            raise UserError(f"no tmux session {ctx.session}, start it with wtx go {branch}")
+    except UserError as exc:
+        tmux.cmd(["display-message", "-d", "5000", f"wtx review: {exc}"])
+        return 1
+    review.open_window(ctx)
+    return 0
+
+
 def _send_review_notes(ctx: context.Ctx) -> int:
-    notes = review.collect_notes(ctx.root)
+    notes = review.current_notes(ctx)
     if not notes:
         say("no notes typed in hunk yet, press c on a line to add one")
         return 0
-    if not review.send_notes(ctx, review.format_notes(notes)):
-        raise UserError(f"no agent pane in {ctx.session}, start it with wtx go {ctx.branch}")
-    say(f"sent {len(notes)} notes to the agent of {ctx.session}")
+    sent = review.deliver(ctx, notes)
+    if not sent:
+        say("these notes were already sent")
+        return 0
+    say(f"sent {review.plural(len(sent), 'note')} to the agent of {ctx.session}")
     return 0
 
 
@@ -905,8 +923,12 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument(
         "--notes",
         action="store_true",
-        help="send the notes typed in hunk to the agent pane",
+        help="send the notes typed in hunk to the agent pane now, quitting hunk also does",
     )
+    # What the review window and prefix+r run. Not for humans.
+    s.add_argument("--hunk-window", action="store_true", help=argparse.SUPPRESS)
+    s.add_argument("--path", default="", help=argparse.SUPPRESS)
+    s.add_argument("--from-tmux", action="store_true", help=argparse.SUPPRESS)
     s.set_defaults(func=cmd_review)
 
     s = sub.add_parser("hook", help="called by .wt.toml")

@@ -43,7 +43,8 @@ file.
 
 `prefix+X` opens a small menu on the session you are in: kill the session,
 close the worktree and keep the branch, or close it and discard uncommitted
-changes.
+changes. `prefix+r` opens the review of the branch in hunk, see
+[Review](#review).
 
 ## Ports
 
@@ -252,8 +253,8 @@ the branch.
 ## Review
 
 `wtx review [branch]` shows the branch diff in [hunk](https://hunk.dev), with
-the notes of the agent that wrote it beside the code. It runs from anywhere,
-like `wtx brief`, and refuses a protected branch.
+the notes of the agent that wrote it beside the code. It runs from any checkout
+of the repo, like `wtx brief`, and refuses a protected branch.
 
 1. It asks the branch agent for its notes. This is one headless turn at the end
    of the worktree's last conversation, so the agent remembers why it did each
@@ -271,9 +272,18 @@ The notes are reused while the branch does not move. `--force` asks again,
 `--base <ref>` reviews another range, `--no-open` only writes the notes. The
 review only covers commits: uncommitted work gets a warning.
 
-In hunk, press `c` on a line to type a note. `wtx review [branch] --notes`
-then sends every note you typed to the agent pane, as one message, and the
-agent fixes them in the same conversation.
+In tmux, `prefix+r` does the same from any pane of a branch session. The
+`review` window opens at once, and asks the agent first when the saved notes do
+not match the last commit. An error shows in that window, or on the status line
+when there is no window to open (a protected branch, a session that is down).
+`prefix+r` takes the place of tmux's own `r`, which redraws the screen.
+
+In hunk, press `c` on a line to type a note. When you quit hunk (or close the
+window), wtx sends your notes to the agent pane, as one message, and the agent
+fixes them in the same conversation. `wtx review [branch] --notes` sends them
+earlier, while hunk is still open. A note never goes twice. A note you delete
+in hunk still goes if it was there for a second. If the agent pane is down, the
+notes are kept and `--notes` sends them later.
 
 Without hunk, wtx prints the agent's notes and then the plain diff.
 
