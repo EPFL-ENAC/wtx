@@ -15,14 +15,26 @@ _wtx_main() {
   printf '%s' "${common%/.git}"
 }
 
+# [repo].protected_branches, on one line or many. With no such key it is
+# [base_branch], like wtx itself reads it, and base_branch defaults to main.
 _wtx_protected() {
   local main; main="$(_wtx_main)" || return 1
   [ -f "$main/wtx.toml" ] || return 1
-  sed -n 's/^protected_branches[[:space:]]*=[[:space:]]*\[\(.*\)\]/\1/p' "$main/wtx.toml" \
-    | tr -d '"' | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -v '^$'
+  awk '/^[[:space:]]*\[/ { in_repo = ($0 ~ /^[[:space:]]*\[repo\][[:space:]]*(#.*)?$/); next }
+       !in_repo { next }
+       /^[[:space:]]*base_branch[[:space:]]*=/ {
+         b = $0; sub(/^[^"]*"/, "", b); sub(/".*$/, "", b); base = b }
+       /^[[:space:]]*protected_branches[[:space:]]*=/ { grab = 1; found = 1; sub(/^[^=]*=/, "") }
+       grab { list = list " " $0; if ($0 ~ /\]/) grab = 0 }
+       END {
+         if (!found) { print (base != "" ? base : "main"); exit }
+         while (match(list, /"[^"]*"/)) {
+           print substr(list, RSTART + 1, RLENGTH - 2); list = substr(list, RSTART + RLENGTH)
+         }
+       }' "$main/wtx.toml"
 }
 
-# The [[repos]] names, for --with. Only the name lines under a [[repos]] header.
+# The port family names, for wtx curl and wtx open.
 _wtx_families() {
   local main; main="$(_wtx_main)" || return 1
   awk '/^\[\[ports\.family\]\]/ {in_f=1; next} /^\[/ {in_f=0}
@@ -30,6 +42,7 @@ _wtx_families() {
     "$main/wtx.toml" 2>/dev/null
 }
 
+# The [[repos]] names, for --with. Only the name lines under a [[repos]] header.
 _wtx_repos() {
   local main; main="$(_wtx_main)" || return 1
   awk '/^\[\[repos\]\]/ {in_repo=1; next} /^\[/ {in_repo=0}
@@ -70,20 +83,23 @@ _wtx() {
   local cur prev words cword
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
-  local subs="init config go all done land open status curl setup teardown tmux brief hook notify tmux-status monitor doctor install-machine shell-init guard"
+  local subs="init config go all done land open status curl setup teardown tmux brief hook notify handoff tmux-status monitor doctor install-machine shell-init guard"
 
   if [ "$COMP_CWORD" -eq 1 ]; then
     mapfile -t COMPREPLY < <(compgen -W "$subs" -- "$cur")
     return
   fi
   case "${COMP_WORDS[1]}" in
-    go|brief)
+    go)
       if [ "$prev" = "--with" ]; then
         local main; main="$(_wtx_main)"
         mapfile -t COMPREPLY < <(compgen -W "$(_wtx_repos)" -- "$cur")
         return
       fi
       mapfile -t COMPREPLY < <(compgen -W "$(_wtx_complete_go "$cur") all" -- "$cur")
+      ;;
+    brief)
+      mapfile -t COMPREPLY < <(compgen -W "$(_wtx_worktrees | _wtx_filter_protected) --prompt" -- "$cur")
       ;;
     done|land|open|status)
       mapfile -t COMPREPLY < <(compgen -W "$(_wtx_worktrees | _wtx_filter_protected)" -- "$cur")

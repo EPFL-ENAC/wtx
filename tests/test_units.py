@@ -6,6 +6,7 @@ import fnmatch
 import json
 import os
 import subprocess
+import tomllib
 from dataclasses import replace
 from pathlib import Path
 
@@ -843,6 +844,72 @@ def test_an_older_picker_binding_is_replaced() -> None:
         assert not machine._is_old_tmux(line), line
     assert not machine._is_old_tmux(f"# replaced by wtx: {old_wtx}")
     assert not machine._is_old_tmux("bind g display-popup -E htop")
+
+
+# -- shell completion --------------------------------------------------------
+
+_BASH = Path(__file__).resolve().parents[1] / "src" / "wtx" / "shell" / "wtx.bash"
+
+
+def _protected_from_completion(tmp_path: Path, toml: str) -> list[str]:
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    (tmp_path / "wtx.toml").write_text(toml)
+    out = subprocess.run(
+        ["bash", "-c", f"source {_BASH} && _wtx_protected"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return out.stdout.split()
+
+
+@pytest.mark.parametrize(
+    ("toml", "expected"),
+    [
+        ('[repo]\nprotected_branches = ["main", "dev"]\n', ["main", "dev"]),
+        ('[repo]\nprotected_branches = [\n  "main",\n  "dev",\n]\n', ["main", "dev"]),
+        ('[repo]\nbase_branch = "dev"\n', ["dev"]),
+        ('[repo]\nname = "app"\n', ["main"]),
+        ('[repo]\nname = "app"\n[other]\nprotected_branches = ["x"]\n', ["main"]),
+    ],
+)
+def test_completion_reads_protected_branches_like_wtx(tmp_path, toml, expected) -> None:
+    """The sed only read a one-line array and had no default, so a wtx.toml
+    written over several lines, or with no key at all, offered protected
+    branches to wtgo."""
+    assert _protected_from_completion(tmp_path, toml) == expected
+    assert list(parse(tomllib.loads(toml)).repo.protected_branches) == expected
+
+
+def test_completion_offers_with_to_go_only(tmp_path) -> None:
+    """wtx brief has no --with, so its completion must not offer repo names."""
+    _protected_from_completion(tmp_path, '[[repos]]\nname = "k8s"\npath = "../k"\n')
+
+    def complete(*words: str) -> list[str]:
+        line = " ".join(f'"{w}"' for w in words)
+        script = (
+            f"source {_BASH} && COMP_WORDS=({line}) && COMP_CWORD={len(words) - 1}"
+            ' && _wtx && printf "%s\\n" "${COMPREPLY[@]}"'
+        )
+        out = subprocess.run(["bash", "-c", script], cwd=tmp_path, capture_output=True, text=True)
+        return out.stdout.split()
+
+    assert complete("wtx", "go", "--with", "") == ["k8s"]
+    assert "k8s" not in complete("wtx", "brief", "--with", "")
+
+
+def test_completion_knows_every_subcommand() -> None:
+    import argparse
+
+    from wtx import cli
+
+    action = next(
+        a for a in cli.build_parser()._actions if isinstance(a, argparse._SubParsersAction)
+    )
+    text = _BASH.read_text()
+    subs = next(ln for ln in text.splitlines() if "local subs=" in ln)
+    assert set(action.choices) <= set(subs.split('"')[1].split())
 
 
 # -- the state files ---------------------------------------------------------
