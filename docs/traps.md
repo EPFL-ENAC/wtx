@@ -337,3 +337,18 @@ tree you started, or the port.
 **`from module import CONSTANT` copies the value.** A later change to the module
 never reaches the importer. That is how a `--dry-run` once removed a worktree for
 real. wtx calls `proc.is_dry_run()` and a test would catch it again.
+
+**`wtx curl` takes the family first, and the path before any curl flag.** The
+curl arguments are an argparse `REMAINDER`, which starts at the first flag. So
+`wtx curl backend -X POST /api/health` sends the request to `/` and passes
+`/api/health` to curl as a second URL. And `wtx curl /api/health` takes the path
+as the family name. The rules file setup writes shows the right order:
+`wtx curl backend /items -X POST -d @body.json`.
+
+**The machine hooks fire in every Claude Code session, not only in wtx
+worktrees.** `wtx install-machine` writes the notify hooks, the `ExitPlanMode`
+hook and the haiku `Explore.md` agent to the user's own settings. In a session
+that is not a wtx checkout, `wtx handoff` finds no `wtx.toml`, prints nothing
+and the agent carries on. `wtx notify` still sends a desktop notification,
+titled with the directory, and the Explore agent runs on haiku there too.
+Nothing breaks, but it surprises people.

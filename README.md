@@ -1,16 +1,17 @@
 # wtx
 
-Every branch gets its own git worktree, ports, tmux session and coding agent.
+Every git branch gets its own worktree, ports, tmux session and coding agent
+(Claude Code or opencode).
 
-`wtx` gives every branch its own checkout, its own ports, its own agent settings
-and its own tmux session. The agent works on that branch and nothing else: a
-pre-push hook stops it from pushing anywhere but its own branch, and landing the
-work is a human job from the main checkout.
-
-It works with Claude Code and with opencode, and a repo picks which one, and
-which model, in one config file.
+Why: you can run several agents at the same time, one per branch, and they do
+not step on each other. Each one has its own checkout and its own dev server
+ports. A push guard keeps the agent on its own branch, so it never pushes to
+`main`. Landing the work is a human job, from the main checkout.
 
 ## Install
+
+You need git, [`wt`](https://github.com/timvw/wt), tmux, Python 3.11+,
+Claude Code or opencode, and `gh` for `wtx land`.
 
 ```sh
 uv tool install git+https://github.com/EPFL-ENAC/wtx
@@ -25,76 +26,33 @@ tree (`--force` alone reuses uv's cached build and changes nothing):
 uv tool install --reinstall --editable ~/code/wtx
 ```
 
-## Add it to a repo
+## Set up a repo
 
 ```sh
 cd my-repo
 wtx init                # or, in a Claude Code session: /wtx-init
+wtx config validate
 ```
 
-That writes `wtx.toml` (tracked, this is where your repo's choices live) and a
-three line `.wt.toml`, and prints the small app-side changes to make: every port
-becomes a variable.
+`wtx init` writes `wtx.toml` (tracked, your repo's choices live here), a three
+line `.wt.toml`, and the `.gitignore` lines. It then prints the small changes
+to make in the app (every port becomes an env var) and a block to paste into
+`CLAUDE.md`.
 
 ## Every day
 
 ```sh
-wtgo feat/thing                     # branch, worktree, session, agent, attached
-wtgo feat/thing --prompt brief.md   # same, and the agent starts on that brief
-wtgo feat/thing --with k8s          # plus a paired worktree in the k8s repo, same branch name
-wtgo all                            # bring every session back after a reboot
-wtx curl backend /api/health        # this worktree's port, whatever it is
-wtx monitor                         # every session on one screen
-wtx land feat/thing                 # rebase, PR, merge, clean up
-wtdone feat/thing                   # close the worktree, keep the branch
+wtx go feat/thing                     # branch, worktree, session, agent, attached
+wtx go feat/thing --prompt brief.md   # same, and the agent starts on that brief
+wtx status                            # every worktree: ports, session, state
+wtx monitor                           # every session on one screen
+wtx land feat/thing                   # rebase, PR, merge, clean up (main checkout)
+wtx done feat/thing                   # close the worktree, keep the branch
 ```
 
-## Moving between sessions
+## Docs
 
-Inside tmux, with the prefix `wtx install-machine` sets up:
-
-- `prefix+s`, the session list. One line per session, and a session waiting for
-  you is coloured: yellow when it asks for a permission, cyan when it asks a
-  question. The state is the same one the status line shows.
-- `prefix+g`, every agent pane at once. One tile per session, waiting ones
-  first, each showing the bottom of that session's agent pane. Enter or `o` on
-  a tile goes to that session, `q` closes the tile.
-- `prefix+X`, a menu on the session you are in: kill it, or close the worktree.
-
-Outside tmux, a desktop notification tells you which session needs you. Clicking
-it brings the terminal to the front, on its workspace, on that session. The
-banner goes away on its own as soon as the agent starts working again.
-
-## Plan on one model, build on another
-
-Turn `[agent.orchestration]` on in `wtx.toml` and a brief plans on the model you
-name, in plan mode. The plan ends with the effort it wants, and wtx carries that
-same conversation on to the implementation model at that effort. You read the
-plan and press accept. Nothing else.
-
-```toml
-[agent.orchestration]
-enabled = true
-plan_model = "fable"     # writes the plan
-plan_effort = "low"      # planning is reading and thinking
-build_model = "opus"     # implements it, at the effort the plan asked for
-```
-
-Per worktree, when you already know the plan is a big one:
-
-```sh
-wtx go feat/thing --prompt "..." --plan-effort high
-```
-
-Every key is in `docs/schema.md`.
-
-## Why
-
-Read `docs/traps.md`. Every rule in this tool is there because something went
-wrong once.
-
-## Documentation
-
-- `docs/schema.md`, every key in `wtx.toml`
-- `docs/traps.md`, what breaks and what wtx does about it
-- `docs/migration.md`, moving a repo off the old bash scripts
+- [`docs/features.md`](docs/features.md), a short tour of every feature and command
+- [`docs/schema.md`](docs/schema.md), every key in `wtx.toml`
+- [`docs/traps.md`](docs/traps.md), why the rules are what they are (for wtx developers)
+- [`docs/migration.md`](docs/migration.md), moving a repo off the old bash scripts
