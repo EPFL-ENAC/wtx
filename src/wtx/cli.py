@@ -364,13 +364,18 @@ def cmd_land(args: argparse.Namespace) -> int:
 
 def cmd_open(args: argparse.Namespace) -> int:
     ctx = _load()
-    if args.branch:
-        path = git.worktree_path_for(ctx.main, args.branch)
-        if path is None:
-            raise UserError(f"no worktree for {args.branch}")
-        ctx = context.for_worktree(ctx.main, path, args.branch, ctx.cfg)
     families = [f.name for f in ctx.cfg.ports.families]
-    name = args.family or (families[0] if families else "")
+    family, branch = args.family, args.branch
+    # Like wtx curl, the family can be left out: `wtx open feat/x` is a
+    # branch, and gets the first family.
+    if family and family not in families and not branch:
+        family, branch = "", family
+    if branch:
+        path = git.worktree_path_for(ctx.main, branch)
+        if path is None:
+            raise UserError(f"no worktree for {branch}")
+        ctx = context.for_worktree(ctx.main, path, branch, ctx.cfg)
+    name = family or (families[0] if families else "")
     if name not in families:
         raise UserError(f"no port family called {name!r}. Known: {', '.join(families)}")
     port = ctx.port(name)
@@ -397,16 +402,89 @@ def cmd_curl(args: argparse.Namespace) -> int:
     families = [f.name for f in ctx.cfg.ports.families]
     if not families:
         raise UserError(f"no [[ports.family]] in {config_mod.CONFIG_NAME}")
-    name = args.family or families[0]
-    if name not in families:
-        raise UserError(f"no port family called {name!r}. Known: {', '.join(families)}")
+    name, path, rest = _split_curl_args(args.args, families)
     port = ctx.port(name)
     if port is None:
         raise UserError(f"no port for {name} in this checkout, run `wtx setup`")
-    path = args.path if args.path.startswith("/") else f"/{args.path}"
     from .proc import run
 
-    return run(["curl", *args.args, f"http://127.0.0.1:{port}{path}"], check=False)
+    return run(["curl", *rest, f"http://127.0.0.1:{port}{path}"], check=False)
+
+
+# curl flags that take the next word as their value. That word is never the
+# family or the path, even when it starts with `/` (`-o /tmp/out`).
+_CURL_VALUE_FLAGS = frozenset(
+    [
+        "-X",
+        "-d",
+        "-H",
+        "-o",
+        "-F",
+        "-T",
+        "-u",
+        "-A",
+        "-b",
+        "-c",
+        "-e",
+        "-m",
+        "-w",
+        "-K",
+        "--request",
+        "--data",
+        "--data-raw",
+        "--data-binary",
+        "--data-urlencode",
+        "--json",
+        "--header",
+        "--output",
+        "--form",
+        "--upload-file",
+        "--user",
+        "--user-agent",
+        "--cookie",
+        "--cookie-jar",
+        "--referer",
+        "--max-time",
+        "--write-out",
+        "--config",
+    ]
+)
+
+
+def _split_curl_args(words: list[str], families: list[str]) -> tuple[str, str, list[str]]:
+    """Find the family and the path in `wtx curl`'s words, wherever they are.
+
+    The order used to matter: the curl flags were an argparse REMAINDER, so a
+    path after a flag went to curl as a second URL. Now the family is the first
+    free word if it names one (else the first family), the path is the first
+    free word that starts with `/` (else `/`), and the rest goes to curl.
+    """
+    name = path = ""
+    rest: list[str] = []
+    skip = False
+    for word in words:
+        if skip:
+            rest.append(word)
+            skip = False
+            continue
+        if word in _CURL_VALUE_FLAGS:
+            rest.append(word)
+            skip = True
+            continue
+        if word.startswith("-"):
+            rest.append(word)
+            continue
+        if not name and not path and not word.startswith("/"):
+            # The first free word: a family, or a typo the user must see.
+            if word not in families:
+                raise UserError(f"no port family called {word!r}. Known: {', '.join(families)}")
+            name = word
+            continue
+        if not path and word.startswith("/"):
+            path = word
+            continue
+        rest.append(word)
+    return name or families[0], path or "/", rest
 
 
 def cmd_status(args: argparse.Namespace) -> int:
@@ -688,9 +766,12 @@ def build_parser() -> argparse.ArgumentParser:
         "curl",
         help="curl one of this worktree's servers, without knowing its port",
     )
-    s.add_argument("family", nargs="?", default="", help="default: the first family")
-    s.add_argument("path", nargs="?", default="/")
-    s.add_argument("args", nargs=argparse.REMAINDER, help="passed to curl as it stands")
+    s.add_argument(
+        "args",
+        nargs=argparse.REMAINDER,
+        help="[family] [/path] and curl flags, in any order. "
+        "Default family: the first one. Default path: /",
+    )
     s.set_defaults(func=cmd_curl)
 
     s = sub.add_parser("status", help="ports, sessions and pairings")
@@ -784,7 +865,20 @@ def main(argv: list[str] | None = None) -> int:
     if argv[0] == "help":
         parser.parse_args([*argv[1:], "--help"] if argv[1:] else ["--help"])
         return 0
+    curl_words = None
+    # argparse refuses a REMAINDER that starts with a flag, so `wtx curl -X
+    # POST /x` would never reach cmd_curl. Cut the words after `curl` off here.
+    # Only global flags may come before it.
+    for i, word in enumerate(argv):
+        if word == "curl" and argv[i + 1 :] not in (["-h"], ["--help"]):
+            curl_words = argv[i + 1 :]
+            argv = argv[: i + 1]
+            break
+        if not word.startswith("-"):
+            break
     args = parser.parse_args(argv)
+    if curl_words is not None:
+        args.args = curl_words
     set_dry_run(bool(getattr(args, "dry_run", False)))
     try:
         return args.func(args)

@@ -61,9 +61,10 @@ wtx curl backend /api/health                 # curl this worktree's backend
 wtx curl backend /items -X POST -d @body.json
 ```
 
-For `wtx curl`, the order matters: family first, then the path, then the curl
-flags. The agent may run `wtx curl` with any method and any flags, because it
-can only reach a port this worktree owns.
+For `wtx curl`, the order does not matter. The family can be left out (the
+first family is used), and so can the path (`/` is used). `wtx open` also
+takes a branch with no family. The agent may run `wtx curl` with any method
+and any flags, because it can only reach a port this worktree owns.
 
 ## `.env.worktree`
 
@@ -297,7 +298,7 @@ You do not run these yourself. They are listed so nothing is a mystery.
 | `wtx done [branch]` | close a worktree, keep the branch |
 | `wtx land [branch]` | rebase, pull request, merge, clean up |
 | `wtx open [family] [branch]` | print and open a dev server URL |
-| `wtx curl [family] [path] [args]` | curl one of this worktree's servers, without knowing its port |
+| `wtx curl [family] [path] [curl flags]` | curl one of this worktree's servers, without knowing its port |
 | `wtx status [branch]` | ports, sessions and pairings |
 | `wtx setup` | make a worktree runnable, again |
 | `wtx teardown` | kill the session and free the ports |

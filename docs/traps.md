@@ -338,12 +338,14 @@ tree you started, or the port.
 never reaches the importer. That is how a `--dry-run` once removed a worktree for
 real. wtx calls `proc.is_dry_run()` and a test would catch it again.
 
-**`wtx curl` takes the family first, and the path before any curl flag.** The
-curl arguments are an argparse `REMAINDER`, which starts at the first flag. So
-`wtx curl backend -X POST /api/health` sends the request to `/` and passes
-`/api/health` to curl as a second URL. And `wtx curl /api/health` takes the path
-as the family name. The rules file setup writes shows the right order:
-`wtx curl backend /items -X POST -d @body.json`.
+**`wtx curl` finds the family and the path itself.** Its words used to be
+argparse positionals then a `REMAINDER`. So `wtx curl backend -X POST
+/api/health` sent the request to `/` and gave `/api/health` to curl as a second
+URL, and `wtx curl /api/health` took the path as the family name. Now the
+family is the first free word if it names one (else the first family), the
+path is the first free word that starts with `/`, and the rest goes to curl. A
+word right after a curl flag that takes a value (`-o /tmp/out`) is never the
+path. A test runs the orders that broke.
 
 **The machine hooks fire in every Claude Code session, not only in wtx
 worktrees.** `wtx install-machine` writes the notify hooks, the `ExitPlanMode`

@@ -1536,6 +1536,47 @@ def test_wtx_curl_reaches_this_worktrees_port(wtx_repo: Path, fake_bin: Path, mo
     assert called == f"-X POST http://127.0.0.1:{ctx.port('backend')}/api/health"
 
 
+@pytest.mark.parametrize(
+    ("words", "curl_args", "url_path"),
+    [
+        (["backend", "-X", "POST", "/api/health"], "-X POST", "/api/health"),
+        (["-X", "POST", "backend", "/api/health"], "-X POST", "/api/health"),
+        (["/api/health"], "", "/api/health"),
+        (["-o", "/tmp/out", "/items"], "-o /tmp/out", "/items"),
+        (["backend"], "", "/"),
+        (["-sS"], "-sS", "/"),
+    ],
+)
+def test_wtx_curl_finds_the_path_wherever_it_is(
+    wtx_repo: Path, fake_bin: Path, monkeypatch, words, curl_args, url_path
+) -> None:
+    """The curl flags used to be an argparse REMAINDER: a path after a flag
+    went to curl as a second URL, and the request hit `/`. The family could not
+    be left out either, `/api/health` was taken as its name."""
+    path = make_worktree(wtx_repo, "feat/curl-order")
+    setup_mod.run_setup(context.load(root=path), start_tmux=False)
+    ctx = context.load(root=path)
+    monkeypatch.chdir(path)
+
+    assert run(["curl", *words]) == 0
+    url = f"http://127.0.0.1:{ctx.port('backend')}{url_path}"
+    assert calls_of(fake_bin, "curl")[-1] == f"{curl_args} {url}".strip()
+
+
+def test_wtx_open_takes_a_branch_without_a_family(
+    wtx_repo: Path, fake_bin: Path, monkeypatch, capsys
+) -> None:
+    """Same shape as wtx curl: the family may be left out."""
+    path = make_worktree(wtx_repo, "feat/open")
+    setup_mod.run_setup(context.load(root=path), start_tmux=False)
+    ctx = context.load(root=path)
+    first = ctx.cfg.ports.families[0].name
+    monkeypatch.chdir(wtx_repo)
+
+    assert run(["open", "feat/open", "--print-only"]) == 0
+    assert capsys.readouterr().out.strip() == f"http://localhost:{ctx.port(first)}/"
+
+
 def test_wtx_curl_names_the_families_it_knows(
     wtx_repo: Path, fake_bin: Path, monkeypatch, capsys
 ) -> None:
