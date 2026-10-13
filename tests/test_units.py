@@ -845,6 +845,40 @@ def test_an_older_picker_binding_is_replaced() -> None:
     assert not machine._is_old_tmux("bind g display-popup -E htop")
 
 
+# -- the state files ---------------------------------------------------------
+
+
+def test_two_sessions_never_share_a_state_file(tmp_path, monkeypatch) -> None:
+    """`/` and `-` both became `-`, so feat/login and feat-login wrote the same
+    file and one session showed the other's state."""
+    from wtx import notify
+
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    a, b = "app/feat/login", "app/feat-login"
+    assert notify.safe_name(a) != notify.safe_name(b)
+    notify.write_state(a, "permission")
+    notify.write_state(b, "idle")
+    assert notify.read_state(a)["state"] == "permission"
+    assert notify.read_state(b)["state"] == "idle"
+    assert set(notify.all_states()) == {a, b}
+
+
+def test_a_state_file_from_an_older_wtx_is_read_and_cleared(tmp_path, monkeypatch) -> None:
+    """After an upgrade, a waiting session must not stay waiting for ever
+    because its file has the old name."""
+    from wtx import notify
+
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    old = notify.state_dir() / "app-feat-login.json"
+    old.write_text(json.dumps({"session": "app/feat/login", "state": "permission"}))
+    assert notify.read_state("app/feat/login")["state"] == "permission"
+    assert notify.read_state("app/feat-login") == {}  # not its file
+    notify.clear_state("app/feat-login")
+    assert old.exists()
+    notify.clear_state("app/feat/login")
+    assert not old.exists()
+
+
 # -- the desktop notification ------------------------------------------------
 
 
