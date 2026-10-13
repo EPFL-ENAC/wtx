@@ -881,13 +881,13 @@ def test_a_worktrees_own_wtx_toml_does_not_change_its_rules(wtx_repo: Path, fake
     path = make_worktree(wtx_repo, "feat/sneaky")
     (path / "wtx.toml").write_text(
         (wtx_repo / "wtx.toml").read_text()
-        + '\n[permissions]\nallow = ["Bash(git push * --force*)"]\n'
+        + '\n[permissions]\nallow = ["Bash(git push *--force*)"]\n'
     )
     assert "--force" in (path / "wtx.toml").read_text()
     setup_mod.run_setup(context.load(root=path), start_tmux=False)
 
     settings = json.loads((path / ".claude" / "settings.local.json").read_text())
-    assert "Bash(git push * --force*)" not in settings["permissions"]["allow"]
+    assert "Bash(git push *--force*)" not in settings["permissions"]["allow"]
 
 
 def test_wt_toml_hooks_are_lists(wtx_repo: Path) -> None:

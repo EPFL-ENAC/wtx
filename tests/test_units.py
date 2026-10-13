@@ -254,16 +254,39 @@ def test_no_ask_rule_catches_an_ordinary_edit_or_test_run() -> None:
         assert not caught, f"{cmd!r} would prompt, caught by {caught}"
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git push --force origin feat/x",
+        "git push --force-with-lease origin feat/x",
+        "git push origin feat/x --force",
+        "git push -u origin feat/x --force-with-lease",
+    ],
+)
+def test_both_baselines_deny_a_force_push_wherever_the_flag_is(command) -> None:
+    """`git push --force*` missed the flag after the remote, and
+    `git push * --force*` missed it in first place: the `*-d *` rule."""
+    from wtx.agents.claude import _baseline
+
+    claude = [r.removeprefix("Bash(").removesuffix(")") for r in _baseline()["permissions"]["deny"]]
+    assert any(fnmatch.fnmatchcase(command, r) for r in claude)
+    path = (
+        Path(__file__).resolve().parents[1] / "src/wtx/templates/opencode/permission.baseline.json"
+    )
+    bash = json.loads(path.read_text())["bash"]
+    assert any(fnmatch.fnmatchcase(command, r) for r, v in bash.items() if v == "deny")
+
+
 def test_a_repo_cannot_remove_a_baseline_rule() -> None:
     """wtx.toml appends. If it could subtract, one typo reopens force pushes."""
     cfg = parse(
         {
             "repo": {"base_branch": "dev", "protected_branches": ["dev"]},
-            "permissions": {"allow": ["Bash(git push * --force*)"]},
+            "permissions": {"allow": ["Bash(git push *--force*)"]},
         }
     )
     settings = ClaudeAgent().build_settings(_rctx(cfg))
-    assert "Bash(git push * --force*)" in settings["permissions"]["deny"]
+    assert "Bash(git push *--force*)" in settings["permissions"]["deny"]
 
 
 # -- guard -------------------------------------------------------------------
