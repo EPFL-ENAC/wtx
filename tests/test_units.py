@@ -151,6 +151,15 @@ def test_a_bool_key_must_be_a_real_bool(value) -> None:
     )
 
 
+def test_every_effort_level_is_one_the_planner_is_told_about() -> None:
+    """ultracode was accepted but never listed in PLAN_INSTRUCTION, so no plan
+    could pick it and a config that named it launched an agent that refused."""
+    for level in config.EFFORT_LEVELS:
+        assert f"`{level}`" in orchestrate.PLAN_INSTRUCTION, level
+    cfg = parse({"agent": {"effort": "ultracode"}})
+    assert any("[agent].effort 'ultracode'" in p for p in validate(cfg))
+
+
 def test_validate_catches_a_port_step_that_is_not_positive() -> None:
     assert any("[ports].step" in p for p in validate(parse({"ports": {"step": 0}})))
     assert not any("[ports].step" in p for p in validate(parse({})))

@@ -132,7 +132,9 @@ PERMISSION_MODES = (
 
 
 # The effort levels the agent accepts. Same reason as the permission modes.
-EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max", "ultracode")
+# Also the levels a plan's wtx-effort: line may name, so it must match the
+# list PLAN_INSTRUCTION gives the planner.
+EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 
 
 @dataclass(frozen=True)
