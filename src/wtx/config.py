@@ -206,6 +206,10 @@ class ExtRepo:
     base_branch: str = "main"
     env_prefix: str = ""
     editable_install: EditableInstall | None = None
+    # path as the file wrote it, before {lab} and {repo} are filled. validate
+    # needs it: once {lab} is expanded with an empty lab, nothing shows it was
+    # there. Set by _post_process, never read from the file.
+    raw_path: str = field(default="", metadata={"derived": True})
 
     @property
     def prefix(self) -> str:
@@ -319,7 +323,7 @@ def _build(cls: type[T], table: dict[str, Any], where: str, **override: Any) -> 
     values = dict(override)
     for f in fields(cls):
         read = _SCALARS.get(str(f.type))
-        if f.name in values or read is None:
+        if f.name in values or read is None or f.metadata.get("derived"):
             continue
         if f.name in table:
             values[f.name] = read(table[f.name], f"{where}.{f.name}")
@@ -448,7 +452,9 @@ def _editable(raw: Any, name: str) -> EditableInstall | None:
 def _post_process(cfg: WtxConfig) -> WtxConfig:
     """Fill in what the config implies: {lab}/{repo} expansion, UV_NO_SYNC."""
     lab, name = cfg.repo.lab, cfg.repo.name
-    repos = tuple(replace(r, path=_expand(r.path, lab=lab, repo=name)) for r in cfg.repos)
+    repos = tuple(
+        replace(r, path=_expand(r.path, lab=lab, repo=name), raw_path=r.path) for r in cfg.repos
+    )
     env_extra = dict(cfg.env_extra)
     if any(r.editable_install for r in repos) and "UV_NO_SYNC" not in env_extra:
         env_extra["UV_NO_SYNC"] = "1"
@@ -572,7 +578,7 @@ def validate(cfg: WtxConfig) -> list[str]:
             errs.append(f"[[repos]] {r.name}: access must be read or pair")
         if r.editable_install and r.access != "pair":
             errs.append(f'[[repos]] {r.name}: editable_install needs access = "pair"')
-        if "{lab}" in r.path and not cfg.repo.lab:
+        if "{lab}" in r.raw_path and not cfg.repo.lab:
             errs.append(f"[[repos]] {r.name}: path uses {{lab}} but [repo].lab is empty")
     for key in cfg.env_extra:
         if not key.replace("_", "").isalnum():

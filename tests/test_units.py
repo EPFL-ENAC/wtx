@@ -126,6 +126,20 @@ def test_lab_and_repo_are_expanded_in_paths() -> None:
     assert cfg.repos[0].path == "~/k/epfl-leure/speed-to-zero"
 
 
+def test_validate_catches_lab_used_but_empty() -> None:
+    """The path is expanded at parse time. validate must still see {lab}, or an
+    empty lab turns the path into `epfl-` with no word about it."""
+    cfg = parse(
+        {
+            "repo": {"name": "app", "lab": ""},
+            "repos": [{"name": "k8s", "path": "~/k/epfl-{lab}/{repo}"}],
+        }
+    )
+    assert any("[repo].lab is empty" in p for p in validate(cfg))
+    cfg = parse({"repo": {"name": "app"}, "repos": [{"name": "k8s", "path": "~/k/{repo}"}]})
+    assert not any("[repo].lab" in p for p in validate(cfg))
+
+
 def test_validate_catches_a_base_branch_left_unprotected() -> None:
     cfg = parse({"repo": {"base_branch": "dev", "protected_branches": ["main"]}})
     assert any("base branch" in p for p in validate(cfg))
