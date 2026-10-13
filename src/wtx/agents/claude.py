@@ -271,6 +271,53 @@ class ClaudeAgent:
         """
         return f"claude -r {shlex.quote(session)}{self._flags(ctx)} {shlex.quote(prompt)}"
 
+    def review_cmd(self, ctx: RenderContext, *, prompt: str) -> list[str]:
+        """One headless turn at the end of the checkout's last conversation.
+
+        Forked and not saved: the pane's own `claude --continue` must find the
+        real conversation next time, not this side trip. Hooks off: a Stop from
+        here would tell the human the session waits on them. --allowedTools
+        takes several values, so a single-value flag must follow it or it
+        swallows the prompt.
+        """
+        from ..review import SIDECAR_SCHEMA
+
+        argv = [
+            "claude",
+            "-p",
+            "--continue",
+            "--fork-session",
+            "--no-session-persistence",
+            "--allowedTools",
+            "Bash(git diff *)",
+            "Bash(git log *)",
+            "Bash(git show *)",
+            "--settings",
+            json.dumps({"disableAllHooks": True}),
+            "--output-format",
+            "json",
+            "--json-schema",
+            json.dumps(SIDECAR_SCHEMA),
+        ]
+        if ctx.model:
+            argv += ["--model", ctx.model]
+        if ctx.effort:
+            argv += ["--effort", ctx.effort]
+        return [*argv, prompt]
+
+    def review_result(self, stdout: str) -> str:
+        """--output-format json wraps the answer. With --json-schema it is in
+        structured_output, already parsed. Without, it is the text in result."""
+        try:
+            data = json.loads(stdout)
+        except json.JSONDecodeError:
+            return stdout
+        if not isinstance(data, dict):
+            return stdout
+        if isinstance(data.get("structured_output"), dict):
+            return json.dumps(data["structured_output"])
+        return str(data.get("result", ""))
+
     def hook_fragment(self) -> dict:
         """Machine-level hooks. Project settings files cannot carry hooks, and
         these must run outside the Bash sandbox to reach tmux anyway.

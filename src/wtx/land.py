@@ -11,8 +11,8 @@ import json
 import time
 from pathlib import Path
 
-from . import git, wt
-from .context import Ctx
+from . import git, review, wt
+from .context import Ctx, session_name
 from .proc import CommandError, capture, capture_code, is_dry_run, run, run_shell, say, warn, which
 
 
@@ -44,6 +44,19 @@ def _checks(ctx: Ctx, path: Path) -> None:
             run_shell(cmd, cwd=path)
         except CommandError as exc:
             raise LandError(f"check failed: {cmd}") from exc
+
+
+def _warn_on_review(ctx: Ctx, branch: str, path: Path) -> None:
+    """Warn only. A review helps the human read, it does not gate a merge.
+
+    ctx.session is the main checkout's here, so the name is built for the
+    branch.
+    """
+    state = review.status(session_name(ctx.repo_name, branch), review.head(path))
+    if state == "none":
+        warn(f"no review for {branch}, see wtx review {branch}")
+    elif state == "stale":
+        warn(f"the review of {branch} is older than its last commit")
 
 
 def cleanup(ctx: Ctx, branch: str, *, keep_branch: bool = False) -> None:
@@ -87,6 +100,7 @@ def land(
         raise LandError(f"no worktree for {branch}")
     if not git.is_clean(path):
         raise LandError(f"{path} has uncommitted changes, commit or stash them first")
+    _warn_on_review(ctx, branch, path)
 
     git.fetch(ctx.main)
     _refuse_a_branch_cut_from_elsewhere(ctx, branch, base)

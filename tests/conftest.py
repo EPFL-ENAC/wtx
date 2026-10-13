@@ -67,6 +67,7 @@ esac""",
     "curl": "",
     "claude": "",
     "opencode": "",
+    "hunk": "",
     "notify-send": 'for a in "$@"; do if [ "$a" = "-p" ]; then echo 7; break; fi; done',
     # `gdbus monitor` blocks for real. The stub ends straight away, which is
     # what a notification closed by something other than a click looks like.
@@ -110,6 +111,9 @@ def fake_bin(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("WTX_TEST_CALLS", str(calls))
     monkeypatch.setenv("WTX_TEST_SESSIONS", str(sessions))
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "run"))
+    # wtx looks for hunk in ~/.hunk/bin too. A test must not find the real one.
+    (tmp_path / "home").mkdir()
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.delenv("TMUX", raising=False)
     return bindir
 

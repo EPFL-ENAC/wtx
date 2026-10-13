@@ -55,6 +55,10 @@ SGR = {
 # What the user has to act on. running and start are just noise on a board.
 WAITING = ("permission", "idle")
 
+# Set on an agent wtx runs headless (wtx review). Its hooks still fire, and a
+# Stop from there must not say the session waits on the human.
+HEADLESS_ENV = "WTX_HEADLESS"
+
 
 def state_dir() -> Path:
     base = os.environ.get("XDG_RUNTIME_DIR")
@@ -240,6 +244,8 @@ def handle(state: str, *, cwd: Path | None = None) -> int:
     """Called by the agent's hook. Reads the hook payload on stdin."""
     if state not in STATES:
         return 2
+    if os.environ.get(HEADLESS_ENV):
+        return 0
     if is_dry_run():
         say(f"would record {state} and notify the desktop")
         return 0

@@ -124,11 +124,11 @@ def server_options() -> None:
     detach-on-destroy off: killing a session moves the client to the next one
     instead of dropping out of tmux.
 
-    prefix+X: a small menu on the current session. The binding is server wide
-    and the last run owns it, whatever repo it came from, so it bakes in no
-    path: wtx is on PATH and the branch comes from the pane's own directory.
-    tmux parses the snippet before sh does, so it uses no dollar signs and no
-    double quotes.
+    prefix+X: a small menu on the current session. prefix+r: the review of
+    the branch, in hunk. The bindings are server wide and the last run owns
+    them, whatever repo it came from, so they bake in no path: wtx is on PATH
+    and the branch comes from the pane's own directory. tmux parses the
+    snippet before sh does, so it uses no dollar signs and no double quotes.
     """
     cmd(["set-option", "-g", "detach-on-destroy", "off"])
     resolve = "wtx done --path '#{pane_current_path}' --from-tmux"
@@ -156,10 +156,16 @@ def server_options() -> None:
             discard,
         ]
     )
+    # In place of tmux's own `r`, which redraws the screen.
+    review = "wtx review --path '#{pane_current_path}' --from-tmux"
+    cmd(["bind-key", "r", "run-shell", "-b", review])
 
 
 def agent_pane_id(session: str) -> str:
-    lines = out(["list-panes", "-t", f"={session}", "-F", "#{pane_id} #{" + ROLE_OPTION + "}"])
+    # -s: every window of the session. Without it tmux lists the window in
+    # front only, and when hunk quits that is the review window.
+    fmt = "#{pane_id} #{" + ROLE_OPTION + "}"
+    lines = out(["list-panes", "-s", "-t", f"={session}", "-F", fmt])
     panes: dict[str, str] = {}
     for line in lines.splitlines():
         pane_id, _, role = line.partition(" ")

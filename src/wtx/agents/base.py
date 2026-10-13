@@ -127,6 +127,19 @@ class Agent(Protocol):
         """
         ...
 
+    def review_cmd(self, ctx: RenderContext, *, prompt: str) -> list[str]:
+        """argv for a headless turn at the end of this checkout's last
+        conversation, which prints the answer. For `wtx review`.
+
+        An argv and not a shell line: wtx runs it itself and reads stdout.
+        Empty when the backend cannot resume a conversation that way.
+        """
+        ...
+
+    def review_result(self, stdout: str) -> str:
+        """The answer's text, out of what review_cmd printed."""
+        ...
+
     def hook_fragment(self) -> dict:
         """Hooks for the user's machine-level config, used by install-machine."""
         ...

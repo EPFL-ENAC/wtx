@@ -1217,3 +1217,168 @@ def test_only_a_permission_error_blames_the_sandbox(monkeypatch) -> None:
     assert state == "unknown"
     assert not tmux.server_reachable()
     assert tmux.server_remedy(state, err) == f"tmux said: {odd}"
+
+
+# -- review --------------------------------------------------------------------
+
+SIDECAR = {
+    "version": 1,
+    "summary": "Add a health endpoint.",
+    "files": [
+        {
+            "path": "backend/app.py",
+            "summary": "the route",
+            "annotations": [{"newRange": [3, 5], "summary": "new route", "author": "claude"}],
+        }
+    ],
+}
+
+
+def test_the_claude_review_is_a_forked_headless_turn() -> None:
+    """Not forked, the run writes into the live pane's transcript. Saved, the
+    pane's next `claude --continue` picks the review instead of the work."""
+    cfg = _orchestrated()
+    argv = ClaudeAgent().review_cmd(_rctx(cfg), prompt="write the notes")
+    assert argv[:2] == ["claude", "-p"]
+    for flag in ("--continue", "--fork-session", "--no-session-persistence"):
+        assert flag in argv
+    assert argv[argv.index("--output-format") + 1] == "json"
+    assert argv[argv.index("--model") + 1] == "opus"
+    assert json.loads(argv[argv.index("--settings") + 1]) == {"disableAllHooks": True}
+    assert argv[-1] == "write the notes"
+
+
+def test_the_claude_review_tools_do_not_swallow_the_prompt() -> None:
+    """--allowedTools takes several values. Right before the prompt, it would
+    take the prompt as one more tool and the run would have none."""
+    argv = ClaudeAgent().review_cmd(_rctx(_orchestrated()), prompt="p")
+    i = argv.index("--allowedTools")
+    j = next(k for k in range(i + 1, len(argv)) if argv[k].startswith("--"))
+    assert argv[i + 1 : j] and all(a.startswith("Bash(git ") for a in argv[i + 1 : j])
+    assert j < len(argv) - 1
+
+
+def test_the_claude_review_answer_is_read_from_its_json() -> None:
+    agent = ClaudeAgent()
+    structured = json.dumps({"result": "", "structured_output": SIDECAR})
+    assert json.loads(agent.review_result(structured)) == SIDECAR
+    assert agent.review_result(json.dumps({"result": "the text"})) == "the text"
+    assert agent.review_result("not json") == "not json"
+
+
+def test_the_opencode_review_forks_and_keeps_the_model_rule() -> None:
+    """Same rule as launch_cmd: with orchestration, -m would beat the config."""
+    from wtx.agents.opencode import OpencodeAgent
+
+    agent = OpencodeAgent()
+    argv = agent.review_cmd(_rctx(_oc_orchestrated()), prompt="p")
+    assert argv[:6] == ["opencode", "run", "-c", "--fork", "--format", "json"]
+    assert "-m" not in argv
+    assert argv[-1] == "p"
+    plain = parse({"agent": {"tool": "opencode", "llm": "qwen", "opencode": {"provider": "rcp"}}})
+    argv = agent.review_cmd(_rctx(plain), prompt="p")
+    assert argv[argv.index("-m") + 1] == "rcp/qwen"
+
+
+def test_the_opencode_review_answer_is_its_text_parts() -> None:
+    from wtx.agents.opencode import OpencodeAgent
+
+    lines = [
+        {"type": "step_start", "part": {}},
+        {"type": "text", "part": {"text": '{"version": 1,'}},
+        {"type": "text", "part": {"text": '"summary": "s", "files": []}'}},
+        {"type": "step_finish", "part": {}},
+    ]
+    stdout = "\n".join(json.dumps(x) for x in lines)
+    assert OpencodeAgent().review_result(stdout) == '{"version": 1,\n"summary": "s", "files": []}'
+
+
+def test_the_sidecar_is_found_in_prose_and_fences() -> None:
+    from wtx import review
+
+    text = f"Here are the notes.\n```json\n{json.dumps(SIDECAR)}\n```\nDone."
+    assert review.extract_sidecar(text) == SIDECAR
+    with pytest.raises(review.ReviewError, match="no JSON"):
+        review.extract_sidecar("I could not run git diff.")
+
+
+def test_a_sidecar_hunk_would_refuse_is_caught() -> None:
+    """hunk refuses the whole file on one bad range. Better said by wtx than
+    by a hunk that opens and dies."""
+    from wtx import review
+
+    assert review.validate(SIDECAR) == []
+
+    def with_note(**note) -> dict:
+        data = json.loads(json.dumps(SIDECAR))
+        data["files"][0]["annotations"] = [{"summary": "s", **note}]
+        return data
+
+    assert review.validate(with_note()) == ["backend/app.py note 1 has no newRange"]
+    assert "not two whole numbers" in review.validate(with_note(newRange=[3]))[0]
+    assert "from 1 up" in review.validate(with_note(newRange=[5, 3]))[0]
+    assert review.validate(with_note(oldRange=[4, 6])) == []  # only removed lines
+    assert review.validate({"version": 1, "summary": "", "files": []}) == ["no summary", "no files"]
+
+
+def test_review_files_are_not_mistaken_for_states(tmp_path, monkeypatch) -> None:
+    """The monitor and the status line read every *.json in the state dir as
+    a session. A review there would show as a session that does not exist."""
+    from wtx import notify, review
+
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    review.save("app/feat/x", SIDECAR, head="abc", rng="origin/dev...HEAD", agent="claude")
+    for f in (review.sidecar_file("app/feat/x"), review.meta_file("app/feat/x")):
+        assert f.is_file()
+        assert not f.name.endswith(".json")
+    assert notify.all_states() == {}
+
+
+def test_a_review_goes_stale_when_the_branch_moves(tmp_path, monkeypatch) -> None:
+    from wtx import review
+
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    rng = "origin/dev...HEAD"
+    assert review.status("s", "abc", rng) == "none"
+    review.save("s", SIDECAR, head="abc", rng=rng, agent="claude")
+    assert review.status("s", "abc", rng) == "ok"
+    assert review.status("s", "def", rng) == "stale"
+    assert review.status("s", "abc", "main...HEAD") == "stale"
+    review.clear("s")
+    assert review.status("s", "abc", rng) == "none"
+
+
+def test_hunk_notes_become_one_message() -> None:
+    from wtx import review
+
+    text = review.format_notes(
+        [
+            {"file": "a.py", "line": 12, "text": "rename this"},
+            {"file": "b.py", "line": None, "text": "why two calls?\nOne is enough."},
+        ]
+    )
+    assert text.splitlines() == [
+        "Review notes from hunk, 2 items. Fix each one in this conversation:",
+        "- a.py:12 rename this",
+        "- b.py why two calls?",
+        "  One is enough.",
+    ]
+
+
+def test_a_headless_run_leaves_the_session_state_alone(tmp_path, monkeypatch) -> None:
+    """The review run is the same agent with the same hooks. Its Stop would
+    say the session waits on the human, and could fire a pending handoff."""
+    from wtx import notify
+
+    def boom(*args, **kwargs):
+        raise AssertionError("a headless hook looked at the session")
+
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    monkeypatch.setattr(notify, "session_for", lambda where: "app/feat/x")
+    monkeypatch.setattr(notify, "_spawn_desktop", boom)
+    monkeypatch.setattr(orchestrate.context, "load", boom)
+    monkeypatch.setenv(notify.HEADLESS_ENV, "1")
+    assert notify.handle("stop", cwd=tmp_path) == 0
+    assert notify.all_states() == {}
+    payload = {"cwd": str(tmp_path), "session_id": "c", "tool_input": {"plan": "p"}}
+    assert orchestrate.capture(payload) == ""
