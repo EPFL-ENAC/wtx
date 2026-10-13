@@ -6,7 +6,10 @@ here. Most keys have a default. The ones marked "required" do not:
 `name`, `[[repos]]` `name` and `path`, and `run` in an `editable_install`.
 
 Check a file with `wtx config validate`. `wtx go` and `wtx setup` refuse a file
-with problems. The `wt` hooks only warn.
+with problems. The `wt` hooks only warn. A key wtx does not know is not a
+problem, but `wtx config validate` names it, so a typo does not go unseen.
+
+A yes or no key takes `true` or `false`, without quotes. `"false"` is an error.
 
 This file has a copy in `src/wtx/skills/wtx-init/references/schema.md`. Keep the
 two identical.
@@ -36,7 +39,7 @@ wrote and past anything listening.
 | Key | Default | What |
 | --- | --- | --- |
 | `range_start` | `18000` | First family's low base. |
-| `step` | `1000` | Gap between families. |
+| `step` | `1000` | Gap between families. Must be positive. |
 | `slots` | `500` | How many offsets exist. |
 
 Each `[[ports.family]]`:

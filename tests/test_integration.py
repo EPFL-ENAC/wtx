@@ -689,6 +689,15 @@ def test_dry_run_writes_no_files_either(wtx_repo: Path, fake_bin: Path, capsys) 
     assert not (wtx_repo / ".git" / "hooks" / "pre-push").exists()
 
 
+def test_config_validate_warns_about_an_unknown_key(wtx_repo: Path, monkeypatch, capsys) -> None:
+    (wtx_repo / "wtx.toml").write_text(
+        (wtx_repo / "wtx.toml").read_text().replace("[repo]\n", "[repo]\nbase_brnach = 'x'\n", 1)
+    )
+    monkeypatch.chdir(wtx_repo)
+    assert run(["config", "validate"]) == 0
+    assert "unknown key repo.base_brnach" in capsys.readouterr().err
+
+
 def test_config_validate_reports_a_problem(wtx_repo: Path, monkeypatch, capsys) -> None:
     (wtx_repo / "wtx.toml").write_text(
         '[repo]\nname = "x"\nbase_branch = "dev"\nprotected_branches = ["main"]\n'

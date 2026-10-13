@@ -100,7 +100,6 @@ class Pane:
 
 @dataclass(frozen=True)
 class PanesCfg:
-    layout: str = "agent-left-half"
     panes: tuple[Pane, ...] = ()
 
     def by_role(self, role: str) -> tuple[Pane, ...]:
@@ -287,6 +286,14 @@ def _as_int(value: Any, where: str) -> int:
         raise ConfigError(f"{where} must be a number") from exc
 
 
+def _as_bool(value: Any, where: str) -> bool:
+    # bool("false") is True. A quoted value must be an error, not the opposite
+    # of what the file says.
+    if not isinstance(value, bool):
+        raise ConfigError(f"{where} must be true or false, without quotes")
+    return value
+
+
 def _as_str_tuple(value: Any, where: str) -> tuple[str, ...]:
     if value is None:
         return ()
@@ -307,7 +314,7 @@ def _table(data: dict[str, Any], key: str) -> dict[str, Any]:
 _SCALARS: dict[str, Callable[[Any, str], Any]] = {
     "str": lambda v, where: str(v),
     "int": _as_int,
-    "bool": lambda v, where: bool(v),
+    "bool": _as_bool,
     "tuple[str, ...]": _as_str_tuple,
 }
 
@@ -461,6 +468,61 @@ def _post_process(cfg: WtxConfig) -> WtxConfig:
     return replace(cfg, repos=repos, env_extra=env_extra)
 
 
+# The nested tables and arrays of tables of each part of wtx.toml, for
+# unknown_keys. A key here is read by parse() itself, not by _build.
+_NESTED: dict[str, tuple[type, dict]] = {
+    "repo": (RepoCfg, {}),
+    "ports": (PortsCfg, {"family": (PortFamily, {})}),
+    "seed": (SeedCfg, {}),
+    "deps": (DepsCfg, {"step": (DepStep, {})}),
+    "panes": (PanesCfg, {"pane": (Pane, {})}),
+    "agent": (
+        AgentCfg,
+        {"orchestration": (OrchestrationCfg, {}), "opencode": (OpencodeCfg, {})},
+    ),
+    "permissions": (PermissionsCfg, {}),
+    "checks": (ChecksCfg, {}),
+    "hooks": (HooksCfg, {}),
+    "repos": (ExtRepo, {"editable_install": (EditableInstall, {})}),
+}
+
+
+def _unknown_in(value: Any, cls: type, where: str, nested: dict) -> list[str]:
+    known = {
+        f.name for f in fields(cls) if str(f.type) in _SCALARS and not f.metadata.get("derived")
+    }
+    out: list[str] = []
+    for table in value if isinstance(value, list) else [value]:
+        if not isinstance(table, dict):
+            continue
+        for key, sub in table.items():
+            if key in nested:
+                sub_cls, sub_nested = nested[key]
+                out += _unknown_in(sub, sub_cls, f"{where}.{key}", sub_nested)
+            elif key not in known:
+                out.append(f"{where}.{key}")
+    return out
+
+
+def unknown_keys(data: dict[str, Any]) -> list[str]:
+    """Keys wtx does not read, so a typo does not go unseen.
+
+    Only `wtx config validate` asks. Loading never fails on one: an old
+    wtx.toml with a key a later wtx dropped must still work.
+    """
+    out: list[str] = []
+    for key, value in data.items():
+        if key in _NESTED:
+            cls, nested = _NESTED[key]
+            out += _unknown_in(value, cls, key, nested)
+        elif key == "env":
+            if isinstance(value, dict):
+                out += [f"env.{k}" for k in value if k not in ("extra", "computed")]
+        elif key not in ("schema_version", "min_wtx_version"):
+            out.append(key)
+    return out
+
+
 def load(path: Path) -> WtxConfig:
     try:
         with path.open("rb") as fh:
@@ -522,6 +584,8 @@ def validate(cfg: WtxConfig) -> list[str]:
         seen_env.add(f.env_key)
         if f.main <= 0:
             errs.append(f"port family {f.name}: main must be a port number")
+    if cfg.ports.step <= 0:
+        errs.append("[ports].step must be positive")
     if cfg.ports.slots <= 0:
         errs.append("[ports].slots must be positive")
     if cfg.agent.tool not in ("claude", "opencode"):

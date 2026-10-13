@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import sys
+import tomllib
 from pathlib import Path
 
 from . import (
@@ -155,9 +156,17 @@ def cmd_config(args: argparse.Namespace) -> int:
     path = main / config_mod.CONFIG_NAME
     cfg = _load_cfg(main)
     problems = config_mod.validate(cfg)
+    # Warnings, not problems: the file still loads, wtx just ignores the key.
+    unknown = [
+        f"unknown key {key}, wtx ignores it"
+        for key in config_mod.unknown_keys(tomllib.loads(path.read_text()))
+    ]
     if args.json:
-        print(json.dumps({"ok": not problems, "problems": problems}, indent=2))
+        out = {"ok": not problems, "problems": problems, "warnings": unknown}
+        print(json.dumps(out, indent=2))
         return 1 if problems else 0
+    for w in unknown:
+        warn(w)
     if not problems:
         say(f"{path} is valid")
         return 0

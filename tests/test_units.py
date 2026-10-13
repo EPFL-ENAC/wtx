@@ -141,6 +141,53 @@ def test_validate_catches_lab_used_but_empty() -> None:
     assert not any("[repo].lab" in p for p in validate(cfg))
 
 
+@pytest.mark.parametrize("value", ["false", "true", 0, 1])
+def test_a_bool_key_must_be_a_real_bool(value) -> None:
+    """bool("false") is True: a quoted false turned orchestration on."""
+    with pytest.raises(config.ConfigError, match="true or false"):
+        parse({"agent": {"orchestration": {"enabled": value}}})
+    assert (
+        parse({"agent": {"orchestration": {"enabled": False}}}).agent.orchestration.enabled is False
+    )
+
+
+def test_validate_catches_a_port_step_that_is_not_positive() -> None:
+    assert any("[ports].step" in p for p in validate(parse({"ports": {"step": 0}})))
+    assert not any("[ports].step" in p for p in validate(parse({})))
+
+
+def test_unknown_keys_are_listed_and_still_load() -> None:
+    """A typo used to be ignored without a word. It is a warning, not an
+    error: an old wtx.toml with a key wtx dropped must still load."""
+    data = {
+        "repo": {"name": "app", "typo": 1},
+        "panes": {"layout": "agent-left-half", "pane": [{"name": "a", "role": "agent", "x": 1}]},
+        "agent": {"orchestration": {"enabld": True}},
+        "repos": [{"name": "k", "path": "../k", "raw_path": "x"}],
+        "env": {"extra": {"ANY_KEY": "1"}, "nope": 1},
+        "toplevel": 1,
+    }
+    parse(data)
+    assert config.unknown_keys(data) == [
+        "repo.typo",
+        "panes.layout",
+        "panes.pane.x",
+        "agent.orchestration.enabld",
+        "repos.raw_path",
+        "env.nope",
+        "toplevel",
+    ]
+
+
+def test_init_writes_no_unknown_key(repo: Path) -> None:
+    from wtx import init as init_mod
+
+    answers = init_mod.scan(repo)
+    answers.pop("_notes", None)
+    init_mod.write_all(repo, answers)
+    assert config.unknown_keys(tomllib.loads((repo / "wtx.toml").read_text())) == []
+
+
 def test_validate_catches_a_base_branch_left_unprotected() -> None:
     cfg = parse({"repo": {"base_branch": "dev", "protected_branches": ["main"]}})
     assert any("base branch" in p for p in validate(cfg))
