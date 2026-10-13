@@ -61,9 +61,10 @@ wtx curl backend /api/health                 # curl this worktree's backend
 wtx curl backend /items -X POST -d @body.json
 ```
 
-For `wtx curl`, the order matters: family first, then the path, then the curl
-flags. The agent may run `wtx curl` with any method and any flags, because it
-can only reach a port this worktree owns.
+For `wtx curl`, the order does not matter. The family can be left out (the
+first family is used), and so can the path (`/` is used). `wtx open` also
+takes a branch with no family. The agent may run `wtx curl` with any method
+and any flags, because it can only reach a port this worktree owns.
 
 ## `.env.worktree`
 
@@ -194,7 +195,8 @@ model follows. The `wtx-effort:` line does nothing there.
 
 `wtx install-machine` adds hooks to Claude Code that call `wtx notify` with the
 state of the session: `start`, `running`, `stop`, `idle` or `permission`. wtx
-keeps one state file per session under `$XDG_RUNTIME_DIR/wtx`.
+keeps one state file per session under `$XDG_RUNTIME_DIR/wtx` (or a private
+`wtx-<uid>` directory in the temp dir when that variable is not set).
 
 Inside tmux:
 
@@ -240,9 +242,11 @@ the same data plus the session name, the agent and the model.
    repo has no auto-merge), and waits up to 30 minutes for the merge.
 5. It removes the worktree and deletes the branch, local and remote.
 
-`--local` skips GitHub: it runs the `[checks]` lint and test commands, merges
-with `--no-ff` into the base branch and pushes it. `--skip-checks` skips the
-checks, `--keep-branch` keeps the branch.
+`--local` skips GitHub. It runs the `[checks]` lint and test commands after
+the rebase and before any push, so a branch that fails them never reaches
+origin. Then it pushes the branch, merges it with `--no-ff` into the base
+branch and pushes that. `--skip-checks` skips the checks, `--keep-branch` keeps
+the branch.
 
 ## Machine setup
 
@@ -297,7 +301,7 @@ You do not run these yourself. They are listed so nothing is a mystery.
 | `wtx done [branch]` | close a worktree, keep the branch |
 | `wtx land [branch]` | rebase, pull request, merge, clean up |
 | `wtx open [family] [branch]` | print and open a dev server URL |
-| `wtx curl [family] [path] [args]` | curl one of this worktree's servers, without knowing its port |
+| `wtx curl [family] [path] [curl flags]` | curl one of this worktree's servers, without knowing its port |
 | `wtx status [branch]` | ports, sessions and pairings |
 | `wtx setup` | make a worktree runnable, again |
 | `wtx teardown` | kill the session and free the ports |

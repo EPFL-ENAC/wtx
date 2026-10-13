@@ -689,6 +689,35 @@ def test_dry_run_writes_no_files_either(wtx_repo: Path, fake_bin: Path, capsys) 
     assert not (wtx_repo / ".git" / "hooks" / "pre-push").exists()
 
 
+def test_wtx_done_inside_its_own_session_shows_the_dirty_refusal(
+    wtx_repo: Path, fake_bin: Path, monkeypatch, capsys
+) -> None:
+    """Inside the session, done hands off to the tmux server. The dirty check
+    ran after that, in a shell nobody sees, so the worktree just stayed."""
+    from wtx import tmux
+
+    path = make_worktree(wtx_repo, "feat/dirty")
+    (path / "notes.txt").write_text("not committed\n")
+    session = context.load(root=path).session
+    monkeypatch.setenv("TMUX", "/tmp/fake,1,0")
+    monkeypatch.setattr(tmux, "out", lambda args, **kw: session)
+    monkeypatch.chdir(path)
+
+    assert run(["done"]) == 1
+    assert "uncommitted changes" in capsys.readouterr().err
+    assert not any(c.startswith("run-shell") for c in calls_of(fake_bin, "tmux"))
+    assert path.is_dir()
+
+
+def test_config_validate_warns_about_an_unknown_key(wtx_repo: Path, monkeypatch, capsys) -> None:
+    (wtx_repo / "wtx.toml").write_text(
+        (wtx_repo / "wtx.toml").read_text().replace("[repo]\n", "[repo]\nbase_brnach = 'x'\n", 1)
+    )
+    monkeypatch.chdir(wtx_repo)
+    assert run(["config", "validate"]) == 0
+    assert "unknown key repo.base_brnach" in capsys.readouterr().err
+
+
 def test_config_validate_reports_a_problem(wtx_repo: Path, monkeypatch, capsys) -> None:
     (wtx_repo / "wtx.toml").write_text(
         '[repo]\nname = "x"\nbase_branch = "dev"\nprotected_branches = ["main"]\n'
@@ -872,13 +901,13 @@ def test_a_worktrees_own_wtx_toml_does_not_change_its_rules(wtx_repo: Path, fake
     path = make_worktree(wtx_repo, "feat/sneaky")
     (path / "wtx.toml").write_text(
         (wtx_repo / "wtx.toml").read_text()
-        + '\n[permissions]\nallow = ["Bash(git push * --force*)"]\n'
+        + '\n[permissions]\nallow = ["Bash(git push *--force*)"]\n'
     )
     assert "--force" in (path / "wtx.toml").read_text()
     setup_mod.run_setup(context.load(root=path), start_tmux=False)
 
     settings = json.loads((path / ".claude" / "settings.local.json").read_text())
-    assert "Bash(git push * --force*)" not in settings["permissions"]["allow"]
+    assert "Bash(git push *--force*)" not in settings["permissions"]["allow"]
 
 
 def test_wt_toml_hooks_are_lists(wtx_repo: Path) -> None:
@@ -943,6 +972,39 @@ def test_land_rebases_when_the_base_moved_on(
     assert (wtx_repo / "feature.txt").is_file()
     assert (wtx_repo / "other.txt").is_file()
     assert git.worktree_path_for(wtx_repo, "feat/behind") is None
+
+
+def test_brief_refuses_a_protected_branch(
+    wtx_repo: Path, fake_bin: Path, monkeypatch, capsys
+) -> None:
+    """dev lives in the main checkout. A brief there started an agent on it."""
+    monkeypatch.chdir(wtx_repo)
+    assert run(["brief", "dev", "--prompt", "Add a health endpoint."]) == 1
+    assert "dev is protected" in capsys.readouterr().err
+    assert not (wtx_repo / "PROMPT.md").exists()
+    assert not calls_of(fake_bin, "tmux")
+
+
+def test_land_local_runs_the_checks_before_any_push(
+    wtx_repo: Path, fake_bin: Path, monkeypatch, capsys
+) -> None:
+    """The branch was force-pushed first and checked after, so a branch that
+    failed its checks was already on origin."""
+    from wtx import land as land_mod
+
+    path = make_worktree(wtx_repo, "feat/broken")
+    setup_mod.run_setup(context.load(root=path), start_tmux=False)
+    commit(path, "broken")
+
+    def failing(ctx, where):
+        raise land_mod.LandError("check failed: make test")
+
+    monkeypatch.setattr(land_mod, "_checks", failing)
+    monkeypatch.chdir(wtx_repo)
+    assert run(["land", "feat/broken", "--local"]) == 1
+    assert "check failed" in capsys.readouterr().err
+    remote = git_out(["ls-remote", "--heads", "origin", "feat/broken"], wtx_repo)
+    assert remote == ""
 
 
 def test_land_refuses_a_branch_cut_from_a_newer_protected_branch(
@@ -1228,6 +1290,57 @@ def test_a_handoff_that_cannot_fork_stays_pending(
     assert not any(c.startswith("respawn-pane") for c in calls_of(fake_bin, "tmux"))
     assert orchestrate.pending(ctx.session).get("conversation") == "conv-1"
     assert orchestrate.record_file(ctx.session).exists()
+
+
+def test_setup_and_teardown_work_without_ss_or_fuser(
+    wtx_repo: Path, fake_bin: Path, monkeypatch, capsys
+) -> None:
+    """Both are missing on a minimal machine. A traceback there stopped setup
+    before the session existed."""
+    from wtx import teardown
+
+    real_which = __import__("shutil").which
+    monkeypatch.setattr(
+        "wtx.ports.which", lambda name: None if name in ("ss", "fuser") else real_which(name)
+    )
+
+    def no_ss(cmd, **kw):
+        raise FileNotFoundError(cmd[0])  # what a missing binary does
+
+    monkeypatch.setattr("wtx.ports.capture", no_ss)
+    path = make_worktree(wtx_repo, "feat/minimal")
+    setup_mod.run_setup(context.load(root=path), start_tmux=False)
+    teardown.run_teardown(context.load(root=path))
+
+    err = capsys.readouterr().err
+    assert "ss not found" in err
+    assert "fuser not found" in err
+    assert not calls_of(fake_bin, "fuser")
+
+
+def test_an_unreadable_handoff_record_is_dropped(tmp_path, fake_bin: Path) -> None:
+    """It can never run. Left there, `wtx status` shows a handoff in flight
+    for ever."""
+    from wtx import orchestrate
+
+    running = orchestrate.record_file("app/feat/bad").with_suffix(".handoff.running")
+    running.write_text("{not json")
+    assert orchestrate.run(running) == 0
+    assert not running.exists()
+    assert orchestrate.pending("app/feat/bad") == {}
+
+
+def test_teardown_drops_a_handoff_that_never_fired(wtx_repo: Path, fake_bin: Path) -> None:
+    from wtx import orchestrate, teardown
+
+    path = make_worktree(wtx_repo, "feat/torn")
+    ctx = context.load(root=path)
+    orchestrate.write_record(ctx.session, {"session": ctx.session, "conversation": "c"})
+    assert orchestrate.pending(ctx.session)
+
+    teardown.run_teardown(ctx)
+    assert not orchestrate.record_file(ctx.session).exists()
+    assert orchestrate.pending(ctx.session) == {}
 
 
 def test_the_stop_hook_still_fires_a_handoff_left_behind(
@@ -1534,6 +1647,47 @@ def test_wtx_curl_reaches_this_worktrees_port(wtx_repo: Path, fake_bin: Path, mo
     assert run(["curl", "backend", "/api/health", "-X", "POST"]) == 0
     called = calls_of(fake_bin, "curl")[-1]
     assert called == f"-X POST http://127.0.0.1:{ctx.port('backend')}/api/health"
+
+
+@pytest.mark.parametrize(
+    ("words", "curl_args", "url_path"),
+    [
+        (["backend", "-X", "POST", "/api/health"], "-X POST", "/api/health"),
+        (["-X", "POST", "backend", "/api/health"], "-X POST", "/api/health"),
+        (["/api/health"], "", "/api/health"),
+        (["-o", "/tmp/out", "/items"], "-o /tmp/out", "/items"),
+        (["backend"], "", "/"),
+        (["-sS"], "-sS", "/"),
+    ],
+)
+def test_wtx_curl_finds_the_path_wherever_it_is(
+    wtx_repo: Path, fake_bin: Path, monkeypatch, words, curl_args, url_path
+) -> None:
+    """The curl flags used to be an argparse REMAINDER: a path after a flag
+    went to curl as a second URL, and the request hit `/`. The family could not
+    be left out either, `/api/health` was taken as its name."""
+    path = make_worktree(wtx_repo, "feat/curl-order")
+    setup_mod.run_setup(context.load(root=path), start_tmux=False)
+    ctx = context.load(root=path)
+    monkeypatch.chdir(path)
+
+    assert run(["curl", *words]) == 0
+    url = f"http://127.0.0.1:{ctx.port('backend')}{url_path}"
+    assert calls_of(fake_bin, "curl")[-1] == f"{curl_args} {url}".strip()
+
+
+def test_wtx_open_takes_a_branch_without_a_family(
+    wtx_repo: Path, fake_bin: Path, monkeypatch, capsys
+) -> None:
+    """Same shape as wtx curl: the family may be left out."""
+    path = make_worktree(wtx_repo, "feat/open")
+    setup_mod.run_setup(context.load(root=path), start_tmux=False)
+    ctx = context.load(root=path)
+    first = ctx.cfg.ports.families[0].name
+    monkeypatch.chdir(wtx_repo)
+
+    assert run(["open", "feat/open", "--print-only"]) == 0
+    assert capsys.readouterr().out.strip() == f"http://localhost:{ctx.port(first)}/"
 
 
 def test_wtx_curl_names_the_families_it_knows(

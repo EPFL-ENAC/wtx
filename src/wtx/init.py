@@ -1,9 +1,11 @@
 """`wtx init`: look at a repo, guess a wtx.toml, write the files.
 
-The scan is a proposal, never the last word. On the terminal it prints the draft
-and asks. Under `--scan --json` it hands the same guesses to the /wtx-init skill,
-which asks the human with real options and sends the answers back through
-`--from-json`. Either way this module is the only thing that writes the files.
+The scan is a proposal, never the last word. On the terminal, plain `wtx init`
+asks nothing: it writes the files from the scan (plus `--lab` if given), and the
+human edits wtx.toml after. Only the /wtx-init skill asks. It gets the guesses
+from `--scan --json`, asks the human with real options and sends the answers
+back through `--from-json`. Either way this module is the only thing that
+writes the files.
 """
 
 from __future__ import annotations

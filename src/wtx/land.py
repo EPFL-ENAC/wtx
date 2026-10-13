@@ -100,13 +100,17 @@ def land(
             f"rebase onto origin/{base} has conflicts. Resolve them in {path} "
             f"(git rebase origin/{base}), then run wtx land again"
         ) from exc
+    # Before the push: a branch that fails its checks must not reach origin,
+    # even force-pushed to its own name.
+    if local and not skip_checks:
+        _checks(ctx, path)
     # Name the ref. A branch cut with wt tracks its base until setup repairs
     # that, and a bare push then refuses to guess. land must work on a worktree
     # setup never touched. --force-with-lease still guards origin/<branch>.
     run(["git", "push", "--force-with-lease", "origin", branch], cwd=path)
 
     if local:
-        _land_local(ctx, branch, path, base, skip_checks=skip_checks)
+        _land_local(ctx, branch, base)
     else:
         _land_pr(
             ctx,
@@ -182,15 +186,12 @@ def _land_pr(ctx: Ctx, branch: str, base: str, *, poll_seconds: int, timeout_min
     )
 
 
-def _land_local(ctx: Ctx, branch: str, path: Path, base: str, *, skip_checks: bool) -> None:
+def _land_local(ctx: Ctx, branch: str, base: str) -> None:
     if not git.is_clean(ctx.main):
         raise LandError(f"the main checkout {ctx.main} has uncommitted changes")
     other = git.worktree_path_for(ctx.main, base)
     if other and other.resolve() != ctx.main.resolve():
         raise LandError(f"{base} is checked out in {other}, cannot merge it here")
-
-    if not skip_checks:
-        _checks(ctx, path)
 
     run(["git", "checkout", base], cwd=ctx.main)
     run(["git", "pull", "--ff-only"], cwd=ctx.main)

@@ -100,7 +100,6 @@ class Pane:
 
 @dataclass(frozen=True)
 class PanesCfg:
-    layout: str = "agent-left-half"
     panes: tuple[Pane, ...] = ()
 
     def by_role(self, role: str) -> tuple[Pane, ...]:
@@ -133,7 +132,9 @@ PERMISSION_MODES = (
 
 
 # The effort levels the agent accepts. Same reason as the permission modes.
-EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max", "ultracode")
+# Also the levels a plan's wtx-effort: line may name, so it must match the
+# list PLAN_INSTRUCTION gives the planner.
+EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 
 
 @dataclass(frozen=True)
@@ -206,6 +207,10 @@ class ExtRepo:
     base_branch: str = "main"
     env_prefix: str = ""
     editable_install: EditableInstall | None = None
+    # path as the file wrote it, before {lab} and {repo} are filled. validate
+    # needs it: once {lab} is expanded with an empty lab, nothing shows it was
+    # there. Set by _post_process, never read from the file.
+    raw_path: str = field(default="", metadata={"derived": True})
 
     @property
     def prefix(self) -> str:
@@ -283,6 +288,14 @@ def _as_int(value: Any, where: str) -> int:
         raise ConfigError(f"{where} must be a number") from exc
 
 
+def _as_bool(value: Any, where: str) -> bool:
+    # bool("false") is True. A quoted value must be an error, not the opposite
+    # of what the file says.
+    if not isinstance(value, bool):
+        raise ConfigError(f"{where} must be true or false, without quotes")
+    return value
+
+
 def _as_str_tuple(value: Any, where: str) -> tuple[str, ...]:
     if value is None:
         return ()
@@ -303,7 +316,7 @@ def _table(data: dict[str, Any], key: str) -> dict[str, Any]:
 _SCALARS: dict[str, Callable[[Any, str], Any]] = {
     "str": lambda v, where: str(v),
     "int": _as_int,
-    "bool": lambda v, where: bool(v),
+    "bool": _as_bool,
     "tuple[str, ...]": _as_str_tuple,
 }
 
@@ -319,7 +332,7 @@ def _build(cls: type[T], table: dict[str, Any], where: str, **override: Any) -> 
     values = dict(override)
     for f in fields(cls):
         read = _SCALARS.get(str(f.type))
-        if f.name in values or read is None:
+        if f.name in values or read is None or f.metadata.get("derived"):
             continue
         if f.name in table:
             values[f.name] = read(table[f.name], f"{where}.{f.name}")
@@ -448,11 +461,68 @@ def _editable(raw: Any, name: str) -> EditableInstall | None:
 def _post_process(cfg: WtxConfig) -> WtxConfig:
     """Fill in what the config implies: {lab}/{repo} expansion, UV_NO_SYNC."""
     lab, name = cfg.repo.lab, cfg.repo.name
-    repos = tuple(replace(r, path=_expand(r.path, lab=lab, repo=name)) for r in cfg.repos)
+    repos = tuple(
+        replace(r, path=_expand(r.path, lab=lab, repo=name), raw_path=r.path) for r in cfg.repos
+    )
     env_extra = dict(cfg.env_extra)
     if any(r.editable_install for r in repos) and "UV_NO_SYNC" not in env_extra:
         env_extra["UV_NO_SYNC"] = "1"
     return replace(cfg, repos=repos, env_extra=env_extra)
+
+
+# The nested tables and arrays of tables of each part of wtx.toml, for
+# unknown_keys. A key here is read by parse() itself, not by _build.
+_NESTED: dict[str, tuple[type, dict]] = {
+    "repo": (RepoCfg, {}),
+    "ports": (PortsCfg, {"family": (PortFamily, {})}),
+    "seed": (SeedCfg, {}),
+    "deps": (DepsCfg, {"step": (DepStep, {})}),
+    "panes": (PanesCfg, {"pane": (Pane, {})}),
+    "agent": (
+        AgentCfg,
+        {"orchestration": (OrchestrationCfg, {}), "opencode": (OpencodeCfg, {})},
+    ),
+    "permissions": (PermissionsCfg, {}),
+    "checks": (ChecksCfg, {}),
+    "hooks": (HooksCfg, {}),
+    "repos": (ExtRepo, {"editable_install": (EditableInstall, {})}),
+}
+
+
+def _unknown_in(value: Any, cls: type, where: str, nested: dict) -> list[str]:
+    known = {
+        f.name for f in fields(cls) if str(f.type) in _SCALARS and not f.metadata.get("derived")
+    }
+    out: list[str] = []
+    for table in value if isinstance(value, list) else [value]:
+        if not isinstance(table, dict):
+            continue
+        for key, sub in table.items():
+            if key in nested:
+                sub_cls, sub_nested = nested[key]
+                out += _unknown_in(sub, sub_cls, f"{where}.{key}", sub_nested)
+            elif key not in known:
+                out.append(f"{where}.{key}")
+    return out
+
+
+def unknown_keys(data: dict[str, Any]) -> list[str]:
+    """Keys wtx does not read, so a typo does not go unseen.
+
+    Only `wtx config validate` asks. Loading never fails on one: an old
+    wtx.toml with a key a later wtx dropped must still work.
+    """
+    out: list[str] = []
+    for key, value in data.items():
+        if key in _NESTED:
+            cls, nested = _NESTED[key]
+            out += _unknown_in(value, cls, key, nested)
+        elif key == "env":
+            if isinstance(value, dict):
+                out += [f"env.{k}" for k in value if k not in ("extra", "computed")]
+        elif key not in ("schema_version", "min_wtx_version"):
+            out.append(key)
+    return out
 
 
 def load(path: Path) -> WtxConfig:
@@ -516,6 +586,8 @@ def validate(cfg: WtxConfig) -> list[str]:
         seen_env.add(f.env_key)
         if f.main <= 0:
             errs.append(f"port family {f.name}: main must be a port number")
+    if cfg.ports.step <= 0:
+        errs.append("[ports].step must be positive")
     if cfg.ports.slots <= 0:
         errs.append("[ports].slots must be positive")
     if cfg.agent.tool not in ("claude", "opencode"):
@@ -572,7 +644,7 @@ def validate(cfg: WtxConfig) -> list[str]:
             errs.append(f"[[repos]] {r.name}: access must be read or pair")
         if r.editable_install and r.access != "pair":
             errs.append(f'[[repos]] {r.name}: editable_install needs access = "pair"')
-        if "{lab}" in r.path and not cfg.repo.lab:
+        if "{lab}" in r.raw_path and not cfg.repo.lab:
             errs.append(f"[[repos]] {r.name}: path uses {{lab}} but [repo].lab is empty")
     for key in cfg.env_extra:
         if not key.replace("_", "").isalnum():

@@ -178,7 +178,7 @@ class Change:
         if self.kind == "create":
             return not self.path.exists()
         if self.kind == "merge-json":
-            return True
+            return _merge_hooks(self.path, json.loads(self.body)["hooks"], write=False)
         if not self.path.is_file():
             return True
         return bool(self.missing_lines()) or bool(self.stale_lines())
@@ -264,13 +264,19 @@ def planned(agent_tool: str = "claude") -> list[Change]:
     return changes
 
 
-def _merge_hooks(path: Path, fragment: dict) -> bool:
-    """Add wtx's hooks to the user's settings without touching the rest."""
+def _merge_hooks(path: Path, fragment: dict, *, write: bool = True) -> bool:
+    """Add wtx's hooks to the user's settings without touching the rest.
+
+    Returns whether anything changed. With write=False nothing is written, so
+    `wtx install-machine` can say "already there" instead of always "needed".
+    """
     data: dict = {}
     if path.is_file():
         try:
             data = json.loads(path.read_text())
         except (OSError, json.JSONDecodeError) as exc:
+            if not write:
+                return True  # the user has to look at it
             warn(f"{path} is not readable JSON ({exc}), not touching it")
             return False
     hooks = data.setdefault("hooks", {})
@@ -307,8 +313,8 @@ def _merge_hooks(path: Path, fragment: dict) -> bool:
             ]
             current.append(entry)
             changed = True
-    if not changed:
-        return False
+    if not changed or not write:
+        return changed
     path.parent.mkdir(parents=True, exist_ok=True)
     backup = path.with_suffix(path.suffix + ".wtx-backup")
     if path.is_file():

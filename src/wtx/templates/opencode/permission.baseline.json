@@ -37,7 +37,7 @@
     "git add *": "allow",
     "git commit *": "allow",
     "git fetch*": "allow",
-    "git push --force*": "deny",
+    "git push *--force*": "deny",
     "git push -f *": "deny",
     "git remote set-url *": "deny",
     "git remote add *": "deny",

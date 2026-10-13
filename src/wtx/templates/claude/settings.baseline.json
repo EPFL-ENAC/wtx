@@ -54,7 +54,7 @@
       "Bash(dangerouslyDisableSandbox:true)"
     ],
     "deny": [
-      "Bash(git push * --force*)",
+      "Bash(git push *--force*)",
       "Bash(git push -f *)",
       "Bash(git remote set-url *)",
       "Bash(git remote add *)",

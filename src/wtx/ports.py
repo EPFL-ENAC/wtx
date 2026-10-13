@@ -13,7 +13,7 @@ from pathlib import Path
 
 from . import envfile, git
 from .config import WtxConfig
-from .proc import capture
+from .proc import capture, warn, which
 
 
 def cksum(data: bytes) -> int:
@@ -46,6 +46,10 @@ def cksum(data: bytes) -> int:
 
 def listening_ports() -> set[int]:
     """TCP ports something is listening on. Empty when ss is unavailable."""
+    # capture raises on a missing binary, and setup then died with a traceback.
+    if which("ss") is None:
+        warn("ss not found, ports in use outside wtx are not skipped (install iproute2)")
+        return set()
     out = capture(["ss", "-Hltn"])
     found: set[int] = set()
     for line in out.splitlines():
@@ -101,6 +105,9 @@ def free_ports(values: dict[str, int]) -> None:
     """Kill whatever holds these ports. Used at teardown."""
     from .proc import run
 
+    if which("fuser") is None:
+        warn("fuser not found, the servers on these ports are left running (install psmisc)")
+        return
     for port in values.values():
         run(
             ["fuser", "-k", "-n", "tcp", str(port)],

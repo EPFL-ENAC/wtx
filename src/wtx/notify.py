@@ -23,8 +23,10 @@ import shlex
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
+from urllib.parse import quote
 
 from . import git, tmux
 from .context import session_name
@@ -55,18 +57,42 @@ WAITING = ("permission", "idle")
 
 
 def state_dir() -> Path:
-    base = os.environ.get("XDG_RUNTIME_DIR") or "/tmp"  # noqa: S108
-    d = Path(base) / "wtx"
-    d.mkdir(parents=True, exist_ok=True)
+    base = os.environ.get("XDG_RUNTIME_DIR")
+    if base:
+        d = Path(base) / "wtx"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+    # No runtime dir (cron, ssh without a login session). A shared /tmp/wtx let
+    # another user read the states and write handoff records that we then run.
+    d = Path(tempfile.gettempdir()) / f"wtx-{os.getuid()}"
+    d.mkdir(mode=0o700, exist_ok=True)
+    if d.stat().st_uid != os.getuid():
+        raise PermissionError(f"{d} belongs to another user, remove it or set XDG_RUNTIME_DIR")
+    d.chmod(0o700)
     return d
 
 
 def safe_name(name: str) -> str:
+    """A file name for a session, one to one.
+
+    Mapping every odd char to `-` made `repo/feat/login` and `repo/feat-login`
+    share one state file, so one session's state showed on the other.
+    Percent-encoding cannot collide.
+    """
+    return quote(name, safe="-._")
+
+
+def _old_safe_name(name: str) -> str:
+    """The name an older wtx used, so its files are still read and cleared."""
     return "".join(c if c.isalnum() or c in "-._" else "-" for c in name)
 
 
 def state_file(session: str) -> Path:
     return state_dir() / f"{safe_name(session)}.json"
+
+
+def _old_state_file(session: str) -> Path:
+    return state_dir() / f"{_old_safe_name(session)}.json"
 
 
 def _load(path: Path) -> dict:
@@ -79,7 +105,12 @@ def _load(path: Path) -> dict:
 
 
 def read_state(session: str) -> dict:
-    return _load(state_file(session))
+    state = _load(state_file(session))
+    if state:
+        return state
+    # A file an older wtx wrote. It may belong to a colliding session.
+    old = _load(_old_state_file(session))
+    return old if old.get("session") == session else {}
 
 
 def all_states() -> dict[str, dict]:
@@ -122,6 +153,9 @@ def write_state(session: str, state: str, message: str = "") -> None:
 def clear_state(session: str) -> None:
     with contextlib.suppress(OSError):
         state_file(session).unlink(missing_ok=True)
+        old = _old_state_file(session)
+        if _load(old).get("session") == session:
+            old.unlink(missing_ok=True)
 
 
 def settle(session: str) -> None:

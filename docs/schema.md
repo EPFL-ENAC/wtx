@@ -6,7 +6,10 @@ here. Most keys have a default. The ones marked "required" do not:
 `name`, `[[repos]]` `name` and `path`, and `run` in an `editable_install`.
 
 Check a file with `wtx config validate`. `wtx go` and `wtx setup` refuse a file
-with problems. The `wt` hooks only warn.
+with problems. The `wt` hooks only warn. A key wtx does not know is not a
+problem, but `wtx config validate` names it, so a typo does not go unseen.
+
+A yes or no key takes `true` or `false`, without quotes. `"false"` is an error.
 
 This file has a copy in `src/wtx/skills/wtx-init/references/schema.md`. Keep the
 two identical.
@@ -36,7 +39,7 @@ wrote and past anything listening.
 | Key | Default | What |
 | --- | --- | --- |
 | `range_start` | `18000` | First family's low base. |
-| `step` | `1000` | Gap between families. |
+| `step` | `1000` | Gap between families. Must be positive. |
 | `slots` | `500` | How many offsets exist. |
 
 Each `[[ports.family]]`:
@@ -108,7 +111,7 @@ the repository, and the file is gitignored.
 | `llm` | none | The worker model. `wtx go --llm` overrides it. |
 | `brief_permission_mode` | `plan` | What the agent starts in on a brief (`wtx go --prompt`, `wtx brief`). Plan mode by default, so the agent comes back with a plan instead of editing. |
 | `subagent_model` | `sonnet` | Every subagent runs its own requests. |
-| `effort` | none | `low`, `medium`, `high`, `xhigh`, `max` or `ultracode`. |
+| `effort` | none | `low`, `medium`, `high`, `xhigh` or `max`. |
 | `auto_compact_window` | `0` (off) | Compact at this many tokens. A long session re-sends its whole context every turn, so this is usually the biggest cost. |
 | `disabled_mcp_servers` | none | Servers a worker never needs. |
 | `explore_agent_model` | none | Writes a project Explore agent on that model. The built-in one inherits the main model. |
@@ -161,8 +164,7 @@ plan implements on `build_model`, and a small one gets the same model working
 less hard.
 
 `wtx-effort:` takes any level the agent knows: `low`, `medium`, `high`, `xhigh`,
-`max` (the config also accepts `ultracode`). A plan that names none implements
-at `build_effort`.
+`max`. A plan that names none implements at `build_effort`.
 
 **The implementation continues the planning conversation**, it does not start a
 new one, which is how Claude Code's own `opusplan` switches models. Everything

@@ -199,6 +199,16 @@ def pending(session: str) -> dict:
     return {}
 
 
+def clear_record(session: str) -> None:
+    """Drop a handoff that never fired. Teardown calls it: the session is
+    gone, and a record left behind would fire into the next session with the
+    same name."""
+    path = record_file(session)
+    for f in (path, _running_name(path)):
+        with contextlib.suppress(OSError):
+            f.unlink(missing_ok=True)
+
+
 def _running_name(pending_path: Path) -> Path:
     return pending_path.with_name(pending_path.name + ".running")
 
@@ -337,6 +347,10 @@ def run(record: Path) -> int:
         data = json.loads(record.read_text())
     except (OSError, json.JSONDecodeError):
         trace(f"handoff: cannot read {record}")
+        # Nothing can ever run it, and left there `wtx status` shows a
+        # handoff in flight for ever.
+        with contextlib.suppress(OSError):
+            record.unlink(missing_ok=True)
         return 0
     record.unlink(missing_ok=True)
     try:

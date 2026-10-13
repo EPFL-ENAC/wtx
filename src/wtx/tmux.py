@@ -98,10 +98,6 @@ def set_session_option(session: str, key: str, value: str) -> None:
     cmd(["set-option", "-t", f"={session}", key, value])
 
 
-def get_session_option(session: str, key: str) -> str:
-    return out(["show-options", "-v", "-t", f"={session}", key])
-
-
 def kill_session(session: str) -> None:
     if has_session(session):
         cmd(["kill-session", "-t", f"={session}"])

@@ -6,6 +6,7 @@ import fnmatch
 import json
 import os
 import subprocess
+import tomllib
 from dataclasses import replace
 from pathlib import Path
 
@@ -126,6 +127,76 @@ def test_lab_and_repo_are_expanded_in_paths() -> None:
     assert cfg.repos[0].path == "~/k/epfl-leure/speed-to-zero"
 
 
+def test_validate_catches_lab_used_but_empty() -> None:
+    """The path is expanded at parse time. validate must still see {lab}, or an
+    empty lab turns the path into `epfl-` with no word about it."""
+    cfg = parse(
+        {
+            "repo": {"name": "app", "lab": ""},
+            "repos": [{"name": "k8s", "path": "~/k/epfl-{lab}/{repo}"}],
+        }
+    )
+    assert any("[repo].lab is empty" in p for p in validate(cfg))
+    cfg = parse({"repo": {"name": "app"}, "repos": [{"name": "k8s", "path": "~/k/{repo}"}]})
+    assert not any("[repo].lab" in p for p in validate(cfg))
+
+
+@pytest.mark.parametrize("value", ["false", "true", 0, 1])
+def test_a_bool_key_must_be_a_real_bool(value) -> None:
+    """bool("false") is True: a quoted false turned orchestration on."""
+    with pytest.raises(config.ConfigError, match="true or false"):
+        parse({"agent": {"orchestration": {"enabled": value}}})
+    assert (
+        parse({"agent": {"orchestration": {"enabled": False}}}).agent.orchestration.enabled is False
+    )
+
+
+def test_every_effort_level_is_one_the_planner_is_told_about() -> None:
+    """ultracode was accepted but never listed in PLAN_INSTRUCTION, so no plan
+    could pick it and a config that named it launched an agent that refused."""
+    for level in config.EFFORT_LEVELS:
+        assert f"`{level}`" in orchestrate.PLAN_INSTRUCTION, level
+    cfg = parse({"agent": {"effort": "ultracode"}})
+    assert any("[agent].effort 'ultracode'" in p for p in validate(cfg))
+
+
+def test_validate_catches_a_port_step_that_is_not_positive() -> None:
+    assert any("[ports].step" in p for p in validate(parse({"ports": {"step": 0}})))
+    assert not any("[ports].step" in p for p in validate(parse({})))
+
+
+def test_unknown_keys_are_listed_and_still_load() -> None:
+    """A typo used to be ignored without a word. It is a warning, not an
+    error: an old wtx.toml with a key wtx dropped must still load."""
+    data = {
+        "repo": {"name": "app", "typo": 1},
+        "panes": {"layout": "agent-left-half", "pane": [{"name": "a", "role": "agent", "x": 1}]},
+        "agent": {"orchestration": {"enabld": True}},
+        "repos": [{"name": "k", "path": "../k", "raw_path": "x"}],
+        "env": {"extra": {"ANY_KEY": "1"}, "nope": 1},
+        "toplevel": 1,
+    }
+    parse(data)
+    assert config.unknown_keys(data) == [
+        "repo.typo",
+        "panes.layout",
+        "panes.pane.x",
+        "agent.orchestration.enabld",
+        "repos.raw_path",
+        "env.nope",
+        "toplevel",
+    ]
+
+
+def test_init_writes_no_unknown_key(repo: Path) -> None:
+    from wtx import init as init_mod
+
+    answers = init_mod.scan(repo)
+    answers.pop("_notes", None)
+    init_mod.write_all(repo, answers)
+    assert config.unknown_keys(tomllib.loads((repo / "wtx.toml").read_text())) == []
+
+
 def test_validate_catches_a_base_branch_left_unprotected() -> None:
     cfg = parse({"repo": {"base_branch": "dev", "protected_branches": ["main"]}})
     assert any("base branch" in p for p in validate(cfg))
@@ -192,16 +263,39 @@ def test_no_ask_rule_catches_an_ordinary_edit_or_test_run() -> None:
         assert not caught, f"{cmd!r} would prompt, caught by {caught}"
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git push --force origin feat/x",
+        "git push --force-with-lease origin feat/x",
+        "git push origin feat/x --force",
+        "git push -u origin feat/x --force-with-lease",
+    ],
+)
+def test_both_baselines_deny_a_force_push_wherever_the_flag_is(command) -> None:
+    """`git push --force*` missed the flag after the remote, and
+    `git push * --force*` missed it in first place: the `*-d *` rule."""
+    from wtx.agents.claude import _baseline
+
+    claude = [r.removeprefix("Bash(").removesuffix(")") for r in _baseline()["permissions"]["deny"]]
+    assert any(fnmatch.fnmatchcase(command, r) for r in claude)
+    path = (
+        Path(__file__).resolve().parents[1] / "src/wtx/templates/opencode/permission.baseline.json"
+    )
+    bash = json.loads(path.read_text())["bash"]
+    assert any(fnmatch.fnmatchcase(command, r) for r, v in bash.items() if v == "deny")
+
+
 def test_a_repo_cannot_remove_a_baseline_rule() -> None:
     """wtx.toml appends. If it could subtract, one typo reopens force pushes."""
     cfg = parse(
         {
             "repo": {"base_branch": "dev", "protected_branches": ["dev"]},
-            "permissions": {"allow": ["Bash(git push * --force*)"]},
+            "permissions": {"allow": ["Bash(git push *--force*)"]},
         }
     )
     settings = ClaudeAgent().build_settings(_rctx(cfg))
-    assert "Bash(git push * --force*)" in settings["permissions"]["deny"]
+    assert "Bash(git push *--force*)" in settings["permissions"]["deny"]
 
 
 # -- guard -------------------------------------------------------------------
@@ -363,6 +457,21 @@ def test_install_machine_drops_an_old_hook_sitting_next_to_ours(tmp_path) -> Non
     text = json.dumps(json.loads(settings.read_text()))
     assert "claude-notify" not in text
     assert text.count("wtx notify stop") == 1
+
+
+def test_install_machine_says_already_there_once_the_hooks_are_in(tmp_path) -> None:
+    """The settings.json line used to say "needed" on every run, even right
+    after `--apply`, so it could never be told apart from a real gap."""
+    from wtx import machine
+
+    change = machine.planned("claude")[-1]
+    change.path = _settings(tmp_path, Stop=[("", "/x/persist.sh")])
+    assert change.needed()
+    before = change.path.read_text()
+    assert change.needed()
+    assert change.path.read_text() == before  # asking writes nothing
+    machine._merge_hooks(change.path, json.loads(change.body)["hooks"])
+    assert not change.needed()
 
 
 def test_install_machine_installs_every_shipped_skill(tmp_path) -> None:
@@ -814,6 +923,121 @@ def test_an_older_picker_binding_is_replaced() -> None:
         assert not machine._is_old_tmux(line), line
     assert not machine._is_old_tmux(f"# replaced by wtx: {old_wtx}")
     assert not machine._is_old_tmux("bind g display-popup -E htop")
+
+
+# -- shell completion --------------------------------------------------------
+
+_BASH = Path(__file__).resolve().parents[1] / "src" / "wtx" / "shell" / "wtx.bash"
+
+
+def _protected_from_completion(tmp_path: Path, toml: str) -> list[str]:
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    (tmp_path / "wtx.toml").write_text(toml)
+    out = subprocess.run(
+        ["bash", "-c", f"source {_BASH} && _wtx_protected"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return out.stdout.split()
+
+
+@pytest.mark.parametrize(
+    ("toml", "expected"),
+    [
+        ('[repo]\nprotected_branches = ["main", "dev"]\n', ["main", "dev"]),
+        ('[repo]\nprotected_branches = [\n  "main",\n  "dev",\n]\n', ["main", "dev"]),
+        ('[repo]\nbase_branch = "dev"\n', ["dev"]),
+        ('[repo]\nname = "app"\n', ["main"]),
+        ('[repo]\nname = "app"\n[other]\nprotected_branches = ["x"]\n', ["main"]),
+    ],
+)
+def test_completion_reads_protected_branches_like_wtx(tmp_path, toml, expected) -> None:
+    """The sed only read a one-line array and had no default, so a wtx.toml
+    written over several lines, or with no key at all, offered protected
+    branches to wtgo."""
+    assert _protected_from_completion(tmp_path, toml) == expected
+    assert list(parse(tomllib.loads(toml)).repo.protected_branches) == expected
+
+
+def test_completion_offers_with_to_go_only(tmp_path) -> None:
+    """wtx brief has no --with, so its completion must not offer repo names."""
+    _protected_from_completion(tmp_path, '[[repos]]\nname = "k8s"\npath = "../k"\n')
+
+    def complete(*words: str) -> list[str]:
+        line = " ".join(f'"{w}"' for w in words)
+        script = (
+            f"source {_BASH} && COMP_WORDS=({line}) && COMP_CWORD={len(words) - 1}"
+            ' && _wtx && printf "%s\\n" "${COMPREPLY[@]}"'
+        )
+        out = subprocess.run(["bash", "-c", script], cwd=tmp_path, capture_output=True, text=True)
+        return out.stdout.split()
+
+    assert complete("wtx", "go", "--with", "") == ["k8s"]
+    assert "k8s" not in complete("wtx", "brief", "--with", "")
+
+
+def test_completion_knows_every_subcommand() -> None:
+    import argparse
+
+    from wtx import cli
+
+    action = next(
+        a for a in cli.build_parser()._actions if isinstance(a, argparse._SubParsersAction)
+    )
+    text = _BASH.read_text()
+    subs = next(ln for ln in text.splitlines() if "local subs=" in ln)
+    assert set(action.choices) <= set(subs.split('"')[1].split())
+
+
+# -- the state files ---------------------------------------------------------
+
+
+def test_the_state_dir_is_private_without_a_runtime_dir(tmp_path, monkeypatch) -> None:
+    """The old fallback was one /tmp/wtx for every user on the machine."""
+    import stat
+    import tempfile
+
+    from wtx import notify
+
+    monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    monkeypatch.setattr(tempfile, "tempdir", None)  # forget the cached value
+    d = notify.state_dir()
+    assert d == tmp_path / f"wtx-{os.getuid()}"
+    assert stat.S_IMODE(d.stat().st_mode) == 0o700
+
+
+def test_two_sessions_never_share_a_state_file(tmp_path, monkeypatch) -> None:
+    """`/` and `-` both became `-`, so feat/login and feat-login wrote the same
+    file and one session showed the other's state."""
+    from wtx import notify
+
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    a, b = "app/feat/login", "app/feat-login"
+    assert notify.safe_name(a) != notify.safe_name(b)
+    notify.write_state(a, "permission")
+    notify.write_state(b, "idle")
+    assert notify.read_state(a)["state"] == "permission"
+    assert notify.read_state(b)["state"] == "idle"
+    assert set(notify.all_states()) == {a, b}
+
+
+def test_a_state_file_from_an_older_wtx_is_read_and_cleared(tmp_path, monkeypatch) -> None:
+    """After an upgrade, a waiting session must not stay waiting for ever
+    because its file has the old name."""
+    from wtx import notify
+
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    old = notify.state_dir() / "app-feat-login.json"
+    old.write_text(json.dumps({"session": "app/feat/login", "state": "permission"}))
+    assert notify.read_state("app/feat/login")["state"] == "permission"
+    assert notify.read_state("app/feat-login") == {}  # not its file
+    notify.clear_state("app/feat-login")
+    assert old.exists()
+    notify.clear_state("app/feat/login")
+    assert not old.exists()
 
 
 # -- the desktop notification ------------------------------------------------
