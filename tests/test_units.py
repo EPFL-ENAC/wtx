@@ -379,6 +379,21 @@ def test_install_machine_drops_an_old_hook_sitting_next_to_ours(tmp_path) -> Non
     assert text.count("wtx notify stop") == 1
 
 
+def test_install_machine_says_already_there_once_the_hooks_are_in(tmp_path) -> None:
+    """The settings.json line used to say "needed" on every run, even right
+    after `--apply`, so it could never be told apart from a real gap."""
+    from wtx import machine
+
+    change = machine.planned("claude")[-1]
+    change.path = _settings(tmp_path, Stop=[("", "/x/persist.sh")])
+    assert change.needed()
+    before = change.path.read_text()
+    assert change.needed()
+    assert change.path.read_text() == before  # asking writes nothing
+    machine._merge_hooks(change.path, json.loads(change.body)["hooks"])
+    assert not change.needed()
+
+
 def test_install_machine_installs_every_shipped_skill(tmp_path) -> None:
     """A skill that ships with wtx but is never copied is a skill nobody has."""
     from wtx import machine
