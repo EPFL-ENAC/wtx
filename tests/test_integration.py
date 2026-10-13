@@ -1259,6 +1259,32 @@ def test_a_handoff_that_cannot_fork_stays_pending(
     assert orchestrate.record_file(ctx.session).exists()
 
 
+def test_setup_and_teardown_work_without_ss_or_fuser(
+    wtx_repo: Path, fake_bin: Path, monkeypatch, capsys
+) -> None:
+    """Both are missing on a minimal machine. A traceback there stopped setup
+    before the session existed."""
+    from wtx import teardown
+
+    real_which = __import__("shutil").which
+    monkeypatch.setattr(
+        "wtx.ports.which", lambda name: None if name in ("ss", "fuser") else real_which(name)
+    )
+
+    def no_ss(cmd, **kw):
+        raise FileNotFoundError(cmd[0])  # what a missing binary does
+
+    monkeypatch.setattr("wtx.ports.capture", no_ss)
+    path = make_worktree(wtx_repo, "feat/minimal")
+    setup_mod.run_setup(context.load(root=path), start_tmux=False)
+    teardown.run_teardown(context.load(root=path))
+
+    err = capsys.readouterr().err
+    assert "ss not found" in err
+    assert "fuser not found" in err
+    assert not calls_of(fake_bin, "fuser")
+
+
 def test_an_unreadable_handoff_record_is_dropped(tmp_path, fake_bin: Path) -> None:
     """It can never run. Left there, `wtx status` shows a handoff in flight
     for ever."""
