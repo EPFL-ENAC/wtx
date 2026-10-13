@@ -974,6 +974,28 @@ def test_land_rebases_when_the_base_moved_on(
     assert git.worktree_path_for(wtx_repo, "feat/behind") is None
 
 
+def test_land_local_runs_the_checks_before_any_push(
+    wtx_repo: Path, fake_bin: Path, monkeypatch, capsys
+) -> None:
+    """The branch was force-pushed first and checked after, so a branch that
+    failed its checks was already on origin."""
+    from wtx import land as land_mod
+
+    path = make_worktree(wtx_repo, "feat/broken")
+    setup_mod.run_setup(context.load(root=path), start_tmux=False)
+    commit(path, "broken")
+
+    def failing(ctx, where):
+        raise land_mod.LandError("check failed: make test")
+
+    monkeypatch.setattr(land_mod, "_checks", failing)
+    monkeypatch.chdir(wtx_repo)
+    assert run(["land", "feat/broken", "--local"]) == 1
+    assert "check failed" in capsys.readouterr().err
+    remote = git_out(["ls-remote", "--heads", "origin", "feat/broken"], wtx_repo)
+    assert remote == ""
+
+
 def test_land_refuses_a_branch_cut_from_a_newer_protected_branch(
     wtx_repo: Path, fake_bin: Path, monkeypatch, capsys
 ) -> None:

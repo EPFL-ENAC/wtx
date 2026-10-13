@@ -241,9 +241,11 @@ the same data plus the session name, the agent and the model.
    repo has no auto-merge), and waits up to 30 minutes for the merge.
 5. It removes the worktree and deletes the branch, local and remote.
 
-`--local` skips GitHub: it runs the `[checks]` lint and test commands, merges
-with `--no-ff` into the base branch and pushes it. `--skip-checks` skips the
-checks, `--keep-branch` keeps the branch.
+`--local` skips GitHub. It runs the `[checks]` lint and test commands after
+the rebase and before any push, so a branch that fails them never reaches
+origin. Then it pushes the branch, merges it with `--no-ff` into the base
+branch and pushes that. `--skip-checks` skips the checks, `--keep-branch` keeps
+the branch.
 
 ## Machine setup
 
