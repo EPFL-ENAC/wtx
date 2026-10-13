@@ -1259,6 +1259,31 @@ def test_a_handoff_that_cannot_fork_stays_pending(
     assert orchestrate.record_file(ctx.session).exists()
 
 
+def test_an_unreadable_handoff_record_is_dropped(tmp_path, fake_bin: Path) -> None:
+    """It can never run. Left there, `wtx status` shows a handoff in flight
+    for ever."""
+    from wtx import orchestrate
+
+    running = orchestrate.record_file("app/feat/bad").with_suffix(".handoff.running")
+    running.write_text("{not json")
+    assert orchestrate.run(running) == 0
+    assert not running.exists()
+    assert orchestrate.pending("app/feat/bad") == {}
+
+
+def test_teardown_drops_a_handoff_that_never_fired(wtx_repo: Path, fake_bin: Path) -> None:
+    from wtx import orchestrate, teardown
+
+    path = make_worktree(wtx_repo, "feat/torn")
+    ctx = context.load(root=path)
+    orchestrate.write_record(ctx.session, {"session": ctx.session, "conversation": "c"})
+    assert orchestrate.pending(ctx.session)
+
+    teardown.run_teardown(ctx)
+    assert not orchestrate.record_file(ctx.session).exists()
+    assert orchestrate.pending(ctx.session) == {}
+
+
 def test_the_stop_hook_still_fires_a_handoff_left_behind(
     wtx_repo: Path, fake_bin: Path, quiet_notify, no_fork: list
 ) -> None:
