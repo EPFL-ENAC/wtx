@@ -689,6 +689,26 @@ def test_dry_run_writes_no_files_either(wtx_repo: Path, fake_bin: Path, capsys) 
     assert not (wtx_repo / ".git" / "hooks" / "pre-push").exists()
 
 
+def test_wtx_done_inside_its_own_session_shows_the_dirty_refusal(
+    wtx_repo: Path, fake_bin: Path, monkeypatch, capsys
+) -> None:
+    """Inside the session, done hands off to the tmux server. The dirty check
+    ran after that, in a shell nobody sees, so the worktree just stayed."""
+    from wtx import tmux
+
+    path = make_worktree(wtx_repo, "feat/dirty")
+    (path / "notes.txt").write_text("not committed\n")
+    session = context.load(root=path).session
+    monkeypatch.setenv("TMUX", "/tmp/fake,1,0")
+    monkeypatch.setattr(tmux, "out", lambda args, **kw: session)
+    monkeypatch.chdir(path)
+
+    assert run(["done"]) == 1
+    assert "uncommitted changes" in capsys.readouterr().err
+    assert not any(c.startswith("run-shell") for c in calls_of(fake_bin, "tmux"))
+    assert path.is_dir()
+
+
 def test_config_validate_warns_about_an_unknown_key(wtx_repo: Path, monkeypatch, capsys) -> None:
     (wtx_repo / "wtx.toml").write_text(
         (wtx_repo / "wtx.toml").read_text().replace("[repo]\n", "[repo]\nbase_brnach = 'x'\n", 1)

@@ -321,6 +321,14 @@ def cmd_done(args: argparse.Namespace) -> int:
     if target is None:
         raise UserError(f"no worktree for {branch}")
 
+    # Before the handoff below: the tmux server runs the rest with its output
+    # nowhere, so a refusal there is never seen and nothing happens.
+    if not args.force and not git.is_clean(target):
+        raise UserError(
+            f"{target} has uncommitted changes. Commit them, or pass --force to "
+            "discard them and remove the worktree."
+        )
+
     session = context.session_name(cfg.repo.name or git.repo_name(main), branch)
     inside = (
         not args.from_tmux
@@ -342,11 +350,6 @@ def cmd_done(args: argparse.Namespace) -> int:
         )
         return 0
 
-    if not args.force and not git.is_clean(target):
-        raise UserError(
-            f"{target} has uncommitted changes. Commit them, or pass --force to "
-            "discard them and remove the worktree."
-        )
     try:
         wt.remove(main, branch, force=args.force)
     except wt.WtError as exc:
