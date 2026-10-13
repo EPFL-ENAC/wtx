@@ -52,7 +52,9 @@ git rm scripts/wt-lib.sh scripts/wt-setup.sh scripts/wt-teardown.sh \
 Keep `scripts/wt-db.sh` or anything else a `[hooks]` line calls.
 
 If `lefthook.yml` has a `pre-push` job running the old guard, delete that job.
-wtx installs a plain git hook, and lefthook skipping a pre-push job is why.
+The script it runs is gone, and wtx installs its own guard as a plain git hook
+(lefthook once skipped a pre-push job for "no matching files"). The new guard
+works next to lefthook, so the rest of `lefthook.yml` can stay.
 
 Makefile targets become one-liners:
 
@@ -62,11 +64,13 @@ wt-land:  ; wtx land $(BRANCH)
 wt-done:  ; wtx done $(BRANCH)
 ```
 
-Or drop them: `wtgo` and `wtdone` work from any repo.
+Or drop them: `wtx go` and `wtx done` work from any repo.
 
 ## 5. Switch the shell
 
-Replace the source line in `~/.bashrc`:
+`wtx install-machine --apply` does it for you: it comments out the old
+`source .../scripts/wt-go.bash` line in `~/.bashrc` and adds the new one. By
+hand, it is:
 
 ```sh
 # was: source ~/code/<some repo>/scripts/wt-go.bash
@@ -83,7 +87,15 @@ wtx guard
 wtx doctor
 ```
 
-Then the smoke test from `README.md`, from a real terminal.
+Then, from a real terminal (not from an agent), make one worktree and close
+it:
+
+```sh
+wtx go test/wtx --no-attach
+wtx status
+wtx done test/wtx
+git branch -D test/wtx
+```
 
 ## Keeping the tooling out of a repo
 
@@ -97,4 +109,9 @@ wtx.toml
 .wt-logs/
 PROMPT.md
 PROMPT.sent.md
+.claude/settings.local.json
+.claude/agents/Explore.md
+.claude/rules/wtx.md
+.claude/worktrees/
+opencode.json
 ```

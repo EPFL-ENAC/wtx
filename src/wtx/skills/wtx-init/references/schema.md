@@ -1,16 +1,22 @@
 # wtx.toml
 
 One file per repo, tracked in git. Everything that differs between repos lives
-here. Every key has a default, only `[repo]` really matters.
+here. Most keys have a default. The ones marked "required" do not:
+`[[ports.family]]` `name` and `main`, `[[deps.step]]` `run`, `[[panes.pane]]`
+`name`, `[[repos]]` `name` and `path`, and `run` in an `editable_install`.
 
-Check a file with `wtx config validate`.
+Check a file with `wtx config validate`. `wtx go` and `wtx setup` refuse a file
+with problems. The `wt` hooks only warn.
+
+This file has a copy in `src/wtx/skills/wtx-init/references/schema.md`. Keep the
+two identical.
 
 ## Top level
 
 | Key | Default | What |
 | --- | --- | --- |
-| `schema_version` | `1` | Bumped when the shape changes. |
-| `min_wtx_version` | none | Refuse to set up a worktree when the installed wtx is older. |
+| `schema_version` | `1` | Bumped when the shape changes. Any other value is an error. |
+| `min_wtx_version` | none | `wtx go` and `wtx setup` refuse to run when the installed wtx is older. |
 
 ## `[repo]`
 
@@ -18,7 +24,7 @@ Check a file with `wtx config validate`.
 | --- | --- | --- |
 | `name` | from the origin URL | Used in the session name and the port hash. Changing it moves every port. |
 | `lab` | none | Fills `{lab}` in an external repo path. |
-| `base_branch` | `main` | What a worktree is cut from, and what `wtx land` lands into. |
+| `base_branch` | `main` | What a worktree is cut from, and what `wtx land` lands into. Must be in `protected_branches`. |
 | `protected_branches` | `[base_branch]` | Branches a worktree may never push. The one source for the push guard, the agent's deny rules and the shell completion. |
 
 ## `[ports]` and `[[ports.family]]`
@@ -71,7 +77,7 @@ Each `[[deps.step]]`:
 
 | Key | What |
 | --- | --- |
-| `extra` | Static keys written into `.env.worktree`. `UV_NO_SYNC = "1"` is added on its own when a repo does an editable install. |
+| `extra` | Static keys written into `.env.worktree`. Names must be shell-safe (letters, digits, `_`). `UV_NO_SYNC = "1"` is added on its own when a repo does an editable install. |
 | `computed` | Keys a `[hooks]` script writes. wtx never sets them, it carries them over and unsets them in a checkout that has no `.env.worktree`. |
 
 Anything else already in `.env.worktree` is kept as it is, comments included.
@@ -84,7 +90,7 @@ in the order they are listed.
 | Key | Default | What |
 | --- | --- | --- |
 | `name` | required | Pane title. |
-| `role` | `shell` | `agent`, `server` or `shell`. Exactly one `agent`. |
+| `role` | `shell` | `agent`, `server` or `shell`. Exactly one `agent` when panes are listed. |
 | `cwd` | `.` | Relative to the worktree root. |
 | `cmd` | none | What the pane runs. Required for a `server`. |
 | `log` | `false` | Mirror the pane to `.wt-logs/<name>.log`. The agent cannot reach the tmux socket, so this is how it sees a server. Leave it on for every server. |
@@ -100,15 +106,16 @@ the repository, and the file is gitignored.
 | --- | --- | --- |
 | `tool` | `claude` | `claude` or `opencode`. `wtx go --agent` overrides it for one worktree. |
 | `llm` | none | The worker model. `wtx go --llm` overrides it. |
-| `brief_permission_mode` | `plan` | A brief starts in plan mode, so the agent comes back with a plan instead of editing. |
+| `brief_permission_mode` | `plan` | What the agent starts in on a brief (`wtx go --prompt`, `wtx brief`). Plan mode by default, so the agent comes back with a plan instead of editing. |
 | `subagent_model` | `sonnet` | Every subagent runs its own requests. |
-| `effort` | none | `low` to `max`. |
-| `auto_compact_window` | none | Compact at this many tokens. A long session re-sends its whole context every turn, so this is usually the biggest cost. |
+| `effort` | none | `low`, `medium`, `high`, `xhigh`, `max` or `ultracode`. |
+| `auto_compact_window` | `0` (off) | Compact at this many tokens. A long session re-sends its whole context every turn, so this is usually the biggest cost. |
 | `disabled_mcp_servers` | none | Servers a worker never needs. |
 | `explore_agent_model` | none | Writes a project Explore agent on that model. The built-in one inherits the main model. |
 
 `brief_permission_mode` and `build_permission_mode` take the modes the agent
 knows: `default`, `acceptEdits`, `plan`, `auto`, `dontAsk`, `bypassPermissions`.
+`effort`, `plan_effort` and `build_effort` take the levels listed for `effort`.
 
 `[agent.opencode]`: `provider` (prefix for `provider/model`), `small_model`,
 `plan_agent` (default `plan`), `build_agent` (default `build`). With
@@ -130,11 +137,12 @@ With `tool = "opencode"` there is no restart: when you accept the plan the TUI
 itself asks to switch to the build agent, and opencode.json ties a model to
 each agent under `agent`, so the model follows. wtx passes no `-m` then, that
 flag beats the config. The `wtx-effort:` routing does
-not fire there, it is part of the ExitPlanMode handoff, which is Claude's.
+not fire there, it is part of the ExitPlanMode handoff, which is Claude's. The
+effort still reaches a brief: wtx passes it to `opencode run --variant`.
 
 | Key | Default | What |
 | --- | --- | --- |
-| `enabled` | `false` | Turns the whole thing on. |
+| `enabled` | `false` | Turns the whole thing on. `plan_model` and `build_model` must not be empty then. |
 | `plan_model` | `fable` | Writes the plan. The strongest model you have: a plan is cheap and a bad one is not. |
 | `plan_effort` | `low` | How hard it works while planning. Planning is reading and thinking, so low is usually enough. |
 | `build_model` | `opus` | Implements it. |
@@ -153,7 +161,8 @@ plan implements on `build_model`, and a small one gets the same model working
 less hard.
 
 `wtx-effort:` takes any level the agent knows: `low`, `medium`, `high`, `xhigh`,
-`max`. A plan that names none implements at `build_effort`.
+`max` (the config also accepts `ultracode`). A plan that names none implements
+at `build_effort`.
 
 **The implementation continues the planning conversation**, it does not start a
 new one, which is how Claude Code's own `opusplan` switches models. Everything
@@ -183,12 +192,16 @@ subtract, one typo would reopen force pushes.
 | --- | --- |
 | `allow` | Routine commands that skip the prompt. |
 | `ask` | Always prompts, even in auto mode. Never put a bare interpreter here: an agent writes files through heredocs and would prompt on every edit. |
-| `deny` | Never. |
-| `allowed_domains` | Added to the sandbox network allowlist. |
+| `deny` | Never allowed, even in auto mode. |
+| `allowed_domains` | Added to the sandbox network allowlist. Claude Code only. |
+
+You do not need to list the protected branches: the rules that deny a push to
+them are added on their own, from `[repo].protected_branches`.
 
 ## `[checks]`
 
-Run by `wtx land --local`. `lint` and `test`, each a list of shell commands.
+Run by `wtx land --local`, from the worktree, before the merge. `lint` and
+`test`, each a list of shell commands. Both are empty by default.
 
 ## `[[repos]]`
 
@@ -197,11 +210,11 @@ An external directory the agent needs.
 | Key | Default | What |
 | --- | --- | --- |
 | `name` | required | Used by `--with` and in the env keys. |
-| `path` | required | Absolute, `~`-relative, or relative to the main checkout. `{lab}` and `{repo}` are expanded. |
+| `path` | required | Absolute, `~`-relative, or relative to the main checkout. `{lab}` and `{repo}` are expanded. `{lab}` needs `[repo].lab`. |
 | `access` | `read` | `read` or `pair`. |
 | `base_branch` | `main` | What a paired branch is cut from. |
 | `env_prefix` | `WTX_REPO_<NAME>` | Writes `<PREFIX>_PATH` and `<PREFIX>_BRANCH`. |
-| `editable_install` | none | `{ cwd = "...", run = "..." }`, run after the dependency steps. `{path}` is the resolved directory. |
+| `editable_install` | none | `{ cwd = "...", run = "..." }`, run after the dependency steps. `run` is required, `cwd` defaults to `.`. Needs `access = "pair"`. `{path}` is the resolved directory. |
 
 `read`: readable with no prompt, never writable.
 `pair`: the same until someone runs `wtx go <branch> --with <name>=<branch>`,
