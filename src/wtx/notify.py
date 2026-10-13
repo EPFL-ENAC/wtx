@@ -23,6 +23,7 @@ import shlex
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from urllib.parse import quote
@@ -56,9 +57,18 @@ WAITING = ("permission", "idle")
 
 
 def state_dir() -> Path:
-    base = os.environ.get("XDG_RUNTIME_DIR") or "/tmp"  # noqa: S108
-    d = Path(base) / "wtx"
-    d.mkdir(parents=True, exist_ok=True)
+    base = os.environ.get("XDG_RUNTIME_DIR")
+    if base:
+        d = Path(base) / "wtx"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+    # No runtime dir (cron, ssh without a login session). A shared /tmp/wtx let
+    # another user read the states and write handoff records that we then run.
+    d = Path(tempfile.gettempdir()) / f"wtx-{os.getuid()}"
+    d.mkdir(mode=0o700, exist_ok=True)
+    if d.stat().st_uid != os.getuid():
+        raise PermissionError(f"{d} belongs to another user, remove it or set XDG_RUNTIME_DIR")
+    d.chmod(0o700)
     return d
 
 

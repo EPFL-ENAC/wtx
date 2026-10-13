@@ -195,7 +195,8 @@ model follows. The `wtx-effort:` line does nothing there.
 
 `wtx install-machine` adds hooks to Claude Code that call `wtx notify` with the
 state of the session: `start`, `running`, `stop`, `idle` or `permission`. wtx
-keeps one state file per session under `$XDG_RUNTIME_DIR/wtx`.
+keeps one state file per session under `$XDG_RUNTIME_DIR/wtx` (or a private
+`wtx-<uid>` directory in the temp dir when that variable is not set).
 
 Inside tmux:
 

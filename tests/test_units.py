@@ -994,6 +994,21 @@ def test_completion_knows_every_subcommand() -> None:
 # -- the state files ---------------------------------------------------------
 
 
+def test_the_state_dir_is_private_without_a_runtime_dir(tmp_path, monkeypatch) -> None:
+    """The old fallback was one /tmp/wtx for every user on the machine."""
+    import stat
+    import tempfile
+
+    from wtx import notify
+
+    monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    monkeypatch.setattr(tempfile, "tempdir", None)  # forget the cached value
+    d = notify.state_dir()
+    assert d == tmp_path / f"wtx-{os.getuid()}"
+    assert stat.S_IMODE(d.stat().st_mode) == 0o700
+
+
 def test_two_sessions_never_share_a_state_file(tmp_path, monkeypatch) -> None:
     """`/` and `-` both became `-`, so feat/login and feat-login wrote the same
     file and one session showed the other's state."""
