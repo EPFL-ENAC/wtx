@@ -148,6 +148,30 @@ class OpencodeAgent:
         to respawn either. See `[agent.opencode]` in docs/schema.md."""
         return ""
 
+    def review_cmd(self, ctx: RenderContext, *, prompt: str) -> list[str]:
+        """A forked headless turn on the last session. Same `-m` rule as
+        launch_cmd. The fork is saved, so the pane's next `opencode -c` may
+        pick it up: see docs/traps.md."""
+        model = "" if ctx.cfg.agent.orchestration.enabled else self._model(ctx, ctx.model)
+        argv = ["opencode", "run", "-c", "--fork", "--format", "json"]
+        if model:
+            argv += ["-m", model]
+        return [*argv, prompt]
+
+    def review_result(self, stdout: str) -> str:
+        """--format json prints one event per line. The answer is the text
+        parts, in order."""
+        parts = []
+        for line in stdout.splitlines():
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(event, dict) and event.get("type") == "text":
+                part = event.get("part") or {}
+                parts.append(str(part.get("text", "")))
+        return "\n".join(parts) or stdout
+
     def hook_fragment(self) -> dict:
         """opencode signals its state through a plugin, not a settings hook.
         That plugin is the next piece of work."""

@@ -76,6 +76,14 @@ def run(cwd: Path | None = None) -> Report:
     )
     checks.append(
         _binary(
+            "hunk",
+            "curl -fsSL https://hunk.dev/install.sh | sh, for wtx review. "
+            "Without it the review is printed as text",
+            hard=False,
+        )
+    )
+    checks.append(
+        _binary(
             "gdbus",
             "install libglib2.0-bin, without it a clicked notification cannot "
             "bring the terminal to the front",

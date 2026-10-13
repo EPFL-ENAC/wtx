@@ -218,7 +218,8 @@ record is claimed by renaming it, so exactly one wins.
 **A handoff record must not look like a state file.** `wtx tmux-status` and the
 monitor read every `*.json` in the runtime directory and key them by session. A
 record named `<session>.handoff.json` would sit in that list with no state. It
-is `<session>.handoff`.
+is `<session>.handoff`. Same for the review files, `<session>.review` and
+`<session>.review.meta`.
 
 **A plan brief must not change the worktree's model.** The plan phase runs on
 `plan_model` at `plan_effort`, but `.claude/settings.local.json` and a later
@@ -274,6 +275,35 @@ variable as a fallback for a detached head. Same trap as `$WT_MAIN`.
 conversation that wrote the plan, so the implementation still has everything the
 planner read. A resumed session restores its own model and permission mode, so
 `--model` and `--permission-mode` are passed explicitly to override them.
+
+## the review
+
+**The agent cannot write the review file, wtx does.** The sandbox does not let
+the agent write `$XDG_RUNTIME_DIR/wtx`, and a file in the checkout would be one
+more generated file for both ignore lists. So `wtx review` runs the agent
+headless, reads the JSON from its stdout, checks it and writes the sidecar
+itself. hunk refuses the whole file on one bad range, so the check runs before
+the file is written, not after.
+
+**The headless turn is forked and not saved.** `claude -p --continue` alone
+writes into the conversation the agent pane is using. With `--fork-session`
+it gets a new id, but the fork is still saved, and it is now the newest
+conversation of the checkout: the pane's next `claude --continue` would open
+the review turn instead of the real work. `--no-session-persistence` keeps it
+off the disk. opencode has no such flag: `opencode run -c --fork` saves the
+fork, and the pane's next `opencode -c` may pick it up. That is a known limit.
+
+**The headless turn runs the machine hooks.** Its Stop would mark the session
+as waiting on the human, and a plan in it would be handed off. `--settings
+{"disableAllHooks": true}` turns them off, and `wtx notify` and `wtx handoff`
+also return early when `WTX_HEADLESS` is set, in case a hook still fires.
+
+**`--allowedTools` takes several values.** Put last, it eats the prompt as one
+more tool name and the run has no prompt left. A flag with one value
+always follows it in `review_cmd`.
+
+**hunk's `--type all` returns the agent's notes too.** `--notes` must send back
+what the human typed, not the agent's own notes, so it reads `--type user`.
 
 ## landing
 

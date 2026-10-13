@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import subprocess
 import sys
 import time
@@ -238,6 +239,9 @@ def capture(payload: dict, *, cwd: Path | None = None) -> str:
     An empty string means wtx has nothing to say and the agent carries on, the
     answer for every repo that has not turned orchestration on.
     """
+    # A headless run (wtx review) is a side trip. Its plan is nobody's to hand off.
+    if os.environ.get(notify.HEADLESS_ENV):
+        return ""
     where = Path(payload.get("cwd") or cwd or Path.cwd())
     tool_input = payload.get("tool_input") or {}
     trace(

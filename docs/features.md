@@ -225,8 +225,9 @@ session, `q` closes the tile.
 
 `wtx status [branch]` prints one line per worktree: the branch, whether its
 session is up, its state, and its ports. Below it: a handoff that is waiting,
-and the external repos (paired branch and path, or read only). `--json` gives
-the same data plus the session name, the agent and the model.
+the external repos (paired branch and path, or read only), and whether the
+review is up to date. `--json` gives the same data plus the session name, the
+agent and the model.
 
 ## Landing
 
@@ -247,6 +248,38 @@ the rebase and before any push, so a branch that fails them never reaches
 origin. Then it pushes the branch, merges it with `--no-ff` into the base
 branch and pushes that. `--skip-checks` skips the checks, `--keep-branch` keeps
 the branch.
+
+## Review
+
+`wtx review [branch]` shows the branch diff in [hunk](https://hunk.dev), with
+the notes of the agent that wrote it beside the code. It runs from anywhere,
+like `wtx brief`, and refuses a protected branch.
+
+1. It asks the branch agent for its notes. This is one headless turn at the end
+   of the worktree's last conversation, so the agent remembers why it did each
+   thing. The turn is forked and not saved: the agent pane keeps its own
+   conversation. The answer is a short plan, the files in the order to read
+   them, and one note per hunk.
+2. wtx checks the answer and writes it next to the handoff records, as
+   `<session>.review` (the hunk sidecar) and `<session>.review.meta` (the
+   commit it was written for). Nothing is written in the checkout.
+3. It opens `hunk diff origin/<base_branch>...HEAD --agent-context <file>` in a
+   `review` window of the branch session. Outside tmux, hunk runs in the
+   current terminal.
+
+The notes are reused while the branch does not move. `--force` asks again,
+`--base <ref>` reviews another range, `--no-open` only writes the notes. The
+review only covers commits: uncommitted work gets a warning.
+
+In hunk, press `c` on a line to type a note. `wtx review [branch] --notes`
+then sends every note you typed to the agent pane, as one message, and the
+agent fixes them in the same conversation.
+
+Without hunk, wtx prints the agent's notes and then the plain diff.
+
+It runs on demand only, never on a hook: each run costs one agent turn.
+`wtx land` warns (and goes on) when a branch has no review or an old one, and
+`wtx status` shows it.
 
 ## Machine setup
 
@@ -300,6 +333,7 @@ You do not run these yourself. They are listed so nothing is a mystery.
 | `wtx all` | bring every worktree's session back, detached |
 | `wtx done [branch]` | close a worktree, keep the branch |
 | `wtx land [branch]` | rebase, pull request, merge, clean up |
+| `wtx review [branch]` | the agent's notes beside the diff, in hunk. `--notes` sends yours back |
 | `wtx open [family] [branch]` | print and open a dev server URL |
 | `wtx curl [family] [path] [curl flags]` | curl one of this worktree's servers, without knowing its port |
 | `wtx status [branch]` | ports, sessions and pairings |

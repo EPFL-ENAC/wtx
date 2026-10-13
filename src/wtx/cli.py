@@ -21,6 +21,7 @@ from . import (
     notify,
     orchestrate,
     repos,
+    review,
     tmux,
     wt,
 )
@@ -100,6 +101,21 @@ def _require_valid(cfg: config_mod.WtxConfig) -> None:
             f"{config_mod.CONFIG_NAME} has problems, fix them first "
             f"(wtx config validate):\n  - {joined}"
         )
+
+
+def _worktree_for(main: Path, cfg: config_mod.WtxConfig, branch: str) -> Path:
+    """The worktree of a feature branch, for the commands that act on one."""
+    # The main checkout holds a protected branch, so without this a brief
+    # lands in it and an agent starts working there.
+    if branch in cfg.repo.protected_branches:
+        raise UserError(
+            f"{branch} is protected. It stays in the main checkout, "
+            "worktrees are for feature branches."
+        )
+    path = git.worktree_path_for(main, branch)
+    if path is None:
+        raise UserError(f"no worktree for {branch}")
+    return path
 
 
 def _write_prompt(path: Path, prompt: str, cfg: config_mod.WtxConfig) -> None:
@@ -525,6 +541,7 @@ def cmd_status(args: argparse.Namespace) -> int:
                 "agent": values.get("WTX_AGENT", cfg.agent.tool),
                 "llm": values.get("WTX_LLM", cfg.agent.llm),
                 "handoff": orchestrate.pending(session),
+                "review": "" if is_main else review.status(session, info.head),
                 "repos": {
                     spec.name: {
                         "path": values.get(spec.path_key, ""),
@@ -549,12 +566,21 @@ def cmd_status(args: argparse.Namespace) -> int:
                 f"    handoff pending: plan -> {handoff.get('model', '')} "
                 f"at {handoff.get('effort', '')}"
             )
+        if row["review"]:
+            print(f"    review: {REVIEW_WORDS[row['review']]}")
         for name, info in row["repos"].items():
             if info["branch"]:
                 print(f"    {name}: {info['branch']} at {info['path']}")
             elif info["path"]:
                 print(f"    {name}: read only, {info['path']}")
     return 0
+
+
+REVIEW_WORDS = {
+    "none": "none yet, see wtx review",
+    "stale": "older than the last commit",
+    "ok": "up to date",
+}
 
 
 def cmd_setup(args: argparse.Namespace) -> int:
@@ -592,16 +618,7 @@ def cmd_brief(args: argparse.Namespace) -> int:
     main = _main_checkout()
     cfg = _load_cfg(main)
     branch = args.branch or git.current_branch(Path.cwd())
-    # The main checkout holds a protected branch, so without this the brief
-    # lands in it and an agent starts working there.
-    if branch in cfg.repo.protected_branches:
-        raise UserError(
-            f"{branch} is protected. It stays in the main checkout, "
-            "worktrees are for feature branches."
-        )
-    path = git.worktree_path_for(main, branch)
-    if path is None:
-        raise UserError(f"no worktree for {branch}")
+    path = _worktree_for(main, cfg, branch)
     _write_prompt(path, args.prompt, cfg)
     ctx = context.for_worktree(main, path, branch, cfg)
     resolved = repos.resolve_all(ctx)
@@ -611,6 +628,52 @@ def cmd_brief(args: argparse.Namespace) -> int:
     else:
         tmux.send_brief(ctx, agent, tmux.render_ctx(ctx, resolved, phase="plan"))
     say(f"brief sent to {ctx.session}")
+    return 0
+
+
+def cmd_review(args: argparse.Namespace) -> int:
+    """The branch agent's notes beside its diff, in hunk. See review.py."""
+    main = _main_checkout()
+    cfg = _load_cfg(main)
+    branch = args.branch or git.current_branch(Path.cwd())
+    path = _worktree_for(main, cfg, branch)
+    ctx = context.for_worktree(main, path, branch, cfg)
+    try:
+        if args.notes:
+            return _send_review_notes(ctx)
+        rng = review.diff_range(ctx, args.base)
+        if review.is_empty(path, rng):
+            hint = "" if git.is_clean(path) else ", commit the work first"
+            raise UserError(f"nothing to review, {rng} has no changes{hint}")
+        if not git.is_clean(path):
+            warn(f"{path} has uncommitted changes, the review only covers commits")
+        if not args.force and review.status(ctx.session, review.head(path), rng) == "ok":
+            say("the notes are up to date with the branch, --force asks again")
+            data = review.load(ctx.session)
+        else:
+            agent = agents.get(ctx.agent_tool)
+            rctx = tmux.render_ctx(ctx, repos.resolve_all(ctx))
+            data = review.generate(ctx, agent, rctx, rng)
+    except review.ReviewError as exc:
+        raise UserError(str(exc)) from exc
+    if args.no_open:
+        if not is_dry_run():
+            say(f"notes written to {review.sidecar_file(ctx.session)}")
+        return 0
+    if not review.open_in_hunk(ctx, rng):
+        warn("hunk is not installed (https://hunk.dev), here are the notes and the plain diff")
+        review.print_fallback(data, path, rng)
+    return 0
+
+
+def _send_review_notes(ctx: context.Ctx) -> int:
+    notes = review.collect_notes(ctx.root)
+    if not notes:
+        say("no notes typed in hunk yet, press c on a line to add one")
+        return 0
+    if not review.send_notes(ctx, review.format_notes(notes)):
+        raise UserError(f"no agent pane in {ctx.session}, start it with wtx go {ctx.branch}")
+    say(f"sent {len(notes)} notes to the agent of {ctx.session}")
     return 0
 
 
@@ -831,6 +894,20 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("branch", nargs="?", default="")
     s.add_argument("--prompt", required=True)
     s.set_defaults(func=cmd_brief)
+
+    s = sub.add_parser("review", help="the branch agent's notes beside the diff, in hunk")
+    s.add_argument("branch", nargs="?", default="")
+    s.add_argument(
+        "--base", default="", metavar="REF", help="diff from this ref, default origin/<base_branch>"
+    )
+    s.add_argument("--force", action="store_true", help="ask the agent again")
+    s.add_argument("--no-open", action="store_true", help="write the notes, do not open hunk")
+    s.add_argument(
+        "--notes",
+        action="store_true",
+        help="send the notes typed in hunk to the agent pane",
+    )
+    s.set_defaults(func=cmd_review)
 
     s = sub.add_parser("hook", help="called by .wt.toml")
     s.add_argument("event", choices=["post-create", "post-checkout", "pre-remove"])

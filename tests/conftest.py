@@ -67,6 +67,7 @@ esac""",
     "curl": "",
     "claude": "",
     "opencode": "",
+    "hunk": "",
     "notify-send": 'for a in "$@"; do if [ "$a" = "-p" ]; then echo 7; break; fi; done',
     # `gdbus monitor` blocks for real. The stub ends straight away, which is
     # what a notification closed by something other than a click looks like.

@@ -1715,3 +1715,217 @@ def test_both_agent_facing_documents_name_wtx_curl(wtx_repo: Path, fake_bin: Pat
     # someone to paste rather than writing it, so only its text is checked.
     answers = init_mod.scan(wtx_repo)
     assert "wtx curl" in init_mod.claude_section(answers)
+
+
+# -- review -------------------------------------------------------------------
+
+SIDECAR = {
+    "version": 1,
+    "summary": "Add a health endpoint.",
+    "files": [
+        {
+            "path": "backend/health.py",
+            "summary": "the route",
+            "annotations": [{"newRange": [1, 2], "summary": "answers ok", "author": "claude"}],
+        }
+    ],
+}
+
+
+def _branch_with_a_change(repo: Path, branch: str) -> Path:
+    path = make_worktree(repo, branch)
+    (path / "backend" / "health.py").write_text("def health():\n    return 'ok'\n")
+    subprocess.run(["git", "add", "-A"], cwd=path, check=True)
+    subprocess.run(["git", "commit", "-qm", "health"], cwd=path, check=True)
+    return path
+
+
+def _fake(fake_bin: Path, name: str, body: str) -> None:
+    from conftest import FAKE
+
+    f = fake_bin / name
+    f.write_text(FAKE.format(name=name, body=body))
+    f.chmod(0o755)
+
+
+def _claude_answers(fake_bin: Path, answer: str) -> None:
+    """A claude that prints what `-p --output-format json` prints, and notes
+    whether wtx told its hooks to stand down."""
+    out = fake_bin.parent / "claude.out"
+    out.write_text(json.dumps({"result": answer}))
+    _fake(
+        fake_bin, "claude", f'printf "%s" "$WTX_HEADLESS" > "$WTX_TEST_CALLS.headless"\ncat "{out}"'
+    )
+
+
+def test_review_asks_the_agent_once_and_opens_hunk(
+    wtx_repo: Path, fake_bin: Path, monkeypatch
+) -> None:
+    from wtx import review
+
+    path = _branch_with_a_change(wtx_repo, "feat/rev")
+    ctx = context.load(root=path)
+    _claude_answers(fake_bin, f"Here you go:\n{json.dumps(SIDECAR)}")
+    fake_sessions(ctx.session)
+    monkeypatch.chdir(wtx_repo)
+
+    assert run(["review", "feat/rev"]) == 0
+    sidecar = review.sidecar_file(ctx.session)
+    assert json.loads(sidecar.read_text()) == SIDECAR
+    assert review.status(ctx.session, git_out(["rev-parse", "HEAD"], path)) == "ok"
+    assert len(calls_of(fake_bin, "claude")) == 1
+    assert Path(os.environ["WTX_TEST_CALLS"] + ".headless").read_text() == "1"
+    windows = [c for c in calls_of(fake_bin, "tmux") if c.startswith("new-window")]
+    assert len(windows) == 1
+    assert f"-n review -c {ctx.root} " in windows[0]
+    assert windows[0].endswith(f"/hunk diff origin/dev...HEAD --agent-context {sidecar}")
+
+    # The branch did not move: the notes are still right, no new run.
+    assert run(["review", "feat/rev"]) == 0
+    assert len(calls_of(fake_bin, "claude")) == 1
+    assert run(["review", "feat/rev", "--force"]) == 0
+    assert len(calls_of(fake_bin, "claude")) == 2
+
+
+def test_review_without_hunk_prints_the_notes_then_the_diff(
+    wtx_repo: Path, fake_bin: Path, monkeypatch, capfd
+) -> None:
+    from wtx import review
+
+    _branch_with_a_change(wtx_repo, "feat/plain")
+    _claude_answers(fake_bin, json.dumps(SIDECAR))
+    monkeypatch.setattr(review, "which", lambda name: None)
+    monkeypatch.chdir(wtx_repo)
+
+    assert run(["review", "feat/plain"]) == 0
+    out, err = capfd.readouterr()
+    assert "hunk is not installed" in err
+    summary = out.index("Add a health endpoint.")
+    assert summary < out.index("backend/health.py: the route") < out.index("+def health():")
+
+
+def test_an_answer_hunk_cannot_use_writes_nothing(
+    wtx_repo: Path, fake_bin: Path, monkeypatch, capsys
+) -> None:
+    from wtx import review
+
+    path = _branch_with_a_change(wtx_repo, "feat/bad-notes")
+    _claude_answers(fake_bin, "I could not run git diff.")
+    monkeypatch.chdir(wtx_repo)
+
+    assert run(["review", "feat/bad-notes"]) == 1
+    assert "no JSON" in capsys.readouterr().err
+    assert not review.sidecar_file(context.load(root=path).session).exists()
+
+
+def test_review_dry_run_asks_nothing(wtx_repo: Path, fake_bin: Path, monkeypatch, capsys) -> None:
+    from wtx import review
+
+    path = _branch_with_a_change(wtx_repo, "feat/dry")
+    ctx = context.load(root=path)
+    fake_sessions(ctx.session)
+    monkeypatch.chdir(wtx_repo)
+
+    assert run(["--dry-run", "review", "feat/dry"]) == 0
+    assert "would run" in capsys.readouterr().out
+    assert not calls_of(fake_bin, "claude")
+    assert not review.sidecar_file(ctx.session).exists()
+    assert not [c for c in calls_of(fake_bin, "tmux") if c.startswith("new-window")]
+
+
+def test_review_refuses_a_protected_branch_and_an_empty_one(
+    wtx_repo: Path, fake_bin: Path, monkeypatch, capsys
+) -> None:
+    path = make_worktree(wtx_repo, "feat/empty")
+    commit(path)
+    monkeypatch.chdir(wtx_repo)
+
+    assert run(["review", "dev"]) == 1
+    assert "dev is protected" in capsys.readouterr().err
+    assert run(["review", "feat/empty"]) == 1
+    assert "nothing to review" in capsys.readouterr().err
+    assert not calls_of(fake_bin, "claude")
+
+
+def test_review_notes_go_back_to_the_agent_pane(
+    wtx_repo: Path, fake_bin: Path, monkeypatch, capsys
+) -> None:
+    """One bracketed paste then Enter. Typed with send-keys, the first newline
+    would submit the message halfway."""
+    from conftest import BODIES
+
+    make_worktree(wtx_repo, "feat/notes")
+    path = git.worktree_path_for(wtx_repo, "feat/notes")
+    fake_sessions(context.load(root=path).session)
+    comments = {
+        "comments": [
+            {"noteId": "1", "filePath": "backend/a.py", "newRange": [4, 4], "body": "rename this"},
+            {"noteId": "2", "filePath": "frontend/b.ts", "body": "why?"},
+        ]
+    }
+    out = fake_bin.parent / "hunk.out"
+    out.write_text(json.dumps(comments))
+    _fake(fake_bin, "hunk", f'cat "{out}"')
+    keep = '  load-buffer) cp "$4" "$WTX_TEST_CALLS.buffer";;\n  show-options)'
+    _fake(fake_bin, "tmux", BODIES["tmux"].replace("  show-options)", keep))
+    monkeypatch.chdir(wtx_repo)
+
+    assert run(["review", "feat/notes", "--notes"]) == 0
+    assert calls_of(fake_bin, "hunk") == [f"session comment list --repo {path} --type user --json"]
+    tmux_calls = calls_of(fake_bin, "tmux")
+    paste = next(i for i, c in enumerate(tmux_calls) if c.startswith("paste-buffer -p"))
+    assert tmux_calls[paste].endswith("-t %0")
+    assert tmux_calls[paste + 1] == "send-keys -t %0 C-m"
+    text = Path(os.environ["WTX_TEST_CALLS"] + ".buffer").read_text()
+    assert "- backend/a.py:4 rename this" in text
+    assert "- frontend/b.ts why?" in text
+    assert "sent 2 notes" in capsys.readouterr().err
+
+
+def test_land_warns_about_a_missing_or_stale_review(
+    wtx_repo: Path, fake_bin: Path, monkeypatch, capsys
+) -> None:
+    """Warn only (issue #14): the review helps the human, it does not gate."""
+    from wtx import review
+
+    monkeypatch.chdir(wtx_repo)
+    path = make_worktree(wtx_repo, "feat/unread")
+    setup_mod.run_setup(context.load(root=path), start_tmux=False)
+    commit(path)
+    assert run(["land", "feat/unread", "--local", "--skip-checks"]) == 0
+    assert "no review for feat/unread" in capsys.readouterr().err
+
+    path = make_worktree(wtx_repo, "feat/old-review")
+    setup_mod.run_setup(context.load(root=path), start_tmux=False)
+    session = context.load(root=path).session
+    review.save(session, SIDECAR, head=git_out(["rev-parse", "HEAD"], path), rng="r", agent="c")
+    commit(path)
+    assert run(["land", "feat/old-review", "--local", "--skip-checks"]) == 0
+    assert "older than its last commit" in capsys.readouterr().err
+
+
+def test_status_shows_the_review(wtx_repo: Path, fake_bin: Path, monkeypatch, capsys) -> None:
+    from wtx import review
+
+    path = _branch_with_a_change(wtx_repo, "feat/shown")
+    monkeypatch.chdir(wtx_repo)
+    assert run(["status", "--json"]) == 0
+    rows = {r["branch"]: r for r in json.loads(capsys.readouterr().out)}
+    assert rows["dev"]["review"] == ""
+    assert rows["feat/shown"]["review"] == "none"
+
+    session = context.load(root=path).session
+    review.save(session, SIDECAR, head=git_out(["rev-parse", "HEAD"], path), rng="r", agent="c")
+    assert run(["status", "feat/shown"]) == 0
+    assert "review: up to date" in capsys.readouterr().out
+
+
+def test_teardown_drops_the_review(wtx_repo: Path, fake_bin: Path) -> None:
+    from wtx import review, teardown
+
+    path = make_worktree(wtx_repo, "feat/reviewed")
+    ctx = context.load(root=path)
+    review.save(ctx.session, SIDECAR, head="h", rng="r", agent="claude")
+    teardown.run_teardown(ctx)
+    assert not review.sidecar_file(ctx.session).exists()
+    assert not review.meta_file(ctx.session).exists()

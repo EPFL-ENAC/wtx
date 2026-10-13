@@ -7,7 +7,7 @@ that is not pushed.
 
 from __future__ import annotations
 
-from . import envfile, notify, orchestrate, ports, repos, tmux
+from . import envfile, notify, orchestrate, ports, repos, review, tmux
 from .context import Ctx
 from .proc import run_shell, say, warn
 
@@ -23,6 +23,7 @@ def run_teardown(ctx: Ctx) -> None:
     # sits in the desktop list for ever, and clicking it opens nothing.
     notify.settle(ctx.session)
     orchestrate.clear_record(ctx.session)
+    review.clear(ctx.session)
 
     if tmux.available() and tmux.has_session(ctx.session):
         tmux.kill_session(ctx.session)
