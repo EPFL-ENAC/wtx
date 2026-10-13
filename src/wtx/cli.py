@@ -592,6 +592,13 @@ def cmd_brief(args: argparse.Namespace) -> int:
     main = _main_checkout()
     cfg = _load_cfg(main)
     branch = args.branch or git.current_branch(Path.cwd())
+    # The main checkout holds a protected branch, so without this the brief
+    # lands in it and an agent starts working there.
+    if branch in cfg.repo.protected_branches:
+        raise UserError(
+            f"{branch} is protected. It stays in the main checkout, "
+            "worktrees are for feature branches."
+        )
     path = git.worktree_path_for(main, branch)
     if path is None:
         raise UserError(f"no worktree for {branch}")

@@ -974,6 +974,17 @@ def test_land_rebases_when_the_base_moved_on(
     assert git.worktree_path_for(wtx_repo, "feat/behind") is None
 
 
+def test_brief_refuses_a_protected_branch(
+    wtx_repo: Path, fake_bin: Path, monkeypatch, capsys
+) -> None:
+    """dev lives in the main checkout. A brief there started an agent on it."""
+    monkeypatch.chdir(wtx_repo)
+    assert run(["brief", "dev", "--prompt", "Add a health endpoint."]) == 1
+    assert "dev is protected" in capsys.readouterr().err
+    assert not (wtx_repo / "PROMPT.md").exists()
+    assert not calls_of(fake_bin, "tmux")
+
+
 def test_land_local_runs_the_checks_before_any_push(
     wtx_repo: Path, fake_bin: Path, monkeypatch, capsys
 ) -> None:
