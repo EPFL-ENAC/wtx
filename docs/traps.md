@@ -59,9 +59,23 @@ already set, install removes every `pre-push.*` that holds the guard, and
 ## the agent sandbox
 
 **It cannot reach loopback.** Even with localhost in the allowed domains.
-`sandbox.network.allowLocalBinding` is about binding a port on macOS, not about
-reaching one, so there is nothing to switch on. `curl` and `docker` are excluded
-from the sandbox and governed by the ask and allow rules instead.
+`curl` and `docker` are excluded from the sandbox and governed by the ask and
+allow rules instead.
+
+**It could not bind a port either, so test suites failed.** Go's httptest, and
+any test that serves on `127.0.0.1:0`, got "bind: operation not permitted" on
+macOS, so the agent could not run the repo's own checks. The baseline sets
+`sandbox.network.allowLocalBinding`. A process may listen on a local port; the
+agent still cannot reach another worktree's servers.
+
+**A signed commit needs the signing agent.** The sandbox refuses every unix
+socket it is not told about, so with `commit.gpgsign` on, `git commit` failed
+with "can't connect to the gpg-agent". Setup reads the main checkout's git
+config and allows the one socket git signs through: gpg-agent's
+(`gpgconf --list-dirs agent-socket`) for openpgp and x509, `$SSH_AUTH_SOCK` for
+ssh. macOS matches the real path and `/var` is a link to `/private/var`, so both
+spellings are listed. Checking a gpg signature still fails in the sandbox (gpg
+opens `~/.gnupg/trustdb.gpg`), and nothing needs it to.
 
 **An ask rule beats an allow rule, so the agent could not POST to its own
 backend.** `Bash(curl *-X*)` is in `ask` to catch a write to the internet, and

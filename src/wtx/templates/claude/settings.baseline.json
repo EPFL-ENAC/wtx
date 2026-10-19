@@ -88,6 +88,7 @@
       "wtx curl *"
     ],
     "network": {
+      "allowLocalBinding": true,
       "allowedDomains": [
         "github.com",
         "api.github.com",

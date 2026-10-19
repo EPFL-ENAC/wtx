@@ -840,6 +840,51 @@ def test_wtx_curl_runs_outside_the_sandbox() -> None:
     assert "wtx curl *" in settings["sandbox"]["excludedCommands"]
 
 
+def test_the_sandbox_lets_tests_bind_a_local_port() -> None:
+    """Go's httptest and every test that serves on 127.0.0.1:0 got "bind:
+    operation not permitted" on macOS, so the agent could not run the checks."""
+    settings = ClaudeAgent().build_settings(_rctx(_served()))
+    assert settings["sandbox"]["network"]["allowLocalBinding"] is True
+
+
+def _git_config(repo: Path, values: dict[str, str]) -> None:
+    """Every key set in the repo itself: the developer's own ~/.gitconfig
+    must not decide what a test sees."""
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    for key, value in values.items():
+        subprocess.run(["git", "-C", str(repo), "config", key, value], check=True)
+
+
+def _sockets(main: Path) -> list[str] | None:
+    ctx = replace(_rctx(_served()), main=main)
+    return ClaudeAgent().build_settings(ctx)["sandbox"]["network"].get("allowUnixSockets")
+
+
+def test_a_repo_signing_with_ssh_reaches_the_ssh_agent(tmp_path, monkeypatch) -> None:
+    """The sandbox refuses unix sockets it is not told about, so a repo that
+    signs its commits could not commit from the agent at all."""
+    _git_config(tmp_path, {"commit.gpgsign": "true", "gpg.format": "ssh"})
+    monkeypatch.setenv("SSH_AUTH_SOCK", str(tmp_path / "agent.sock"))
+    assert str(tmp_path / "agent.sock") in _sockets(tmp_path)
+
+
+def test_a_repo_signing_with_gpg_reaches_the_gpg_agent(tmp_path, monkeypatch) -> None:
+    repo, bindir = tmp_path / "repo", tmp_path / "bin"
+    _git_config(repo, {"commit.gpgsign": "true", "gpg.format": "openpgp"})
+    bindir.mkdir()
+    gpgconf = bindir / "gpgconf"
+    gpgconf.write_text("#!/bin/sh\necho /run/user/1000/gnupg/S.gpg-agent\n")
+    gpgconf.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
+    assert _sockets(repo) == ["/run/user/1000/gnupg/S.gpg-agent"]
+
+
+def test_a_repo_that_does_not_sign_opens_no_socket(tmp_path, monkeypatch) -> None:
+    _git_config(tmp_path, {"commit.gpgsign": "false", "gpg.format": "ssh"})
+    monkeypatch.setenv("SSH_AUTH_SOCK", str(tmp_path / "agent.sock"))
+    assert _sockets(tmp_path) is None
+
+
 def test_the_worktree_note_names_the_ports_and_the_logs(tmp_path) -> None:
     """The agent cannot work either out: the ports are picked per worktree and
     the servers run in panes it cannot reach."""

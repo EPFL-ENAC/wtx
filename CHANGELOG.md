@@ -36,6 +36,13 @@ Fixed:
   the guard to `pre-push.old` and lefthook ran it again from there (one push
   left 33,000 processes). The hook now stops on re-entry, `wtx setup` removes
   stale guard copies, and `wtx doctor` warns about them.
+- An agent could not make a signed commit: the sandbox refused the signing
+  agent's socket ("can't connect to the gpg-agent"). When the main checkout has
+  `commit.gpgsign` on, setup now allows that one socket: gpg-agent's for
+  openpgp and x509, `$SSH_AUTH_SOCK` for ssh.
+- An agent could not run a test suite that starts a server: the macOS sandbox
+  refused to bind a local port. The baseline now sets
+  `sandbox.network.allowLocalBinding`.
 
 Review fixes:
 
