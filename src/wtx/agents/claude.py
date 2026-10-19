@@ -11,10 +11,12 @@ permissions the agent working on it runs under.
 from __future__ import annotations
 
 import json
+import os
 import shlex
 from importlib import resources
 from pathlib import Path
 
+from ..proc import capture, which
 from .base import PROMPT_FILE, PROMPT_SENT, RenderContext, write_file
 
 SETTINGS_PATH = ".claude/settings.local.json"
@@ -136,6 +138,29 @@ def _dedup(items: list[str]) -> list[str]:
     return out
 
 
+def signing_sockets(main: Path) -> list[str]:
+    """The agent socket git signs commits through, when this repo signs them.
+
+    The sandbox refuses every unix socket it is not told about, so a signed
+    commit failed with "can't connect to the gpg-agent". Making a signature
+    needs the agent and nothing else: checking one opens ~/.gnupg/trustdb.gpg,
+    which stays closed, and wtx never checks. macOS matches the real path and
+    /var is a link to /private/var, so both spellings are listed.
+    """
+    if not main.is_dir():
+        return []
+    if capture(["git", "config", "--type=bool", "--get", "commit.gpgsign"], cwd=main) != "true":
+        return []
+    fmt = capture(["git", "config", "--get", "gpg.format"], cwd=main) or "openpgp"
+    if fmt == "ssh":
+        sock = os.environ.get("SSH_AUTH_SOCK", "")
+    elif which("gpgconf"):
+        sock = capture(["gpgconf", "--list-dirs", "agent-socket"])
+    else:
+        sock = ""
+    return _dedup([sock, os.path.realpath(sock)]) if sock else []
+
+
 def protected_branch_rules(branches: tuple[str, ...]) -> list[str]:
     """Deny pushing to a protected branch, in the spellings git accepts.
 
@@ -171,6 +196,10 @@ class ClaudeAgent:
             data["sandbox"]["network"]["allowedDomains"] = _dedup(
                 list(domains) + list(cfg.permissions.allowed_domains)
             )
+
+        sockets = signing_sockets(ctx.main)
+        if sockets:
+            data["sandbox"]["network"]["allowUnixSockets"] = sockets
 
         extra_dirs: list[str] = []
         deny_write: list[str] = []
