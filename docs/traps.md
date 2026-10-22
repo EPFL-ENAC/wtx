@@ -296,6 +296,21 @@ conversation that wrote the plan, so the implementation still has everything the
 planner read. A resumed session restores its own model and permission mode, so
 `--model` and `--permission-mode` are passed explicitly to override them.
 
+**A plan approved from outside the pane never fires the hook.** git-board's
+"Approve the plan" button is the alternative to accepting in the pane, so the
+ExitPlanMode hook never runs and there is no handoff record and no
+conversation id. `wtx brief` used to restart the agent on a new conversation
+in plan mode, so the planner's reading was lost and the person accepted the
+plan a second time. `wtx brief --build` resumes the agent's own conversation
+instead, by the id its hooks pass to `wtx notify`. notify keeps that id
+beside the state file, and settle leaves it alone: an agent at work has no
+state and still has a conversation. Not `claude --continue`, unless no id is
+known: that takes the checkout's newest conversation, and a memory plugin's
+`claude -p` side session in the same directory can be newer than the agent.
+And nothing after `||`: a resume that fails (a crash, the person quit) would
+start a second conversation on the same brief. The same flag carries a note
+to an implementer already at work, as the next message of its conversation.
+
 ## the review
 
 **The agent cannot write the review file, wtx does.** The sandbox does not let

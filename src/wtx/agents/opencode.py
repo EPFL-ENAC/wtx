@@ -134,9 +134,13 @@ class OpencodeAgent:
             oc = ctx.cfg.agent.opencode
             agent = oc.build_agent if ctx.phase == "build" else oc.plan_agent
             agent_flag = f" --agent {agent}" if agent else ""
+            # A build brief carries on the session that holds the plan. No hook
+            # tells wtx an opencode session id, so `-c`, the last one. Nothing
+            # after `||`: a failed resume must not send the brief a second time.
+            verb = "run -c" if ctx.phase == "build" else "run"
             return (
                 f"mv {PROMPT_FILE} {PROMPT_SENT} && "
-                f'opencode run{flags}{agent_flag}{variant} "$(cat {PROMPT_SENT})"; '
+                f'opencode {verb}{flags}{agent_flag}{variant} "$(cat {PROMPT_SENT})"; '
                 f"opencode{flags} -c"
             )
         return f"opencode{flags} -c || opencode{flags}"

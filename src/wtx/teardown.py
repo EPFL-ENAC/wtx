@@ -22,6 +22,7 @@ def run_teardown(ctx: Ctx) -> None:
     # Before the session goes: a banner for a worktree that no longer exists
     # sits in the desktop list for ever, and clicking it opens nothing.
     notify.settle(ctx.session)
+    notify.forget_conversation(ctx.session)
     orchestrate.clear_record(ctx.session)
     review.clear(ctx.session)
 

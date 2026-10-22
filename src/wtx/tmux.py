@@ -189,6 +189,8 @@ def render_ctx(
     effort: str = "",
 ) -> RenderContext:
     """What a backend needs to write settings and start, from a live context."""
+    from . import notify  # notify imports tmux
+
     return RenderContext(
         root=ctx.root,
         main=ctx.main,
@@ -201,6 +203,7 @@ def render_ctx(
         plan_model=ctx.plan_model,
         plan_effort=ctx.plan_effort,
         effort_override=effort,
+        conversation=notify.conversation(ctx.session) if phase == "build" else "",
     )
 
 
@@ -294,8 +297,14 @@ def ensure_session(
     *,
     attach_after: bool = True,
     brief: bool = False,
+    phase: str = "plan",
 ) -> None:
-    """Create the session if it is not there, then optionally attach."""
+    """Create the session if it is not there, then optionally attach.
+
+    `brief` says whether the agent pane starts on PROMPT.md, `phase` which
+    side of the plan/build handoff that brief is on. A pane with no brief has
+    no phase: it is a plain session.
+    """
     from .proc import which
 
     if which("tmux") is None:
@@ -311,7 +320,7 @@ def ensure_session(
 
     scrub_environment(ctx.cfg.owned_env_keys)
     server_options()
-    rctx = render_ctx(ctx, resolved, phase="plan" if brief else "")
+    rctx = render_ctx(ctx, resolved, phase=phase if brief else "")
 
     if has_session(ctx.session):
         if brief and (ctx.root / PROMPT_FILE).is_file():

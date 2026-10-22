@@ -157,7 +157,15 @@ it to `PROMPT.sent.md` and starts on it, in `brief_permission_mode` (`plan` by
 default). So the agent comes back with a plan, not with edits.
 
 `wtx brief [branch] --prompt <file or text>` sends a brief to a worktree that
-already exists.
+already exists. It restarts the agent pane on a new conversation, in plan mode.
+
+`wtx brief [branch] --prompt ... --build` is for a plan approved from outside
+the pane (git-board's "Approve the plan" button), or a note to an implementer
+already at work. The agent's own conversation goes on with the brief as its
+next message (`claude -r <id>`, the id its hooks gave `wtx notify`; `claude
+--continue` when no id is known; opencode `run -c`), on `build_model`, at
+`build_effort`, in `build_permission_mode`, and the brief carries no
+`wtx-effort:` instruction.
 
 In Claude Code, the `/wtx-create` skill writes the brief with you and runs
 `wtx go` for you.
@@ -350,7 +358,7 @@ You do not run these yourself. They are listed so nothing is a mystery.
 | `wtx setup` | make a worktree runnable, again |
 | `wtx teardown` | kill the session and free the ports |
 | `wtx tmux` | create or attach this checkout's session |
-| `wtx brief [branch] --prompt ...` | send a prompt to a worktree's agent pane |
+| `wtx brief [branch] --prompt ... [--build]` | send a prompt to a worktree's agent pane. `--build`: continue the conversation, in build mode |
 | `wtx hook <event>` | called by `.wt.toml` |
 | `wtx notify <state>` | called by the agent's hooks |
 | `wtx handoff` | called by the agent's `ExitPlanMode` hook |
