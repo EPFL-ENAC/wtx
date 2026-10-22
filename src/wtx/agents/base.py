@@ -59,6 +59,9 @@ class RenderContext:
     plan_effort: str = ""
     # The effort the planner asked for, on a build launch.
     effort_override: str = ""
+    # The agent's own conversation id, when one of its hooks told wtx. A build
+    # brief resumes that one. See notify.remember_conversation.
+    conversation: str = ""
 
     @property
     def read_repos(self) -> list[Resolved]:
@@ -72,13 +75,16 @@ class RenderContext:
     def model(self) -> str:
         """The model this launch runs on.
 
-        A plan brief runs on the planning model whatever the worktree's own
-        model is: that is the point of the handoff. Everything else, the
-        settings file included, keeps the worktree's model.
+        A plan brief runs on the planning model and a build brief on the
+        build model, whatever the worktree's own model is: that is the point
+        of the handoff. Everything else, the settings file included, keeps the
+        worktree's model.
         """
         orch = self.cfg.agent.orchestration
         if self.phase == "plan" and orch.enabled and self.plan_model:
             return self.plan_model
+        if self.phase == "build" and orch.enabled and orch.build_model:
+            return orch.build_model
         return self.llm or self.cfg.agent.llm
 
     @property
@@ -102,8 +108,8 @@ class RenderContext:
         orch = self.cfg.agent.orchestration
         if self.phase == "plan" and orch.enabled:
             return self.plan_effort or self.cfg.agent.effort
-        if self.phase == "build" and orch.enabled and self.effort_override:
-            return self.effort_override
+        if self.phase == "build" and orch.enabled:
+            return self.effort_override or orch.build_effort
         return self.cfg.agent.effort
 
 

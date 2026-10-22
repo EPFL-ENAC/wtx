@@ -154,6 +154,37 @@ def write_state(session: str, state: str, message: str = "") -> None:
         state_file(session).write_text(json.dumps(payload))
 
 
+def conversation_file(session: str) -> Path:
+    """Beside the state file, but not *.json: the monitor reads those."""
+    return state_dir() / f"{safe_name(session)}.conversation"
+
+
+def remember_conversation(session: str, conversation: str) -> None:
+    """The agent's own conversation id, from its latest hook.
+
+    `wtx brief --build` resumes exactly that one with `claude -r`. The
+    alternative, `claude --continue`, takes the checkout's newest conversation,
+    and that is not always the agent's: a memory plugin runs `claude -p` side
+    sessions in the same directory, and one that ran after the agent's last
+    turn would win. Settle never clears this: an agent at work has no state
+    and still has a conversation. Teardown does.
+    """
+    with contextlib.suppress(OSError):
+        conversation_file(session).write_text(conversation)
+
+
+def conversation(session: str) -> str:
+    try:
+        return conversation_file(session).read_text().strip()
+    except OSError:
+        return ""
+
+
+def forget_conversation(session: str) -> None:
+    with contextlib.suppress(OSError):
+        conversation_file(session).unlink(missing_ok=True)
+
+
 def clear_state(session: str) -> None:
     with contextlib.suppress(OSError):
         state_file(session).unlink(missing_ok=True)
@@ -253,6 +284,9 @@ def handle(state: str, *, cwd: Path | None = None) -> int:
     where = Path(payload.get("cwd") or cwd or Path.cwd())
     session = session_for(where)
     message = str(payload.get("message", ""))
+    conversation_id = str(payload.get("session_id", ""))
+    if session and conversation_id:
+        remember_conversation(session, conversation_id)
 
     if state in ("start", "running"):
         if session:

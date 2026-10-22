@@ -1274,6 +1274,42 @@ def test_a_briefed_session_starts_on_the_planning_model(
     assert any("--model fable --permission-mode plan" in c for c in sent)
 
 
+def test_a_build_brief_continues_on_the_build_model(
+    wtx_repo: Path, fake_bin: Path, monkeypatch
+) -> None:
+    """Approve from git-board replaces accepting in the pane. The agent goes
+    on with the conversation that holds the plan, on the build model, in build
+    mode, and nobody is asked to accept a plan twice."""
+    from wtx import notify, orchestrate
+
+    _enable_orchestration(wtx_repo, plan_model="fable", build_model="opus", build_effort="xhigh")
+    path = make_worktree(wtx_repo, "feat/approve")
+    setup_mod.run_setup(context.load(root=path), start_tmux=True)
+
+    monkeypatch.chdir(wtx_repo)
+    brief = ["brief", "feat/approve", "--prompt", "The plan is approved. Go on.", "--build"]
+    run(brief)
+    sent = [c for c in calls_of(fake_bin, "tmux") if "send-keys" in c]
+    flags = '--model opus --permission-mode auto --effort xhigh "$(cat PROMPT.sent.md)"'
+    assert any(f"claude --continue {flags}" in c and "||" not in c for c in sent)
+    assert not any("--permission-mode plan" in c for c in sent)
+    text = (path / "PROMPT.md").read_text()
+    assert "The plan is approved." in text
+    assert orchestrate.EFFORT_MARKER not in text
+
+    # Once a hook has named the agent's conversation, resume that one and not
+    # the checkout's newest: a memory plugin's `claude -p` side session may be
+    # newer than the agent.
+    monkeypatch.setattr(
+        notify, "payload_from_stdin", lambda: {"cwd": str(path), "session_id": "conv-7"}
+    )
+    monkeypatch.setattr(notify, "_spawn_desktop", lambda *a, **k: None)
+    notify.handle("permission", cwd=path)
+    run(brief)
+    sent = [c for c in calls_of(fake_bin, "tmux") if "send-keys" in c]
+    assert any(f"claude -r conv-7 {flags}" in c and "||" not in c for c in sent)
+
+
 def test_a_handoff_that_cannot_fork_stays_pending(
     wtx_repo: Path, fake_bin: Path, monkeypatch
 ) -> None:

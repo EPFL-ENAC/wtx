@@ -590,13 +590,28 @@ def test_the_settings_effort_is_the_one_the_pane_runs_at() -> None:
 
 
 def test_a_plan_brief_runs_on_the_planning_model_the_settings_do_not() -> None:
-    """The worktree keeps its own model. Only the plan phase is redirected, or
-    a later `claude --continue` would come back on the planner."""
-    ctx = _rctx(_orchestrated(plan_model="fable"))
+    """The worktree keeps its own model. Only the two phases are redirected,
+    or a later `claude --continue` would come back on the planner."""
+    ctx = _rctx(_orchestrated(plan_model="fable", build_model="sonnet", build_effort="xhigh"))
     assert ctx.model == "opus"
     assert replace(ctx, phase="plan").model == "fable"
-    assert replace(ctx, phase="build", llm="sonnet").model == "sonnet"
+    build = replace(ctx, phase="build")
+    assert build.model == "sonnet"
+    assert build.effort == "xhigh"
+    assert replace(build, effort_override="low").effort == "low"
     assert ClaudeAgent().build_settings(ctx)["model"] == "opus"
+
+
+def test_a_build_brief_resumes_the_agents_own_conversation() -> None:
+    """`--continue` takes the checkout's newest conversation, and a memory
+    plugin's `claude -p` side session may be that. A known id wins. Nothing
+    follows `||`: a failed resume must not send the brief a second time."""
+    build = replace(_rctx(_orchestrated(build_model="sonnet")), phase="build")
+    blind = ClaudeAgent().launch_cmd(build, brief=True)
+    assert "claude --continue --model sonnet" in blind and "||" not in blind
+    known = ClaudeAgent().launch_cmd(replace(build, conversation="c-1"), brief=True)
+    assert "claude -r c-1 --model sonnet" in known and "||" not in known
+    assert known.endswith('"$(cat PROMPT.sent.md)"')
 
 
 def test_a_build_starts_in_auto_mode_by_default() -> None:
@@ -703,6 +718,18 @@ def test_opencode_briefs_run_at_the_effort_the_phase_asks_for() -> None:
     build = replace(_rctx(cfg), phase="build", effort_override="max")
     assert " --variant high" in agent.launch_cmd(plan, brief=True)
     assert " --variant max" in agent.launch_cmd(build, brief=True)
+
+
+def test_an_opencode_build_brief_continues_the_last_session() -> None:
+    """The session that holds the plan goes on. Nothing after `||`: a failed
+    resume must not send the brief a second time."""
+    from wtx.agents.opencode import OpencodeAgent
+
+    agent = OpencodeAgent()
+    plan = agent.launch_cmd(replace(_rctx(_oc_orchestrated()), phase="plan"), brief=True)
+    build = agent.launch_cmd(replace(_rctx(_oc_orchestrated()), phase="build"), brief=True)
+    assert "opencode run --agent plan" in plan and "run -c" not in plan
+    assert "opencode run -c --agent build" in build and "||" not in build
 
 
 def test_every_generated_file_is_in_both_ignore_lists() -> None:
@@ -1408,6 +1435,26 @@ def test_hunk_notes_become_one_message() -> None:
         "- b.py why two calls?",
         "  One is enough.",
     ]
+
+
+def test_a_hook_leaves_the_agents_conversation_behind(tmp_path, monkeypatch) -> None:
+    """A build brief resumes it. Settle must not clear it: an agent at work
+    has no state and still has a conversation. Teardown does."""
+    from wtx import notify
+
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    monkeypatch.setattr(notify, "session_for", lambda where: "app/feat/x")
+    monkeypatch.setattr(notify, "_spawn_desktop", lambda *a, **k: None)
+    monkeypatch.setattr(notify.tmux, "available", lambda: False)
+    payload = {"cwd": str(tmp_path), "session_id": "conv-3"}
+    monkeypatch.setattr(notify, "payload_from_stdin", lambda: payload)
+    assert notify.handle("permission", cwd=tmp_path) == 0
+    assert notify.conversation("app/feat/x") == "conv-3"
+    notify.settle("app/feat/x")
+    assert notify.read_state("app/feat/x") == {}
+    assert notify.conversation("app/feat/x") == "conv-3"
+    notify.forget_conversation("app/feat/x")
+    assert notify.conversation("app/feat/x") == ""
 
 
 def test_a_headless_run_leaves_the_session_state_alone(tmp_path, monkeypatch) -> None:

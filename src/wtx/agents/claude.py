@@ -273,11 +273,21 @@ class ClaudeAgent:
         conversation instead of firing the same brief twice. Without one, resume
         the checkout's last conversation; a fresh worktree has none and claude
         exits nonzero, so a new conversation starts.
+
+        A build brief is a plan approved from outside the pane (git-board), or
+        a note to an implementer already at work. Either way the conversation
+        that holds the plan goes on, with the brief as its next message: the
+        agent's own, when a hook told wtx its id, else the checkout's newest.
+        No `|| claude ...` after it: a resume that fails (the agent crashed,
+        the person quit) would start a second conversation on the same brief.
+        The branch is decided here, before anything runs.
         """
         if brief:
-            return (
-                f'mv {PROMPT_FILE} {PROMPT_SENT} && claude{self._flags(ctx)} "$(cat {PROMPT_SENT})"'
-            )
+            flags = self._flags(ctx)
+            if ctx.phase == "build":
+                resume = f"-r {shlex.quote(ctx.conversation)}" if ctx.conversation else "--continue"
+                return f'mv {PROMPT_FILE} {PROMPT_SENT} && claude {resume}{flags} "$(cat {PROMPT_SENT})"'
+            return f'mv {PROMPT_FILE} {PROMPT_SENT} && claude{flags} "$(cat {PROMPT_SENT})"'
         flags = f" --model {ctx.model}" if ctx.model else ""
         return f"claude{flags} --continue || claude{flags}"
 

@@ -118,16 +118,19 @@ def _worktree_for(main: Path, cfg: config_mod.WtxConfig, branch: str) -> Path:
     return path
 
 
-def _write_prompt(path: Path, prompt: str, cfg: config_mod.WtxConfig) -> None:
+def _write_prompt(
+    path: Path, prompt: str, cfg: config_mod.WtxConfig, *, phase: str = "plan"
+) -> None:
     """A brief is a file at the checkout root. The agent pane starts on it.
 
     With orchestration on, the planner is also told to mark the effort the
-    implementation needs, so wtx knows how hard to start it.
+    implementation needs, so wtx knows how hard to start it. A build brief
+    (the plan is approved) gets no such line: there is no plan to end.
     """
     candidate = Path(prompt).expanduser()
     text = candidate.read_text() if candidate.is_file() else prompt
     text = text.rstrip() + "\n"
-    if cfg.agent.orchestration.enabled:
+    if cfg.agent.orchestration.enabled and phase == "plan":
         text += orchestrate.PLAN_INSTRUCTION
     (path / PROMPT_FILE).write_text(text)
 
@@ -619,14 +622,17 @@ def cmd_brief(args: argparse.Namespace) -> int:
     cfg = _load_cfg(main)
     branch = args.branch or git.current_branch(Path.cwd())
     path = _worktree_for(main, cfg, branch)
-    _write_prompt(path, args.prompt, cfg)
+    # --build: the plan is approved, from outside the pane. The agent carries
+    # on its conversation on the build model, in build mode. See orchestrate.py.
+    phase = "build" if args.build else "plan"
+    _write_prompt(path, args.prompt, cfg, phase=phase)
     ctx = context.for_worktree(main, path, branch, cfg)
     resolved = repos.resolve_all(ctx)
     agent = agents.get(ctx.agent_tool)
     if not tmux.has_session(ctx.session):
-        tmux.ensure_session(ctx, agent, resolved, attach_after=False, brief=True)
+        tmux.ensure_session(ctx, agent, resolved, attach_after=False, brief=True, phase=phase)
     else:
-        tmux.send_brief(ctx, agent, tmux.render_ctx(ctx, resolved, phase="plan"))
+        tmux.send_brief(ctx, agent, tmux.render_ctx(ctx, resolved, phase=phase))
     say(f"brief sent to {ctx.session}")
     return 0
 
@@ -911,6 +917,12 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("brief", help="send a prompt to a worktree's agent pane")
     s.add_argument("branch", nargs="?", default="")
     s.add_argument("--prompt", required=True)
+    s.add_argument(
+        "--build",
+        action="store_true",
+        help="the plan is approved: continue the agent's conversation on "
+        "build_model, in build_permission_mode, with no plan instruction",
+    )
     s.set_defaults(func=cmd_brief)
 
     s = sub.add_parser("review", help="the branch agent's notes beside the diff, in hunk")
