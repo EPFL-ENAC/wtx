@@ -131,7 +131,7 @@ def server_options() -> None:
     snippet before sh does, so it uses no dollar signs and no double quotes.
     """
     cmd(["set-option", "-g", "detach-on-destroy", "off"])
-    resolve = "wtx done --path '#{pane_current_path}' --from-tmux"
+    resolve = "wtx done --path '#{pane_current_path}' --session '#{session_name}' --from-tmux"
     close = f'run-shell -b "{resolve}"'
     discard = (
         "confirm-before -p 'discard uncommitted changes and remove the worktree? (y/n)' "
