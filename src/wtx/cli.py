@@ -324,22 +324,121 @@ def _go_all(main: Path, cfg: config_mod.WtxConfig) -> int:
 
 
 def cmd_done(args: argparse.Namespace) -> int:
+    if args.path:
+        return _done_path(args)
     main = _main_checkout()
     cfg = _load_cfg(main)
-
-    if args.path:
-        target = Path(args.path).resolve()
-        branch = git.current_branch(target)
-    else:
-        branch = args.branch or git.current_branch(Path.cwd())
-        target = git.worktree_path_for(main, branch)
+    repo = cfg.repo.name or git.repo_name(main)
+    branch = args.branch or git.current_branch(Path.cwd())
     if not branch:
         raise UserError("no branch given and none could be worked out from here")
     if branch in cfg.repo.protected_branches:
         raise UserError(f"{branch} is protected, there is no worktree to close")
+    target = git.worktree_path_for(main, branch)
     if target is None:
+        session = context.session_name(repo, branch)
+        if tmux.available() and tmux.has_session(session):
+            return _close_gone(main, session, f"the worktree of {branch}")
         raise UserError(f"no worktree for {branch}")
+    return _done(args, main, repo, branch, target)
 
+
+# tmux adds this to #{pane_current_path} when the pane's folder was deleted.
+_DELETED = " (deleted)"
+
+
+def _done_path(args: argparse.Namespace) -> int:
+    """`wtx done --path`, what the tmux menu runs from the pane's folder.
+
+    The folder can be gone, or be any folder the pane went to. So the branch
+    comes from `git worktree list` (by session name first, then by path),
+    never from `git rev-parse` in the folder: a folder that is not a worktree
+    any more, under `.claude/worktrees/` of the main checkout, reads as the
+    main checkout and wtx then said "dev is protected".
+    """
+    target = Path(args.path.removesuffix(_DELETED)).resolve()
+    session = args.session
+    main = _main_near(target)
+    if main is None:
+        # The tmux server runs this with its output nowhere. If the folder is
+        # gone, there is nothing else to clean up than the session.
+        if session and not target.exists():
+            teardown_mod.close_session(session)
+            return 0
+        raise UserError(f"{target} is not inside a git repository")
+    cfg = _load_cfg(main)
+    repo = cfg.repo.name or git.repo_name(main)
+
+    found = _worktree_for_done(main, repo, target, session)
+    if found is None:
+        if session.startswith(f"{repo}/"):
+            # No worktree has this session any more: wt or git already
+            # removed it, only the session is left.
+            return _close_gone(main, session, target)
+        raise UserError(f"{target} is not in a worktree of {repo}")
+    branch = found.branch
+    if not branch:
+        raise UserError(f"{found.path} is not on a branch")
+    if branch in cfg.repo.protected_branches:
+        raise UserError(f"{branch} is protected, there is no worktree to close")
+    if not (found.path / ".git").exists():
+        return _close_gone(main, session or context.session_name(repo, branch), found.path)
+    return _done(args, main, repo, branch, found.path)
+
+
+def _main_near(target: Path) -> Path | None:
+    """The main checkout for a folder that may not exist any more."""
+    here = target
+    while not here.exists() and here != here.parent:
+        here = here.parent
+    main = git.main_checkout(here)
+    if main is None:
+        # A worktree next to the repo, not inside it. The tmux server runs
+        # this from the pane's folder, which can be gone too.
+        try:
+            main = git.main_checkout(Path.cwd())
+        except FileNotFoundError:
+            return None
+    return main
+
+
+def _worktree_for_done(
+    main: Path, repo: str, target: Path, session: str
+) -> git.WorktreeInfo | None:
+    # Not pruned first: a deleted folder stays in the list until a prune, and
+    # that entry is the only place its branch is still written.
+    items = git.list_worktrees(main)
+    if session:
+        for item in items:
+            if item.branch and context.session_name(repo, item.branch) == session:
+                return item
+        return None
+    # By path: the worktree the folder is in, the deepest one. The main
+    # checkout only on an exact match, so a folder left under
+    # .claude/worktrees/ is never read as it.
+    best = None
+    for item in items:
+        path = item.path.resolve()
+        if path == main.resolve():
+            if target == path:
+                return item
+            continue
+        if target.is_relative_to(path) and (best is None or len(path.parts) > len(best[0].parts)):
+            best = (path, item)
+    return best[1] if best else None
+
+
+def _close_gone(main: Path, session: str, what: object) -> int:
+    """The worktree folder is already gone: close the session, prune, exit 0."""
+    from .proc import run
+
+    run(["git", "worktree", "prune"], cwd=main, check=False, quiet=True)
+    teardown_mod.close_session(session)
+    say(f"{what} was already gone, closed what was left")
+    return 0
+
+
+def _done(args: argparse.Namespace, main: Path, repo: str, branch: str, target: Path) -> int:
     # Before the handoff below: the tmux server runs the rest with its output
     # nowhere, so a refusal there is never seen and nothing happens.
     if not args.force and not git.is_clean(target):
@@ -348,7 +447,7 @@ def cmd_done(args: argparse.Namespace) -> int:
             "discard them and remove the worktree."
         )
 
-    session = context.session_name(cfg.repo.name or git.repo_name(main), branch)
+    session = context.session_name(repo, branch)
     inside = (
         not args.from_tmux
         and os.environ.get("TMUX")
@@ -364,7 +463,7 @@ def cmd_done(args: argparse.Namespace) -> int:
             [
                 "run-shell",
                 "-b",
-                f"wtx done --path '{target}' --from-tmux{force}",
+                f"wtx done --path '{target}' --session '{session}' --from-tmux{force}",
             ]
         )
         return 0
@@ -853,6 +952,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--path", default="", help="the worktree directory instead of a branch")
     s.add_argument("--force", action="store_true", help="discard uncommitted changes")
     s.add_argument("--from-tmux", action="store_true", help=argparse.SUPPRESS)
+    # The tmux menu passes its own session: the pane's folder can be gone, or
+    # be any folder the pane went to.
+    s.add_argument("--session", default="", help=argparse.SUPPRESS)
     s.set_defaults(func=cmd_done)
 
     s = sub.add_parser("land", help="rebase, pull request, merge, clean up")

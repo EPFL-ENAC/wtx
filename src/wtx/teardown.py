@@ -19,16 +19,7 @@ def run_teardown(ctx: Ctx) -> None:
         if run_shell(cfg.hooks.pre_teardown, cwd=ctx.root, check=False) != 0:
             warn("pre_teardown hook failed, continuing")
 
-    # Before the session goes: a banner for a worktree that no longer exists
-    # sits in the desktop list for ever, and clicking it opens nothing.
-    notify.settle(ctx.session)
-    notify.forget_conversation(ctx.session)
-    orchestrate.clear_record(ctx.session)
-    review.clear(ctx.session)
-
-    if tmux.available() and tmux.has_session(ctx.session):
-        tmux.kill_session(ctx.session)
-        say(f"killed session {ctx.session}")
+    close_session(ctx.session)
 
     values = envfile.read_worktree(ctx.root)
     if values:
@@ -43,3 +34,21 @@ def run_teardown(ctx: Ctx) -> None:
 
     for note in repos.teardown_notes(ctx):
         say(note)
+
+
+def close_session(session: str) -> None:
+    """The session and what wtx keeps about it, nothing in the checkout.
+
+    `wtx done` also calls it alone when the worktree folder is already gone:
+    there is no checkout left to tear down, but the session is still there.
+    """
+    # Before the session goes: a banner for a worktree that no longer exists
+    # sits in the desktop list for ever, and clicking it opens nothing.
+    notify.settle(session)
+    notify.forget_conversation(session)
+    orchestrate.clear_record(session)
+    review.clear(session)
+
+    if tmux.available() and tmux.has_session(session):
+        tmux.kill_session(session)
+        say(f"killed session {session}")

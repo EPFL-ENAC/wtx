@@ -205,6 +205,15 @@ the agent) runs in it, where the human sees it and its errors.
 **Closing the session you are sitting in kills the command doing the closing.**
 `wtx done` hands the job to the tmux server with `run-shell -b`.
 
+**The pane's folder can be gone when you press `prefix+X d`.** tmux then adds
+` (deleted)` to `#{pane_current_path}`. And a folder recreated under
+`.claude/worktrees/` reads as the main checkout to `git rev-parse`, so wtx said
+"dev is protected". The menu now also passes `#{session_name}`, and `wtx done
+--path` finds the branch in `git worktree list` (by session, then by the
+deepest worktree that holds the path, the main checkout only on an exact
+match), never by asking git in the folder. When the worktree is already gone,
+it prunes, kills the session and exits 0. Tests cover both cases.
+
 **In a tmux config file `\;` is a literal argument, not a separator.** Only the
 command line splits commands on `\;`. In `.tmux.conf` a plain `;` ends the
 binding and tmux runs the rest at load time, and `\;` becomes an argument of the

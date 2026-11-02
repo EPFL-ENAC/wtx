@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -709,6 +710,92 @@ def test_wtx_done_inside_its_own_session_shows_the_dirty_refusal(
     assert "uncommitted changes" in capsys.readouterr().err
     assert not any(c.startswith("run-shell") for c in calls_of(fake_bin, "tmux"))
     assert path.is_dir()
+
+
+def _gone_worktree(wtx_repo: Path, branch: str) -> tuple[Path, str]:
+    """A worktree whose folder was deleted under its still open session."""
+    path = make_worktree(wtx_repo, branch)
+    session = context.load(root=path).session
+    fake_sessions(session)
+    shutil.rmtree(path)
+    return path, session
+
+
+def test_done_from_tmux_closes_a_deleted_worktree(
+    wtx_repo: Path, fake_bin: Path, monkeypatch, capsys
+) -> None:
+    """tmux adds " (deleted)" to the pane's path when its folder is gone. wtx
+    read the branch there, found none, and left the session open."""
+    path, session = _gone_worktree(wtx_repo, "feat/gone")
+    monkeypatch.chdir(wtx_repo)
+
+    pane = f"{path} (deleted)"
+    assert run(["done", "--path", pane, "--session", session, "--from-tmux"]) == 0
+    assert f"kill-session -t ={session}" in calls_of(fake_bin, "tmux")
+    assert all(w.branch != "feat/gone" for w in git.list_worktrees(wtx_repo))
+    assert git.branch_exists(wtx_repo, "feat/gone")
+
+
+def test_done_from_an_old_binding_finds_the_deleted_worktree_by_path(
+    wtx_repo: Path, fake_bin: Path, monkeypatch
+) -> None:
+    """A tmux server still holds the old binding, without --session, until
+    the next wtx run. The stale `git worktree list` entry gives the branch."""
+    path, session = _gone_worktree(wtx_repo, "feat/old")
+    monkeypatch.chdir(wtx_repo)
+
+    assert run(["done", "--path", f"{path} (deleted)", "--from-tmux"]) == 0
+    assert f"kill-session -t ={session}" in calls_of(fake_bin, "tmux")
+
+
+def test_done_on_a_recreated_folder_is_never_the_main_checkout(
+    wtx_repo: Path, fake_bin: Path, monkeypatch, capsys
+) -> None:
+    """The folder sits under .claude/worktrees/ of the main checkout. Once
+    pruned and recreated, git read it as the main checkout and wtx said
+    "dev is protected"."""
+    path, session = _gone_worktree(wtx_repo, "feat/again")
+    subprocess.run(["git", "worktree", "prune"], cwd=wtx_repo, check=True)
+    path.mkdir()
+    monkeypatch.chdir(wtx_repo)
+
+    assert run(["done", "--path", str(path), "--from-tmux"]) == 1
+    err = capsys.readouterr().err
+    assert "protected" not in err
+    assert "not in a worktree" in err
+
+    # From the menu, the session says which one it was.
+    assert run(["done", "--path", str(path), "--session", session, "--from-tmux"]) == 0
+    assert f"kill-session -t ={session}" in calls_of(fake_bin, "tmux")
+
+
+def test_done_from_a_subfolder_of_a_worktree_removes_it(
+    wtx_repo: Path, fake_bin: Path, monkeypatch
+) -> None:
+    path = make_worktree(wtx_repo, "feat/sub")
+    (path / "backend").mkdir(exist_ok=True)
+    monkeypatch.chdir(wtx_repo)
+
+    assert run(["done", "--path", str(path / "backend"), "--from-tmux"]) == 0
+    assert git.worktree_path_for(wtx_repo, "feat/sub") is None
+
+
+def test_done_by_branch_closes_a_session_left_without_its_worktree(
+    wtx_repo: Path, fake_bin: Path, monkeypatch
+) -> None:
+    _, session = _gone_worktree(wtx_repo, "feat/left")
+    monkeypatch.chdir(wtx_repo)
+
+    assert run(["done", "feat/left"]) == 0
+    assert f"kill-session -t ={session}" in calls_of(fake_bin, "tmux")
+
+
+def test_done_still_refuses_the_main_checkout(
+    wtx_repo: Path, fake_bin: Path, monkeypatch, capsys
+) -> None:
+    monkeypatch.chdir(wtx_repo)
+    assert run(["done", "--path", str(wtx_repo), "--from-tmux"]) == 1
+    assert "protected" in capsys.readouterr().err
 
 
 def test_config_validate_warns_about_an_unknown_key(wtx_repo: Path, monkeypatch, capsys) -> None:
