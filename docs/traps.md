@@ -220,6 +220,17 @@ binding and tmux runs the rest at load time, and `\;` becomes an argument of the
 command. A binding that has to do several things calls something that does them,
 so `bind g` just runs `wtx monitor --grid`.
 
+**A mouse selection in tmux never reached the clipboard.** tmux sends it to the
+terminal with OSC 52, and GNOME Terminal, Ptyxis and the other VTE terminals
+ignore it. So the copy stayed in a tmux buffer, and people used shift+drag,
+which selects across all the panes (so they zoomed first). `install-machine`
+sets `copy-command` to `pbcopy`, `wl-copy` or `xclip`, and every default mouse
+binding ends in a copy that goes through it. The order matters. On Wayland it
+must be `wl-copy` even when `xclip` is there: through Xwayland only X apps see
+the copy. On a Mac, XQuartz sets `DISPLAY` too, so `pbcopy` comes first. Before
+tmux 3.2 the option does not exist and tmux complains on every config load, so
+wtx adds nothing there.
+
 **`choose-tree -w` gives every session two lines.** Windows collapsed still
 means the session line plus its window line, so the down arrow moves half a
 session at a time. `-s` is the one that shows one line per session. wtx installs

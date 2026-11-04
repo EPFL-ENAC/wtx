@@ -486,6 +486,76 @@ def test_install_machine_installs_every_shipped_skill(tmp_path) -> None:
     assert machine.install_skill(tmp_path) == list(machine.SKILL_NAMES)
 
 
+def _clipboard_change(tmp_path, monkeypatch, env: dict, tools: list[str], version=(3, 6)):
+    """The planned copy-command change, with a fake HOME, env and PATH."""
+    from wtx import machine
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    for key in ("WAYLAND_DISPLAY", "DISPLAY"):
+        monkeypatch.delenv(key, raising=False)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setattr(machine.shutil, "which", lambda t: f"/usr/bin/{t}" if t in tools else None)
+    monkeypatch.setattr(machine, "tmux_version", lambda: version)
+    found = [c for c in machine.planned("claude") if "copy-command" in c.body]
+    return found[0] if found else None
+
+
+def test_a_mouse_selection_goes_to_the_wayland_clipboard(tmp_path, monkeypatch) -> None:
+    """VTE terminals ignore OSC 52, so without copy-command a drag only fills a
+    tmux buffer. On Wayland, xclip through Xwayland is not the right one."""
+    change = _clipboard_change(
+        tmp_path,
+        monkeypatch,
+        {"WAYLAND_DISPLAY": "wayland-0", "DISPLAY": ":0"},
+        ["wl-copy", "xclip"],
+    )
+    assert "set -s copy-command 'wl-copy'" in change.body
+    assert change.path == tmp_path / ".tmux.conf"
+
+
+def test_a_mouse_selection_goes_to_the_x11_clipboard(tmp_path, monkeypatch) -> None:
+    change = _clipboard_change(tmp_path, monkeypatch, {"DISPLAY": ":0"}, ["wl-copy", "xclip"])
+    assert "set -s copy-command 'xclip -selection clipboard -in'" in change.body
+
+
+def test_a_mac_with_xquartz_still_uses_pbcopy(tmp_path, monkeypatch) -> None:
+    """XQuartz sets DISPLAY, brew can bring xclip. That copy stays in XQuartz."""
+    change = _clipboard_change(tmp_path, monkeypatch, {"DISPLAY": ":0"}, ["pbcopy", "xclip"])
+    assert "set -s copy-command 'pbcopy'" in change.body
+
+
+def test_no_copy_command_on_a_tmux_older_than_3_2(tmp_path, monkeypatch) -> None:
+    """The option does not exist there, and tmux complains on every config load."""
+    env = {"WAYLAND_DISPLAY": "wayland-0"}
+    assert _clipboard_change(tmp_path, monkeypatch, env, ["wl-copy"], version=(3, 1)) is None
+    assert _clipboard_change(tmp_path, monkeypatch, env, ["wl-copy"], version=None) is None
+
+
+def test_the_tmux_version_is_read_from_every_known_shape(monkeypatch) -> None:
+    from wtx import machine
+
+    for out, want in [("tmux 3.6\n", (3, 6)), ("tmux 3.3a\n", (3, 3)), ("tmux next-3.7\n", (3, 7))]:
+        fake = subprocess.CompletedProcess([], 0, stdout=out, stderr="")
+        monkeypatch.setattr(subprocess, "run", lambda *a, _f=fake, **k: _f)
+        assert machine.tmux_version() == want
+
+
+def test_no_copy_command_without_a_clipboard_tool(tmp_path, monkeypatch) -> None:
+    """Over ssh there is nothing to pipe to. tmux keeps its OSC 52 then."""
+    assert _clipboard_change(tmp_path, monkeypatch, {"DISPLAY": ":0"}, []) is None
+
+
+def test_the_users_own_copy_command_wins(tmp_path, monkeypatch) -> None:
+    (tmp_path / ".tmux.conf").write_text("set -g copy-command 'my-clip'\n")
+    env = {"WAYLAND_DISPLAY": "wayland-0"}
+    assert _clipboard_change(tmp_path, monkeypatch, env, ["wl-copy"]) is None
+    # Ours, once applied, still shows as "already there" on the next run.
+    (tmp_path / ".tmux.conf").write_text("set -s copy-command 'wl-copy'\n")
+    change = _clipboard_change(tmp_path, monkeypatch, env, ["wl-copy"])
+    assert change is not None and not change.needed()
+
+
 def test_install_machine_comments_out_the_old_bashrc_line(tmp_path) -> None:
     from wtx import machine
 

@@ -305,7 +305,12 @@ It runs on demand only, never on a hook: each run costs one agent turn.
 backup of each file. It sets up:
 
 - `~/.bashrc`: `eval "$(wtx shell-init bash)"`.
-- `~/.tmux.conf`: the status line, `prefix+s` and `prefix+g`.
+- `~/.tmux.conf`: the status line, `prefix+s` and `prefix+g`. Also
+  `copy-command` (`pbcopy`, `wl-copy`, `xclip` or `xsel`, the first one
+  found), so text you select with the mouse in a pane goes to the system
+  clipboard. No shift, no zoom. Double click copies a word, triple click a
+  line. This needs tmux 3.2 or later and `set -g mouse on`, which wtx does
+  not set for you. If you already set a `copy-command`, wtx keeps yours.
 - the global git ignore, so the generated files never show as untracked.
 - `~/.config/wt/config.toml`: worktrees go under `.claude/worktrees/`.
 - `~/.claude/agents/Explore.md`: the search agent on haiku.
