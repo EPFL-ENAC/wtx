@@ -75,7 +75,7 @@ tmux socket nor a port from Bash. Two things follow, and both are automatic:
   `.wt-logs/<name>.log`. That file is the agent's only view of a running server.
 - `wtx curl <family> [path]` reaches a server without knowing its port, with any
   method and no prompt. Say so in the repo's CLAUDE.md: it is not guessable, and
-  plain curl prompts on anything past a GET.
+  plain curl runs in the sandbox and cannot reach a local port.
 
 ## read or pair
 
