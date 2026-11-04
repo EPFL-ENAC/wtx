@@ -9,6 +9,7 @@ everything first.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -54,6 +55,55 @@ TMUX_LINES = [
     # top of the grid it just built.
     "bind g run-shell -b 'wtx monitor --grid'",
 ]
+
+# Most Linux terminals (GNOME Terminal, Ptyxis, anything on VTE) ignore OSC 52,
+# the escape code tmux sends to put a copy on the system clipboard. So a mouse
+# selection lands in a tmux buffer only, and the user falls back to shift+drag,
+# which selects across every pane. tmux pipes each copy to copy-command, and the
+# default mouse bindings (drag, double and triple click) all end in such a copy.
+# Order matters. pbcopy first: a Mac with XQuartz has DISPLAY set and maybe
+# xclip from brew, and that copy stays in XQuartz. A Wayland session often has
+# xclip too, through Xwayland, but then only X apps see the copy.
+CLIPBOARD_TOOLS = [
+    (None, "pbcopy", "pbcopy"),
+    ("WAYLAND_DISPLAY", "wl-copy", "wl-copy"),
+    ("DISPLAY", "xclip", "xclip -selection clipboard -in"),
+    ("DISPLAY", "xsel", "xsel --clipboard --input"),
+]
+
+# copy-command came in tmux 3.2. An older tmux prints "invalid option" each
+# time it reads the config.
+COPY_COMMAND_TMUX = (3, 2)
+
+
+def tmux_version() -> tuple[int, int] | None:
+    """Major and minor of the installed tmux. "tmux 3.6", "tmux 3.3a", "tmux next-3.7"."""
+    import re
+    import subprocess
+
+    try:
+        out = subprocess.run(["tmux", "-V"], capture_output=True, text=True).stdout
+    except OSError:
+        return None
+    m = re.search(r"(\d+)\.(\d+)", out)
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
+
+def clipboard_command() -> str | None:
+    """The command that puts its stdin on the system clipboard, if any."""
+    version = tmux_version()
+    if version is None or version < COPY_COMMAND_TMUX:
+        return None
+    for env, tool, command in CLIPBOARD_TOOLS:
+        if (env is None or os.environ.get(env)) and shutil.which(tool):
+            return command
+    return None
+
+
+def _sets_copy_command(text: str) -> bool:
+    """The user already chose one. Theirs wins, wtx does not add a second."""
+    return any("copy-command" in ln and not ln.strip().startswith("#") for ln in text.splitlines())
+
 
 # Derived, never typed out again: a file wtx generates has to be in both ignore
 # lists or an untracked file makes the worktree dirty and `wtx land` refuses it.
@@ -231,6 +281,23 @@ def planned(agent_tool: str = "claude") -> list[Change]:
             "\n" + "\n".join(TMUX_LINES) + "\n",
             stale=_is_old_tmux,
         ),
+    ]
+    tmux_conf = home / ".tmux.conf"
+    try:
+        tmux_text = tmux_conf.read_text()
+    except OSError:
+        tmux_text = ""
+    copy = clipboard_command()
+    copy_line = f"set -s copy-command '{copy}'"
+    if copy and (copy_line in tmux_text or not _sets_copy_command(tmux_text)):
+        changes.append(
+            Change(
+                tmux_conf,
+                "a mouse selection in a pane goes to the system clipboard",
+                f"\n# wtx: copy a mouse selection to the clipboard\n{copy_line}\n",
+            )
+        )
+    changes += [
         Change(
             home / ".config" / "git" / "ignore",
             "keep per-worktree files out of every repo",
