@@ -29,6 +29,10 @@ New:
   allowed.
 - Permission modes and effort levels in `wtx.toml` are checked against the ones
   the agent actually knows.
+- `prefix+X l` lands the branch from its own session. You don't have to go
+  back to the main checkout anymore. A `land` window opens in the session and
+  shows every step. When the land stops, the window stays open with the
+  reason. When it works, the session closes and the status line says so.
 
 Fixed:
 

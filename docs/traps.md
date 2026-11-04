@@ -400,6 +400,21 @@ a no-op and everyone rebased by hand. `wtx land` rebases, aborts cleanly on a
 conflict, and refuses only the case that check was for: a branch cut from a
 newer protected branch (stage while dev lags) that would drag stage into dev.
 
+**A land in the branch's own session kills itself in the clean up.**
+`prefix+X l` runs `wtx land` in a window of the branch session, so you see it.
+But the last step removes the worktree, the `pre_remove` hook kills the
+session, and the kill stops `wt remove` and `wtx land` halfway: the branch is
+merged and the worktree is half removed. So when land runs in the session of
+the branch it lands, it hands the clean up to the tmux server with
+`run-shell -b` (`wtx land <branch> --cleanup-only`), like `wtx done` does. The
+job's output goes nowhere, so it puts the result on the status line. A test
+lands a branch from "inside" its session and checks the worktree is still
+there until the job runs.
+
+**The land window closes with its command.** A land that stops (conflict,
+failed check) would take the reason with it. In the window, land waits for
+Enter when it fails, and only then.
+
 ## desktop notifications
 
 **A `default` action stops the notification from raising anything.** GNOME only

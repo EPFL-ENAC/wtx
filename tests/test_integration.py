@@ -798,6 +798,130 @@ def test_done_still_refuses_the_main_checkout(
     assert "protected" in capsys.readouterr().err
 
 
+def test_the_session_menu_has_land(fake_bin: Path) -> None:
+    from wtx import tmux
+
+    tmux.server_options()
+    menu = [c for c in calls_of(fake_bin, "tmux") if c.startswith("bind-key X ")]
+    assert len(menu) == 1
+    assert (
+        'land: merge, then remove worktree and branch l run-shell -b "wtx land --path '
+        "'#{pane_current_path}' --session '#{session_name}' --from-tmux\""
+    ) in menu[0]
+
+
+def test_land_key_opens_a_land_window_in_the_branch_session(
+    wtx_repo: Path, fake_bin: Path, monkeypatch
+) -> None:
+    """The tmux server runs prefix+X l with its output nowhere. It only opens
+    the window. The land runs there, from the main checkout."""
+    path = make_worktree(wtx_repo, "feat/key")
+    (path / "backend").mkdir(exist_ok=True)
+    session = context.load(root=path).session
+    fake_sessions(session)
+    monkeypatch.chdir(wtx_repo.parent)
+
+    assert run(["land", "--path", str(path / "backend"), "--session", session, "--from-tmux"]) == 0
+    windows = [c for c in calls_of(fake_bin, "tmux") if c.startswith("new-window")]
+    assert len(windows) == 1
+    assert f"-t ={session}: -n land -c {wtx_repo.resolve()} " in windows[0]
+    assert windows[0].endswith(f"{sys.executable} -m wtx land feat/key --window")
+    assert not calls_of(fake_bin, "gh")
+
+
+def test_land_key_goes_back_to_a_land_already_running(
+    wtx_repo: Path, fake_bin: Path, monkeypatch
+) -> None:
+    """A second press must not kill a land halfway through a rebase."""
+    from wtx import tmux
+
+    path = make_worktree(wtx_repo, "feat/twice")
+    session = context.load(root=path).session
+    fake_sessions(session)
+    monkeypatch.setattr(
+        tmux, "out", lambda args, **kw: "dev\nland" if args[0] == "list-windows" else ""
+    )
+    monkeypatch.chdir(wtx_repo)
+
+    assert run(["land", "--path", str(path), "--session", session, "--from-tmux"]) == 0
+    calls = calls_of(fake_bin, "tmux")
+    assert f"select-window -t ={session}:land" in calls
+    assert not [c for c in calls if c.startswith("new-window")]
+
+
+def test_land_key_refuses_the_main_checkout_on_the_status_line(
+    wtx_repo: Path, fake_bin: Path, monkeypatch
+) -> None:
+    session = context.load(root=wtx_repo).session
+    monkeypatch.chdir(wtx_repo)
+
+    assert run(["land", "--path", str(wtx_repo), "--session", session, "--from-tmux"]) == 1
+    calls = calls_of(fake_bin, "tmux")
+    shown = [c for c in calls if c.startswith("display-message")]
+    assert shown and "protected" in shown[0]
+    assert not [c for c in calls if c.startswith("new-window")]
+
+
+def test_land_inside_its_own_session_hands_the_cleanup_to_tmux(
+    wtx_repo: Path, fake_bin: Path, monkeypatch
+) -> None:
+    """Removing the worktree kills its session. A land running in that
+    session would die in the middle of its own clean up."""
+    import shlex
+
+    from wtx import tmux
+
+    path = make_worktree(wtx_repo, "feat/inside")
+    setup_mod.run_setup(context.load(root=path), start_tmux=False)
+    commit(path)
+    session = context.load(root=path).session
+    real_out = tmux.out
+    monkeypatch.setenv("TMUX", "/tmp/fake,1,0")
+    monkeypatch.setattr(
+        tmux,
+        "out",
+        lambda args, **kw: session if args[0] == "display-message" else real_out(args, **kw),
+    )
+    monkeypatch.chdir(wtx_repo)
+
+    assert run(["land", "feat/inside", "--local", "--skip-checks"]) == 0
+    assert git.is_ancestor(wtx_repo, "feat/inside", "dev")
+    assert git.worktree_path_for(wtx_repo, "feat/inside") is not None
+    handoff = [c for c in calls_of(fake_bin, "tmux") if c.startswith("run-shell -b")]
+    assert len(handoff) == 1
+    tail = shlex.join([sys.executable, "-m", "wtx", "land", "feat/inside", "--cleanup-only"])
+    assert handoff[0].endswith(f"&& {tail}")
+
+    # What the tmux server then runs, from the main checkout.
+    monkeypatch.delenv("TMUX")
+    assert run(["land", "feat/inside", "--cleanup-only"]) == 0
+    assert git.worktree_path_for(wtx_repo, "feat/inside") is None
+    assert not git.branch_exists(wtx_repo, "feat/inside")
+    shown = [c for c in calls_of(fake_bin, "tmux") if c.startswith("display-message")]
+    assert any("landed feat/inside into dev" in c for c in shown)
+
+
+def test_the_land_window_waits_only_when_land_stops(
+    wtx_repo: Path, fake_bin: Path, monkeypatch, capsys
+) -> None:
+    """The window closes when its command ends, and the reason with it."""
+    from wtx import land as land_mod
+
+    path = make_worktree(wtx_repo, "feat/stops")
+    (path / "notes.txt").write_text("not committed\n")
+    asked: list[str] = []
+    monkeypatch.setattr("builtins.input", lambda prompt="": asked.append(prompt) or "")
+    monkeypatch.chdir(wtx_repo)
+
+    assert run(["land", "feat/stops", "--window"]) == 1
+    assert "uncommitted changes" in capsys.readouterr().err
+    assert len(asked) == 1 and "Press Enter" in asked[0]
+
+    monkeypatch.setattr(land_mod, "land", lambda *a, **kw: None)
+    assert run(["land", "feat/stops", "--window"]) == 0
+    assert len(asked) == 1
+
+
 def test_config_validate_warns_about_an_unknown_key(wtx_repo: Path, monkeypatch, capsys) -> None:
     (wtx_repo / "wtx.toml").write_text(
         (wtx_repo / "wtx.toml").read_text().replace("[repo]\n", "[repo]\nbase_brnach = 'x'\n", 1)

@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import sys
 import tomllib
+import traceback
 from pathlib import Path
 
 from . import (
@@ -369,7 +371,7 @@ def _done_path(args: argparse.Namespace) -> int:
     cfg = _load_cfg(main)
     repo = cfg.repo.name or git.repo_name(main)
 
-    found = _worktree_for_done(main, repo, target, session)
+    found = _pane_worktree(main, repo, target, session)
     if found is None:
         if session.startswith(f"{repo}/"):
             # No worktree has this session any more: wt or git already
@@ -402,9 +404,8 @@ def _main_near(target: Path) -> Path | None:
     return main
 
 
-def _worktree_for_done(
-    main: Path, repo: str, target: Path, session: str
-) -> git.WorktreeInfo | None:
+def _pane_worktree(main: Path, repo: str, target: Path, session: str) -> git.WorktreeInfo | None:
+    """The worktree a tmux key was pressed in, for `done` and `land`."""
     # Not pruned first: a deleted folder stays in the list until a prune, and
     # that entry is the only place its branch is still written.
     items = git.list_worktrees(main)
@@ -448,13 +449,7 @@ def _done(args: argparse.Namespace, main: Path, repo: str, branch: str, target: 
         )
 
     session = context.session_name(repo, branch)
-    inside = (
-        not args.from_tmux
-        and os.environ.get("TMUX")
-        and tmux.available()
-        and tmux.out(["display-message", "-p", "#{session_name}"]) == session
-    )
-    if inside:
+    if not args.from_tmux and tmux.current_session() == session:
         # Removing the worktree kills the shell running this command. Hand the
         # job to the tmux server so it outlives the session.
         say("handing off to the tmux server, this session is about to close")
@@ -477,6 +472,16 @@ def _done(args: argparse.Namespace, main: Path, repo: str, branch: str, target: 
 
 
 def cmd_land(args: argparse.Namespace) -> int:
+    if args.from_tmux:
+        return _land_from_tmux(args)
+    if args.cleanup_only:
+        return _land_cleanup(args)
+    if args.window:
+        return _land_in_window(args)
+    return _land(args)
+
+
+def _land(args: argparse.Namespace) -> int:
     ctx = _load()
     branch = args.branch or git.current_branch(Path.cwd())
     try:
@@ -489,6 +494,74 @@ def cmd_land(args: argparse.Namespace) -> int:
         )
     except land_mod.LandError as exc:
         raise UserError(str(exc)) from exc
+    return 0
+
+
+def _land_from_tmux(args: argparse.Namespace) -> int:
+    """prefix+X l, from any pane of a branch session.
+
+    The tmux server runs this with its output nowhere, so it only opens the
+    land window, and the land runs there, where the human sees it. What fails
+    before that is shown on the status line. The branch is found like
+    `done --path` finds it.
+    """
+    try:
+        target = Path(args.path.removesuffix(_DELETED)).resolve()
+        main = _main_near(target)
+        if main is None:
+            raise UserError(f"{target} is not inside a git repository")
+        cfg = _load_cfg(main)
+        repo = cfg.repo.name or git.repo_name(main)
+        found = _pane_worktree(main, repo, target, args.session)
+        if found is None or not (found.path / ".git").exists():
+            raise UserError(f"{args.session or target} is not a worktree of {repo}")
+        branch = found.branch
+        if not branch:
+            raise UserError(f"{found.path} is not on a branch")
+        if branch in cfg.repo.protected_branches:
+            raise UserError(f"{branch} is protected, there is nothing to land")
+        session = context.session_name(repo, branch)
+        if not tmux.has_session(session):
+            raise UserError(f"no tmux session {session}, start it with wtx go {branch}")
+    except UserError as exc:
+        tmux.cmd(["display-message", "-d", "5000", f"wtx land: {exc}"])
+        return 1
+    land_mod.open_window(session, main, branch)
+    return 0
+
+
+def _land_in_window(args: argparse.Namespace) -> int:
+    """What the land window runs.
+
+    When the land works, the session closes on its own. When it stops, the
+    window waits, or it would close and take the reason with it.
+    """
+    try:
+        code = _guarded(_land, args)
+    except Exception:
+        traceback.print_exc()
+        code = 1
+    if code:
+        with contextlib.suppress(EOFError, KeyboardInterrupt):
+            input("\nwtx land stopped, see above. Press Enter to close this window. ")
+    return code
+
+
+def _land_cleanup(args: argparse.Namespace) -> int:
+    """The end of a land, handed to the tmux server by the land window.
+
+    Its output goes nowhere, so the result goes on the status line.
+    """
+    ctx = _load()
+    branch = args.branch
+    land_mod.cleanup(ctx, branch, keep_branch=args.keep_branch)
+    if git.worktree_path_for(ctx.main, branch):
+        message = (
+            f"wtx land: {branch} is merged, but its worktree is still there. Run wtx done {branch}"
+        )
+    else:
+        message = f"landed {branch} into {ctx.cfg.repo.base_branch}"
+    tmux.cmd(["display-message", "-d", "5000", message])
     return 0
 
 
@@ -1022,6 +1095,14 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--local", action="store_true", help="merge locally instead of a PR")
     s.add_argument("--skip-checks", action="store_true")
     s.add_argument("--keep-branch", action="store_true")
+    # prefix+X l passes the pane's folder and session, like done. The window
+    # it opens runs --window, and the land there hands --cleanup-only to the
+    # tmux server. See _land_from_tmux.
+    s.add_argument("--path", default="", help=argparse.SUPPRESS)
+    s.add_argument("--session", default="", help=argparse.SUPPRESS)
+    s.add_argument("--from-tmux", action="store_true", help=argparse.SUPPRESS)
+    s.add_argument("--window", action="store_true", help=argparse.SUPPRESS)
+    s.add_argument("--cleanup-only", action="store_true", help=argparse.SUPPRESS)
     s.set_defaults(func=cmd_land)
 
     s = sub.add_parser("open", help="print and open a dev server URL")
@@ -1172,8 +1253,13 @@ def main(argv: list[str] | None = None) -> int:
     if curl_words is not None:
         args.args = curl_words
     set_dry_run(bool(getattr(args, "dry_run", False)))
+    return _guarded(args.func, args)
+
+
+def _guarded(func, args: argparse.Namespace) -> int:
+    """Run a command. What the user can fix is printed without a traceback."""
     try:
-        return args.func(args)
+        return func(args)
     except (
         UserError,
         setup_mod.SetupError,

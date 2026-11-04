@@ -42,9 +42,9 @@ the agent sees a server: it cannot reach the tmux socket, but it can read a
 file.
 
 `prefix+X` opens a small menu on the session you are in: kill the session,
-close the worktree and keep the branch, or close it and discard uncommitted
-changes. `prefix+r` opens the review of the branch in hunk, see
-[Review](#review).
+close the worktree and keep the branch, close it and discard uncommitted
+changes, or land the branch (`l`, see [Landing](#landing)). `prefix+r` opens
+the review of the branch in hunk, see [Review](#review).
 
 ## Ports
 
@@ -260,6 +260,15 @@ the rebase and before any push, so a branch that fails them never reaches
 origin. Then it pushes the branch, merges it with `--no-ff` into the base
 branch and pushes that. `--skip-checks` skips the checks, `--keep-branch` keeps
 the branch.
+
+You can also land from the branch session itself: press `prefix+X`, then `l`.
+A `land` window opens in that session and runs `wtx land <branch>` from the
+main checkout, so you see every step. If the land stops (a rebase conflict, a
+failed check, a PR that is still open after 30 minutes), the window stays open
+with the reason, next to the agent. If it works, the session closes on its own
+and the status line says `landed <branch> into <base>`. Press `prefix+X l`
+again while a land runs and you go back to its window. It does not start a
+second one.
 
 ## Review
 

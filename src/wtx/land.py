@@ -3,17 +3,26 @@
 This is a human job and it runs from the main checkout only. gh refuses to
 delete a branch that is checked out in a worktree, and the whole point of the
 push guard is that a worktree never touches the base branch.
+
+prefix+X l runs it from the branch session anyway, in a window whose folder
+is the main checkout. See open_window.
 """
 
 from __future__ import annotations
 
 import json
+import os
+import shlex
+import sys
 import time
 from pathlib import Path
 
-from . import git, review, wt
+from . import git, review, tmux, wt
 from .context import Ctx, session_name
 from .proc import CommandError, capture, capture_code, is_dry_run, run, run_shell, say, warn, which
+
+# The window prefix+X l opens in the branch's own session.
+WINDOW = "land"
 
 
 class LandError(Exception):
@@ -133,8 +142,54 @@ def land(
             poll_seconds=poll_seconds,
             timeout_minutes=timeout_minutes,
         )
-    cleanup(ctx, branch, keep_branch=keep_branch)
+    if tmux.current_session() == session_name(ctx.repo_name, branch):
+        _hand_off_cleanup(ctx, branch, keep_branch=keep_branch)
+    else:
+        cleanup(ctx, branch, keep_branch=keep_branch)
     say(f"landed {branch} into {base}")
+
+
+def _hand_off_cleanup(ctx: Ctx, branch: str, *, keep_branch: bool) -> None:
+    """Removing the worktree kills its session, and this land runs in it
+    (prefix+X l puts it there). The kill would stop the removal halfway, so
+    the tmux server does the clean up, the way `wtx done` hands off.
+    """
+    argv = [sys.executable, "-m", "wtx", "land", branch, "--cleanup-only"]
+    if keep_branch:
+        argv.append("--keep-branch")
+    say("merged. The tmux server removes the worktree, this session is about to close")
+    tmux.cmd(["run-shell", "-b", f"cd {shlex.quote(str(ctx.main))} && {shlex.join(argv)}"])
+
+
+def open_window(session: str, main: Path, branch: str) -> None:
+    """The `land` window, for prefix+X l.
+
+    It sits in the branch's own session, so a rebase conflict or a failed
+    check shows next to the agent that can fix it. It runs from the main
+    checkout, the only place land runs. A second press goes back to the
+    window: killing it would stop a land halfway.
+
+    The same wtx that runs now, and its PATH, like the review window.
+    """
+    names = tmux.out(["list-windows", "-t", f"={session}", "-F", "#{window_name}"])
+    if WINDOW in names.splitlines():
+        tmux.cmd(["select-window", "-t", f"={session}:{WINDOW}"])
+        return
+    window = [sys.executable, "-m", "wtx", "land", branch, "--window"]
+    tmux.cmd(
+        [
+            "new-window",
+            "-t",
+            f"={session}:",
+            "-n",
+            WINDOW,
+            "-c",
+            str(main),
+            "-e",
+            f"PATH={os.environ.get('PATH', '')}",
+            shlex.join(window),
+        ]
+    )
 
 
 def _refuse_a_branch_cut_from_elsewhere(ctx: Ctx, branch: str, base: str) -> None:
