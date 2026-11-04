@@ -1826,6 +1826,20 @@ def test_wtx_curl_names_the_families_it_knows(
     assert "backend" in capsys.readouterr().err
 
 
+def test_wtx_curl_refuses_a_flag_that_moves_the_target(
+    wtx_repo: Path, fake_bin: Path, monkeypatch, capsys
+) -> None:
+    """It runs outside the sandbox, so it must never reach another port."""
+    path = make_worktree(wtx_repo, "feat/curl-pin")
+    setup_mod.run_setup(context.load(root=path), start_tmux=False)
+    monkeypatch.chdir(path)
+    before = len(calls_of(fake_bin, "curl"))
+
+    assert run(["curl", "backend", "--connect-to", "::other:5432"]) == 1
+    assert "--connect-to" in capsys.readouterr().err
+    assert len(calls_of(fake_bin, "curl")) == before
+
+
 def test_both_agent_facing_documents_name_wtx_curl(wtx_repo: Path, fake_bin: Path) -> None:
     """It is the only way an agent reaches these servers, and nothing about it
     is guessable: not the command, not the port. Both files it reads say so."""

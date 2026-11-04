@@ -526,7 +526,11 @@ def cmd_curl(args: argparse.Namespace) -> int:
     The agent cannot know its ports, and the classifier rules that stop a POST
     to the internet also stop a POST to its own backend: an ask rule beats every
     allow rule. This builds the URL itself, so it can only ever reach a port
-    this checkout owns, which is why the baseline allows it with any flags.
+    this checkout owns, which is why the baseline allows it with any method.
+
+    It is also the one command outside the sandbox (the sandbox cannot reach
+    loopback). So `_split_curl_args` only lets through flags that cannot move
+    the target, and refuses any extra word.
     """
     ctx = _load()
     families = [f.name for f in ctx.cfg.ports.families]
@@ -541,8 +545,14 @@ def cmd_curl(args: argparse.Namespace) -> int:
     return run(["curl", *rest, f"http://127.0.0.1:{port}{path}"], check=False)
 
 
-# curl flags that take the next word as their value. That word is never the
-# family or the path, even when it starts with `/` (`-o /tmp/out`).
+# `wtx curl` is the one command outside the sandbox, so these lists are what
+# keep it on the worktree's own port. A flag that is not here is refused. Never
+# add one that changes the target: `--connect-to`, `--resolve`, `-x/--proxy`,
+# `-K/--config` (a config file can set `url`), `-:/--next`, `--url`,
+# `--unix-socket`, `-L/--location` (a redirect can leave the port).
+
+# Flags that take the next word as their value. That word is never the family
+# or the path, even when it starts with `/` (`-o /tmp/out`).
 _CURL_VALUE_FLAGS = frozenset(
     [
         "-X",
@@ -558,7 +568,6 @@ _CURL_VALUE_FLAGS = frozenset(
         "-e",
         "-m",
         "-w",
-        "-K",
         "--request",
         "--data",
         "--data-raw",
@@ -576,9 +585,46 @@ _CURL_VALUE_FLAGS = frozenset(
         "--referer",
         "--max-time",
         "--write-out",
-        "--config",
     ]
 )
+
+# Flags that take no value. Short ones may be grouped: `-sS`.
+_CURL_BOOL_FLAGS = frozenset(
+    [
+        "-s",
+        "-S",
+        "-v",
+        "-i",
+        "-I",
+        "-f",
+        "-N",
+        "-k",
+        "-G",
+        "-g",
+        "--silent",
+        "--show-error",
+        "--verbose",
+        "--include",
+        "--head",
+        "--fail",
+        "--no-buffer",
+        "--insecure",
+        "--get",
+        "--globoff",
+        "--compressed",
+    ]
+)
+
+
+def _curl_flag_ok(word: str) -> bool:
+    """A flag `wtx curl` passes on alone (no value word after it)."""
+    if word in _CURL_BOOL_FLAGS:
+        return True
+    if word.startswith("--") and "=" in word:
+        return word.split("=", 1)[0] in _CURL_VALUE_FLAGS
+    if word.startswith("-") and not word.startswith("--") and len(word) > 2:
+        return all(f"-{c}" in _CURL_BOOL_FLAGS for c in word[1:])
+    return False
 
 
 def _split_curl_args(words: list[str], families: list[str]) -> tuple[str, str, list[str]]:
@@ -587,7 +633,11 @@ def _split_curl_args(words: list[str], families: list[str]) -> tuple[str, str, l
     The order used to matter: the curl flags were an argparse REMAINDER, so a
     path after a flag went to curl as a second URL. Now the family is the first
     free word if it names one (else the first family), the path is the first
-    free word that starts with `/` (else `/`), and the rest goes to curl.
+    free word that starts with `/` (else `/`), and the allowed flags go to curl.
+
+    Anything else is refused: an extra free word would reach curl as a second
+    URL, and many flags change the target. This command runs outside the
+    sandbox, so it must never reach anything but this worktree's port.
     """
     name = path = ""
     rest: list[str] = []
@@ -602,6 +652,12 @@ def _split_curl_args(words: list[str], families: list[str]) -> tuple[str, str, l
             skip = True
             continue
         if word.startswith("-"):
+            if not _curl_flag_ok(word):
+                allowed = " ".join(sorted(_CURL_VALUE_FLAGS | _CURL_BOOL_FLAGS))
+                raise UserError(
+                    f"wtx curl does not take {word}. It only reaches this worktree's "
+                    f"ports. Allowed flags: {allowed}"
+                )
             rest.append(word)
             continue
         if not name and not path and not word.startswith("/"):
@@ -613,7 +669,11 @@ def _split_curl_args(words: list[str], families: list[str]) -> tuple[str, str, l
         if not path and word.startswith("/"):
             path = word
             continue
-        rest.append(word)
+        raise UserError(
+            f"extra word {word!r}: wtx curl takes one family and one path, it builds the URL itself"
+        )
+    if skip:
+        raise UserError(f"{rest[-1]} needs a value")
     return name or families[0], path or "/", rest
 
 

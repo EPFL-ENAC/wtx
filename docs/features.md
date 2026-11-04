@@ -64,8 +64,11 @@ wtx curl backend /items -X POST -d @body.json
 
 For `wtx curl`, the order does not matter. The family can be left out (the
 first family is used), and so can the path (`/` is used). `wtx open` also
-takes a branch with no family. The agent may run `wtx curl` with any method
-and any flags, because it can only reach a port this worktree owns.
+takes a branch with no family. The agent may run `wtx curl` with any method,
+because it can only reach a port this worktree owns. It takes one family and
+one path, and only a short list of curl flags. A flag that changes the target
+(`--connect-to`, `-x`, `--url`, `-K`, `-L`...) or an extra word is refused.
+Plain `curl` runs in the sandbox and cannot reach a local port.
 
 ## `.env.worktree`
 

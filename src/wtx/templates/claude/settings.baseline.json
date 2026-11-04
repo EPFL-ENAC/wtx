@@ -83,8 +83,6 @@
     "autoAllowBashIfSandboxed": true,
     "allowUnsandboxedCommands": false,
     "excludedCommands": [
-      "docker *",
-      "curl *",
       "wtx curl *"
     ],
     "network": {

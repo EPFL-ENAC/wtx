@@ -62,7 +62,7 @@ Every branch has its own git worktree, tmux session and agent. The session is
   reach the tmux socket.
 - `wtx curl <family> [path] [curl args]` is how you reach them. It fills in this
   worktree's port and never prompts, whatever the method: `wtx curl backend
-  /api/health`. Plain curl to localhost works for a GET and prompts past that.
+  /api/health`. Plain curl runs in the sandbox and cannot reach a local port.
 - Work on this branch only. Never push {protected}. When the work is ready, say
   so and a human runs `wtx land <branch>` from the main checkout.
 - A pre-push hook enforces this. If it refuses a push, that is the design, not a

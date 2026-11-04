@@ -30,9 +30,9 @@ COMMENT = (
     "next setup run, change wtx.toml instead. deny = never; ask = always prompts, "
     "even in auto mode, so it holds only real write-to-the-internet forms (never a "
     "bare interpreter: auto mode edits files through heredocs and would prompt on "
-    "every edit); allow = skip the classifier for routine commands. curl is outside "
-    "the sandbox because the Linux sandbox cannot reach loopback, so the worktree's "
-    "own dev servers are only reachable that way."
+    "every edit); allow = skip the classifier for routine commands. curl runs in the "
+    "sandbox like everything else, so it only reaches the allowed domains. `wtx curl` "
+    "is the one command outside it, and it can only reach this worktree's own ports."
 )
 
 EXPLORE_AGENT = """---
@@ -98,10 +98,10 @@ def worktree_rules(ctx: RenderContext) -> str:
             f"wtx curl {first} /items -X POST -d @body.json",
             "```",
             "",
-            "It is the way to test these servers from the shell. Plain",
-            "`curl http://127.0.0.1:<port>/` works for a GET and prompts on anything",
-            "past one, and the Bash sandbox cannot reach a local port, which is why",
-            "`wtx curl` runs outside it.",
+            "It is the way to test these servers from the shell. Plain `curl` runs",
+            "in the sandbox and cannot reach a local port at all. `wtx curl` is the",
+            "only way, and it only reaches the ports of this worktree. It takes one",
+            "family and one path, and refuses flags that change the target.",
             "",
             "A browser opens these URLs fine. Claude in Chrome drives a real Chrome,",
             "outside the sandbox, so localhost is not blocked for it: open a URL",
@@ -230,6 +230,22 @@ class ClaudeAgent:
             # the machine-level one instead of extending it.
             fs = data["sandbox"].setdefault("filesystem", {})
             fs["allowWrite"] = _dedup([str(ctx.root), *allow_write])
+
+        # The agent sees its own worktree, not the secrets and not the other
+        # worktrees. The worktree itself lives under <main>/.claude/worktrees,
+        # so "." is allowed back. The Read rules cover the Read tool, which
+        # does not go through the sandbox.
+        main = str(ctx.main)
+        fs = data["sandbox"].setdefault("filesystem", {})
+        fs["denyRead"] = _dedup([f"{main}/secrets", f"{main}/.claude/worktrees"])
+        fs["allowRead"] = ["."]
+        perms["deny"] = _dedup(
+            perms["deny"]
+            + [
+                f"Read(//{main.lstrip('/')}/secrets/**)",
+                f"Read(//{main.lstrip('/')}/.claude/worktrees/*/secrets/**)",
+            ]
+        )
 
         out: dict = {"_comment": COMMENT}
         if ctx.model:

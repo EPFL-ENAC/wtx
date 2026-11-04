@@ -15,6 +15,7 @@ import pytest
 from wtx import config, envfile, guard, orchestrate
 from wtx.agents.base import RenderContext
 from wtx.agents.claude import ClaudeAgent, protected_branch_rules
+from wtx.cli import UserError, _split_curl_args
 from wtx.config import parse, validate
 from wtx.context import session_name
 from wtx.ports import cksum
@@ -930,11 +931,73 @@ def test_a_read_goes_anywhere_and_a_write_prompts() -> None:
         assert _matches(write, ask), write
 
 
-def test_wtx_curl_runs_outside_the_sandbox() -> None:
-    """Like curl itself: the Linux sandbox cannot reach loopback, so a
-    sandboxed wtx curl would never reach the worktree's own servers."""
+def test_wtx_curl_is_the_only_command_outside_the_sandbox() -> None:
+    """The Linux sandbox cannot reach loopback, so a sandboxed wtx curl would
+    never reach the worktree's own servers. Plain `curl *` and `docker *` were
+    excluded too, and reached every other worktree and every local DB."""
     settings = ClaudeAgent().build_settings(_rctx(_served()))
-    assert "wtx curl *" in settings["sandbox"]["excludedCommands"]
+    assert settings["sandbox"]["excludedCommands"] == ["wtx curl *"]
+
+
+def test_the_agent_cannot_read_secrets_or_other_worktrees() -> None:
+    """Its own worktree lives under <main>/.claude/worktrees, so it is allowed
+    back. The Read rules cover the Read tool, which skips the sandbox."""
+    settings = ClaudeAgent().build_settings(_rctx(_served()))
+    fs = settings["sandbox"]["filesystem"]
+    assert fs["denyRead"] == ["/m/secrets", "/m/.claude/worktrees"]
+    assert fs["allowRead"] == ["."]
+    deny = settings["permissions"]["deny"]
+    assert "Read(//m/secrets/**)" in deny
+    assert "Read(//m/.claude/worktrees/*/secrets/**)" in deny
+
+
+@pytest.mark.parametrize(
+    "words",
+    [
+        ["/a", "/b"],
+        ["backend", "/a", "backend"],
+        ["backend", "http://evil.example"],
+        ["backend", "evil.example"],
+        ["--connect-to", "x"],
+        ["--connect-to=x"],
+        ["--resolve", "x"],
+        ["-x", "p"],
+        ["--proxy", "p"],
+        ["-K", "f"],
+        ["--config", "f"],
+        ["-:"],
+        ["--next"],
+        ["--url", "u"],
+        ["--url=u"],
+        ["--unix-socket", "s"],
+        ["-L"],
+        ["-Ls"],
+        ["-sx"],
+        ["-X"],
+    ],
+)
+def test_wtx_curl_refuses_anything_that_moves_the_target(words: list[str]) -> None:
+    """wtx curl runs outside the sandbox. An extra word reaches curl as a
+    second URL, and these flags send the request somewhere else."""
+    with pytest.raises(UserError, match="wtx curl|extra word|needs a value"):
+        _split_curl_args(words, ["backend", "frontend"])
+
+
+@pytest.mark.parametrize(
+    ("words", "rest", "path"),
+    [
+        (["-sS"], ["-sS"], "/"),
+        (["-X", "POST", "-d", "@x", "/items"], ["-X", "POST", "-d", "@x"], "/items"),
+        (["-H", "a: 1", "-H", "b: 2"], ["-H", "a: 1", "-H", "b: 2"], "/"),
+        (["--data=x", "/items"], ["--data=x"], "/items"),
+        (["-o", "/tmp/out", "/items"], ["-o", "/tmp/out"], "/items"),
+        (["frontend", "--silent", "-i"], ["--silent", "-i"], "/"),
+    ],
+)
+def test_wtx_curl_keeps_the_flags_it_allows(words: list[str], rest: list[str], path: str) -> None:
+    name, got_path, got_rest = _split_curl_args(words, ["backend", "frontend"])
+    assert (got_path, got_rest) == (path, rest)
+    assert name == ("frontend" if "frontend" in words else "backend")
 
 
 def test_the_sandbox_lets_tests_bind_a_local_port() -> None:
