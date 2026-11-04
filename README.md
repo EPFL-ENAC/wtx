@@ -48,6 +48,7 @@ wtx status                            # every worktree: ports, session, state
 wtx monitor                           # every session on one screen
 wtx review feat/thing                 # the diff in hunk, with the agent's notes
 wtx land feat/thing                   # rebase, PR, merge, clean up (main checkout)
+                                      # or prefix+X then l, from the branch session
 wtx done feat/thing                   # close the worktree, keep the branch
 ```
 

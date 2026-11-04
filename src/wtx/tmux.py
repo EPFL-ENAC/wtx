@@ -89,6 +89,17 @@ def has_session(name: str) -> bool:
     return code == 0 and not err
 
 
+def current_session() -> str:
+    """The session of the pane this runs in, empty outside tmux.
+
+    tmux finds the pane from $TMUX_PANE. A run-shell job has $TMUX and no
+    pane, so tmux guesses: a job must not ask.
+    """
+    if not os.environ.get("TMUX") or not available():
+        return ""
+    return out(["display-message", "-p", "#{session_name}"])
+
+
 def list_sessions() -> list[str]:
     names = out(["list-sessions", "-F", "#{session_name}"])
     return [line for line in names.splitlines() if line]
@@ -124,11 +135,12 @@ def server_options() -> None:
     detach-on-destroy off: killing a session moves the client to the next one
     instead of dropping out of tmux.
 
-    prefix+X: a small menu on the current session. prefix+r: the review of
-    the branch, in hunk. The bindings are server wide and the last run owns
-    them, whatever repo it came from, so they bake in no path: wtx is on PATH
-    and the branch comes from the pane's own directory. tmux parses the
-    snippet before sh does, so it uses no dollar signs and no double quotes.
+    prefix+X: a small menu on the current session, with done and land.
+    prefix+r: the review of the branch, in hunk. The bindings are server wide
+    and the last run owns them, whatever repo it came from, so they bake in no
+    path: wtx is on PATH and the branch comes from the pane's own directory.
+    tmux parses the snippet before sh does, so it uses no dollar signs and no
+    double quotes.
     """
     cmd(["set-option", "-g", "detach-on-destroy", "off"])
     resolve = "wtx done --path '#{pane_current_path}' --session '#{session_name}' --from-tmux"
@@ -137,6 +149,7 @@ def server_options() -> None:
         "confirm-before -p 'discard uncommitted changes and remove the worktree? (y/n)' "
         f'"run-shell -b \\"{resolve} --force\\""'
     )
+    land = "wtx land --path '#{pane_current_path}' --session '#{session_name}' --from-tmux"
     cmd(
         [
             "bind-key",
@@ -154,6 +167,9 @@ def server_options() -> None:
             "force done: DISCARD uncommitted changes",
             "D",
             discard,
+            "land: merge, then remove worktree and branch",
+            "l",
+            f'run-shell -b "{land}"',
         ]
     )
     # In place of tmux's own `r`, which redraws the screen.
