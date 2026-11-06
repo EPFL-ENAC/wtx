@@ -9,6 +9,7 @@ does with plain git, minus the .wt.toml hooks.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -130,6 +131,16 @@ def calls_of(bindir: Path, name: str) -> list[str]:
     return out
 
 
+# The git commands that talk to a remote.
+REMOTE_GIT = ("fetch", "push", "pull", "ls-remote")
+
+
+def remote_git_calls(bindir: Path) -> list[str]:
+    """What the git_calls fixture saw going to a remote. A failed fetch against
+    a dead remote leaves no other trace: wtx ignores its exit code."""
+    return [c for c in calls_of(bindir, "git") if c.split(" ", 1)[0] in REMOTE_GIT]
+
+
 @pytest.fixture
 def repo(tmp_path: Path) -> Path:
     """A repo shaped like the real ones: backend, frontend, a remote, dev base."""
@@ -192,6 +203,37 @@ def wtx_repo(repo: Path) -> Path:
     _git(["commit", "-qm", "chore: wtx"], repo)
     _git(["push", "-q", "origin", "dev"], repo)
     return repo
+
+
+@pytest.fixture
+def git_calls(wtx_repo: Path, fake_bin: Path) -> Path:
+    """Log every git call, then run the real git.
+
+    After wtx_repo, on purpose: that fixture pushes, and the log must hold only
+    what the test did.
+    """
+    real = shutil.which("git")
+    wrapper = fake_bin / "git"
+    wrapper.write_text(
+        f"""#!/bin/sh
+printf '%s\\t%s\\n' git "$*" >> "$WTX_TEST_CALLS"
+exec {real} "$@"
+"""
+    )
+    wrapper.chmod(0o755)
+    return fake_bin
+
+
+@pytest.fixture
+def local_repo(wtx_repo: Path, git_calls: Path) -> Path:
+    """A repo that lands by local merge, with no origin/dev and a dead remote."""
+    cfg = wtx_repo / "wtx.toml"
+    cfg.write_text(cfg.read_text().replace("[repo]\n", '[repo]\nland = "merge"\n', 1))
+    _git(["commit", "-qam", "land by local merge"], wtx_repo)
+    _git(["remote", "set-url", "origin", str(wtx_repo.parent / "gone.git")], wtx_repo)
+    _git(["branch", "--unset-upstream", "dev"], wtx_repo)
+    _git(["update-ref", "-d", "refs/remotes/origin/dev"], wtx_repo)
+    return wtx_repo
 
 
 @pytest.fixture(autouse=True)

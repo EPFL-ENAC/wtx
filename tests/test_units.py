@@ -198,6 +198,19 @@ def test_init_writes_no_unknown_key(repo: Path) -> None:
     assert config.unknown_keys(tomllib.loads((repo / "wtx.toml").read_text())) == []
 
 
+def test_the_land_rule_defaults_to_pr_and_refuses_a_typo() -> None:
+    """A typo must not fall back to pr: that sends a local repo to its remote."""
+    assert parse({}).repo.land == "pr"
+    assert validate(parse({"repo": {"name": "x"}})) == []
+
+    data = {"repo": {"name": "x", "land": "merge"}}
+    assert parse(data).repo.land == "merge"
+    assert validate(parse(data)) == []
+    assert config.unknown_keys(data) == []
+
+    assert any("[repo].land 'mrege'" in p for p in validate(parse({"repo": {"land": "mrege"}})))
+
+
 def test_validate_catches_a_base_branch_left_unprotected() -> None:
     cfg = parse({"repo": {"base_branch": "dev", "protected_branches": ["main"]}})
     assert any("base branch" in p for p in validate(cfg))

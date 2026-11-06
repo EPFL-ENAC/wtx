@@ -135,7 +135,7 @@ def server_options() -> None:
     detach-on-destroy off: killing a session moves the client to the next one
     instead of dropping out of tmux.
 
-    prefix+X: a small menu on the current session, with done and land.
+    prefix+X: a small menu on the current session, with done, land and merge.
     prefix+r: the review of the branch, in hunk. The bindings are server wide
     and the last run owns them, whatever repo it came from, so they bake in no
     path: wtx is on PATH and the branch comes from the pane's own directory.
@@ -170,6 +170,9 @@ def server_options() -> None:
             "land: merge, then remove worktree and branch",
             "l",
             f'run-shell -b "{land}"',
+            "merge: local merge, no push, then remove worktree and branch",
+            "m",
+            f'run-shell -b "{land} --merge"',
         ]
     )
     # In place of tmux's own `r`, which redraws the screen.

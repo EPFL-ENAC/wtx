@@ -625,6 +625,7 @@ def render_toml(answers: dict[str, Any]) -> str:
         *_keys(repo, ("name", "lab", "base_branch"), always=("name", "base_branch")),
         "# The single source for the push guard, the completion and the deny rules.",
         f"protected_branches = {_v(repo.get('protected_branches', ['main']))}",
+        *_keys(repo, ("land",)),
         "",
     ]
 
@@ -708,7 +709,10 @@ def render_toml(answers: dict[str, Any]) -> str:
         note="Added to the baseline wtx ships. A repo can tighten, never loosen.",
     )
     lines += _block(
-        "checks", a.get("checks", {}), ("lint", "test"), note="Run by `wtx land --local`."
+        "checks",
+        a.get("checks", {}),
+        ("lint", "test"),
+        note="Run by `wtx land --local` and by a local merge.",
     )
 
     for r in a.get("repos", []):

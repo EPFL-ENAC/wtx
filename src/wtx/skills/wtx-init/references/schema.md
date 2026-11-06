@@ -29,6 +29,7 @@ two identical.
 | `lab` | none | Fills `{lab}` in an external repo path. |
 | `base_branch` | `main` | What a worktree is cut from, and what `wtx land` lands into. Must be in `protected_branches`. |
 | `protected_branches` | `[base_branch]` | Branches a worktree may never push. The one source for the push guard, the agent's deny rules and the shell completion. |
+| `land` | `pr` | How `wtx land` lands. `pr` goes through origin. `merge` is one `git merge --no-ff` into the local base branch: no fetch, no rebase, no push. Use it for a repo with no remote, or one that must never push. |
 
 ## `[ports]` and `[[ports.family]]`
 
@@ -202,8 +203,9 @@ them are added on their own, from `[repo].protected_branches`.
 
 ## `[checks]`
 
-Run by `wtx land --local`, from the worktree, before the merge. `lint` and
-`test`, each a list of shell commands. Both are empty by default.
+Run by `wtx land --local` and by a local merge (`land = "merge"` or
+`wtx land --merge`), from the worktree, before the merge. `lint` and `test`,
+each a list of shell commands. Both are empty by default.
 
 ## `[[repos]]`
 
