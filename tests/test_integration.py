@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from conftest import calls_of, commit, fake_sessions
+from conftest import calls_of, commit, fake_sessions, remote_git_calls
 
 from wtx import config as config_mod
 from wtx import context, envfile, git, guard
@@ -30,12 +30,12 @@ def git_out(args: list[str], cwd: Path) -> str:
     ).stdout.strip()
 
 
-def make_worktree(repo: Path, branch: str) -> Path:
+def make_worktree(repo: Path, branch: str, base: str = "origin/dev") -> Path:
     """A worktree in the layout wt would make, without needing wt installed."""
     path = repo / ".claude" / "worktrees" / branch.replace("/", "-")
     path.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(
-        ["git", "worktree", "add", "-q", "-b", branch, str(path), "origin/dev"],
+        ["git", "worktree", "add", "-q", "-b", branch, str(path), base],
         cwd=repo,
         check=True,
         capture_output=True,
@@ -808,6 +808,10 @@ def test_the_session_menu_has_land(fake_bin: Path) -> None:
         'land: merge, then remove worktree and branch l run-shell -b "wtx land --path '
         "'#{pane_current_path}' --session '#{session_name}' --from-tmux\""
     ) in menu[0]
+    assert (
+        'merge: local merge, no push, then remove worktree and branch m run-shell -b "wtx land '
+        "--path '#{pane_current_path}' --session '#{session_name}' --from-tmux --merge\""
+    ) in menu[0]
 
 
 def test_land_key_opens_a_land_window_in_the_branch_session(
@@ -920,6 +924,410 @@ def test_the_land_window_waits_only_when_land_stops(
     monkeypatch.setattr(land_mod, "land", lambda *a, **kw: None)
     assert run(["land", "feat/stops", "--window"]) == 0
     assert len(asked) == 1
+
+
+# -- land by local merge --------------------------------------------------------
+
+
+def commit_file(cwd: Path, name: str, text: str) -> None:
+    (cwd / name).write_text(text)
+    subprocess.run(["git", "add", "-A"], cwd=cwd, check=True)
+    subprocess.run(["git", "commit", "-qm", f"add {name}"], cwd=cwd, check=True)
+
+
+def assert_stayed_local(fake_bin: Path) -> None:
+    assert remote_git_calls(fake_bin) == []
+    assert not calls_of(fake_bin, "gh")
+
+
+def assert_nothing_landed(repo: Path, branch: str, base_before: str) -> None:
+    assert git_out(["rev-parse", "dev"], repo) == base_before
+    assert git.worktree_path_for(repo, branch) is not None
+    assert git.branch_exists(repo, branch)
+
+
+def fail_checks(monkeypatch) -> None:
+    from wtx import land as land_mod
+
+    def failing(ctx, where):
+        raise land_mod.LandError("check failed: make test")
+
+    monkeypatch.setattr(land_mod, "_checks", failing)
+
+
+def inside_session(monkeypatch, session: str) -> None:
+    """Make land believe it runs in that tmux session."""
+    from wtx import tmux
+
+    real_out = tmux.out
+    monkeypatch.setenv("TMUX", "/tmp/fake,1,0")
+    monkeypatch.setattr(
+        tmux,
+        "out",
+        lambda args, **kw: session if args[0] == "display-message" else real_out(args, **kw),
+    )
+
+
+def test_the_git_log_sees_a_land_that_goes_to_the_remote(
+    wtx_repo: Path, git_calls: Path, monkeypatch
+) -> None:
+    """The control: the other tests prove nothing if this log is blind."""
+    path = make_worktree(wtx_repo, "feat/control")
+    commit(path)
+    monkeypatch.chdir(wtx_repo)
+
+    assert run(["land", "feat/control", "--local", "--skip-checks"]) == 0
+    seen = remote_git_calls(git_calls)
+    assert "fetch origin" in seen
+    assert "push origin dev" in seen
+    assert "push origin --delete feat/control" in seen
+
+
+def test_land_merge_makes_a_merge_commit_and_cleans_up(
+    local_repo: Path, fake_bin: Path, monkeypatch, capsys
+) -> None:
+    path = make_worktree(local_repo, "feat/local", "dev")
+    commit_file(path, "feature.txt", "x\n")
+    tip = git_out(["rev-parse", "feat/local"], local_repo)
+    monkeypatch.chdir(local_repo)
+
+    assert run(["land", "feat/local"]) == 0
+    parents = git_out(["rev-list", "--parents", "-n1", "dev"], local_repo).split()
+    assert len(parents) == 3, "no merge commit"
+    assert parents[2] == tip
+    assert (local_repo / "feature.txt").is_file()
+    assert git.worktree_path_for(local_repo, "feat/local") is None
+    assert not git.branch_exists(local_repo, "feat/local")
+    assert "nothing was pushed" in capsys.readouterr().err
+    assert_stayed_local(fake_bin)
+
+
+def test_land_merge_works_with_no_remote_at_all(
+    local_repo: Path, fake_bin: Path, monkeypatch
+) -> None:
+    subprocess.run(["git", "remote", "remove", "origin"], cwd=local_repo, check=True)
+    path = make_worktree(local_repo, "feat/alone", "dev")
+    commit(path)
+    monkeypatch.chdir(local_repo)
+
+    assert run(["land", "feat/alone"]) == 0
+    assert git.is_ancestor(local_repo, git_out(["rev-parse", "dev^2"], local_repo), "dev")
+    assert git.worktree_path_for(local_repo, "feat/alone") is None
+    assert_stayed_local(fake_bin)
+
+
+def test_land_merge_keeps_both_sides_when_the_base_moved_on(
+    local_repo: Path, fake_bin: Path, monkeypatch, capsys
+) -> None:
+    """There is no rebase, so the checks see the branch alone. Land says so."""
+    from wtx import land as land_mod
+
+    path = make_worktree(local_repo, "feat/behind", "dev")
+    commit_file(path, "feature.txt", "x\n")
+    commit_file(local_repo, "other.txt", "y\n")
+    monkeypatch.setattr(land_mod, "_checks", lambda ctx, where: None)
+    monkeypatch.chdir(local_repo)
+
+    assert run(["land", "feat/behind"]) == 0
+    assert (local_repo / "feature.txt").is_file()
+    assert (local_repo / "other.txt").is_file()
+    captured = capsys.readouterr()
+    assert "moved on" in captured.out + captured.err
+    assert_stayed_local(fake_bin)
+
+
+def test_land_merge_aborts_on_a_conflict(
+    local_repo: Path, fake_bin: Path, monkeypatch, capsys
+) -> None:
+    path = make_worktree(local_repo, "feat/clash", "dev")
+    commit_file(path, "same.txt", "branch\n")
+    commit_file(local_repo, "same.txt", "base\n")
+    before = git_out(["rev-parse", "dev"], local_repo)
+    monkeypatch.chdir(local_repo)
+
+    assert run(["land", "feat/clash", "--skip-checks"]) == 1
+    assert "could not merge" in capsys.readouterr().err
+    assert not (local_repo / ".git" / "MERGE_HEAD").exists()
+    assert git.is_clean(local_repo)
+    assert_nothing_landed(local_repo, "feat/clash", before)
+    assert_stayed_local(fake_bin)
+
+
+def test_land_merge_refuses_a_dirty_worktree(
+    local_repo: Path, fake_bin: Path, monkeypatch, capsys
+) -> None:
+    path = make_worktree(local_repo, "feat/dirty", "dev")
+    commit(path)
+    (path / "notes.txt").write_text("not committed\n")
+    before = git_out(["rev-parse", "dev"], local_repo)
+    monkeypatch.chdir(local_repo)
+
+    assert run(["land", "feat/dirty"]) == 1
+    assert "uncommitted changes" in capsys.readouterr().err
+    assert_nothing_landed(local_repo, "feat/dirty", before)
+    assert_stayed_local(fake_bin)
+
+
+def test_land_merge_refuses_a_dirty_main_checkout(
+    local_repo: Path, fake_bin: Path, monkeypatch, capsys
+) -> None:
+    path = make_worktree(local_repo, "feat/maindirty", "dev")
+    commit(path)
+    (local_repo / "notes.txt").write_text("not committed\n")
+    before = git_out(["rev-parse", "dev"], local_repo)
+    monkeypatch.chdir(local_repo)
+
+    assert run(["land", "feat/maindirty"]) == 1
+    assert "main checkout" in capsys.readouterr().err
+    assert (local_repo / "notes.txt").is_file()
+    assert_nothing_landed(local_repo, "feat/maindirty", before)
+    assert_stayed_local(fake_bin)
+
+
+def test_land_merge_stops_on_failed_checks(
+    local_repo: Path, fake_bin: Path, monkeypatch, capsys
+) -> None:
+    path = make_worktree(local_repo, "feat/broken", "dev")
+    commit(path)
+    before = git_out(["rev-parse", "dev"], local_repo)
+    fail_checks(monkeypatch)
+    monkeypatch.chdir(local_repo)
+
+    assert run(["land", "feat/broken"]) == 1
+    assert "check failed" in capsys.readouterr().err
+    assert_nothing_landed(local_repo, "feat/broken", before)
+    assert_stayed_local(fake_bin)
+
+
+def test_land_merge_runs_the_checks_in_the_worktree(
+    local_repo: Path, fake_bin: Path, monkeypatch
+) -> None:
+    """Not in the main checkout: only the worktree has its own ports."""
+    from wtx import land as land_mod
+
+    path = make_worktree(local_repo, "feat/where", "dev")
+    commit(path)
+    seen: list[Path] = []
+    monkeypatch.setattr(land_mod, "_checks", lambda ctx, where: seen.append(where))
+    monkeypatch.chdir(local_repo)
+
+    assert run(["land", "feat/where"]) == 0
+    assert [p.resolve() for p in seen] == [path.resolve()]
+
+
+def test_land_merge_honours_skip_checks_and_keep_branch(
+    local_repo: Path, fake_bin: Path, monkeypatch
+) -> None:
+    path = make_worktree(local_repo, "feat/flags", "dev")
+    commit(path)
+    fail_checks(monkeypatch)
+    monkeypatch.chdir(local_repo)
+
+    assert run(["land", "feat/flags", "--skip-checks", "--keep-branch"]) == 0
+    assert git.is_ancestor(local_repo, "feat/flags", "dev")
+    assert git.worktree_path_for(local_repo, "feat/flags") is None
+    assert git.branch_exists(local_repo, "feat/flags")
+    assert_stayed_local(fake_bin)
+
+
+def test_land_local_flag_changes_nothing_under_the_merge_rule(
+    local_repo: Path, fake_bin: Path, monkeypatch
+) -> None:
+    path = make_worktree(local_repo, "feat/both", "dev")
+    commit(path)
+    monkeypatch.chdir(local_repo)
+
+    assert run(["land", "feat/both", "--local", "--skip-checks"]) == 0
+    assert git.worktree_path_for(local_repo, "feat/both") is None
+    assert_stayed_local(fake_bin)
+
+
+def test_land_merge_flag_on_a_repo_without_the_rule_leaves_the_remote_alone(
+    wtx_repo: Path, git_calls: Path, monkeypatch
+) -> None:
+    """prefix+X m works on any repo. There the base ends up ahead of origin."""
+    path = make_worktree(wtx_repo, "feat/once")
+    commit(path)
+    remote_dev = git_out(["ls-remote", "origin", "refs/heads/dev"], wtx_repo)
+    subprocess.run(["git", "push", "-q", "origin", "feat/once"], cwd=path, check=True)
+    log = Path(os.environ["WTX_TEST_CALLS"])
+    log.write_text("")  # the push and ls-remote above are the test's own
+    monkeypatch.chdir(wtx_repo)
+
+    assert run(["land", "feat/once", "--merge", "--skip-checks"]) == 0
+    assert_stayed_local(git_calls)
+    assert git.is_ancestor(wtx_repo, git_out(["rev-parse", "dev^2"], wtx_repo), "dev")
+    assert git_out(["ls-remote", "origin", "refs/heads/dev"], wtx_repo) == remote_dev
+    # The cleanup does not delete the remote branch either.
+    assert git_out(["ls-remote", "--heads", "origin", "feat/once"], wtx_repo) != ""
+    assert not git.branch_exists(wtx_repo, "feat/once")
+
+
+def test_land_merge_cleanup_keeps_a_branch_the_base_does_not_contain(
+    local_repo: Path, fake_bin: Path, monkeypatch, capsys
+) -> None:
+    """With no remote, the local branch can be the only copy of the work. A
+    commit can arrive between the merge and the clean up job."""
+    path = make_worktree(local_repo, "feat/late", "dev")
+    commit(path)
+    monkeypatch.chdir(local_repo)
+
+    assert run(["land", "feat/late", "--cleanup-only"]) == 0
+    assert git.worktree_path_for(local_repo, "feat/late") is None
+    assert git.branch_exists(local_repo, "feat/late")
+    captured = capsys.readouterr()
+    assert "the branch is kept" in captured.out + captured.err
+    assert_stayed_local(fake_bin)
+
+
+def test_land_merge_dry_run_changes_nothing(
+    local_repo: Path, fake_bin: Path, monkeypatch, capsys
+) -> None:
+    path = make_worktree(local_repo, "feat/dry", "dev")
+    commit(path)
+    before = git_out(["rev-parse", "dev"], local_repo)
+    monkeypatch.chdir(local_repo)
+
+    assert run(["--dry-run", "land", "feat/dry", "--skip-checks"]) == 0
+    captured = capsys.readouterr()
+    out = captured.out + captured.err
+    assert "git merge --no-ff --no-edit feat/dry" in out
+    assert "git branch -D feat/dry" in out
+    assert "push" not in out.replace("nothing was pushed", "")
+    assert_nothing_landed(local_repo, "feat/dry", before)
+    assert_stayed_local(fake_bin)
+
+
+def test_merge_key_opens_the_land_window_with_merge(
+    wtx_repo: Path, fake_bin: Path, monkeypatch
+) -> None:
+    path = make_worktree(wtx_repo, "feat/mkey")
+    session = context.load(root=path).session
+    fake_sessions(session)
+    monkeypatch.chdir(wtx_repo)
+
+    args = ["land", "--path", str(path), "--session", session, "--from-tmux", "--merge"]
+    assert run(args) == 0
+    windows = [c for c in calls_of(fake_bin, "tmux") if c.startswith("new-window")]
+    assert len(windows) == 1
+    assert f"-t ={session}: -n land -c {wtx_repo.resolve()} " in windows[0]
+    assert windows[0].endswith(f"{sys.executable} -m wtx land feat/mkey --window --merge")
+
+
+def test_land_merge_inside_its_own_session_hands_the_cleanup_to_tmux(
+    wtx_repo: Path, git_calls: Path, monkeypatch
+) -> None:
+    """The job is another process. Without --merge it would push --delete."""
+    import shlex
+
+    path = make_worktree(wtx_repo, "feat/inside")
+    commit(path)
+    inside_session(monkeypatch, context.load(root=path).session)
+    monkeypatch.chdir(wtx_repo)
+
+    assert run(["land", "feat/inside", "--merge", "--skip-checks"]) == 0
+    assert git.is_ancestor(wtx_repo, "feat/inside", "dev")
+    assert git.worktree_path_for(wtx_repo, "feat/inside") is not None
+    handoff = [c for c in calls_of(git_calls, "tmux") if c.startswith("run-shell -b")]
+    assert len(handoff) == 1
+    tail = shlex.join(
+        [sys.executable, "-m", "wtx", "land", "feat/inside", "--cleanup-only", "--merge"]
+    )
+    assert handoff[0].endswith(f"&& {tail}")
+
+    # What the tmux server then runs, from the main checkout.
+    monkeypatch.delenv("TMUX")
+    assert run(["land", "feat/inside", "--cleanup-only", "--merge"]) == 0
+    assert git.worktree_path_for(wtx_repo, "feat/inside") is None
+    assert not git.branch_exists(wtx_repo, "feat/inside")
+    shown = [c for c in calls_of(git_calls, "tmux") if c.startswith("display-message")]
+    assert any("landed feat/inside into dev" in c for c in shown)
+    assert_stayed_local(git_calls)
+
+
+def test_a_cleanup_under_the_rule_stays_local_without_the_flag(
+    local_repo: Path, fake_bin: Path, monkeypatch
+) -> None:
+    path = make_worktree(local_repo, "feat/rule", "dev")
+    commit(path)
+    subprocess.run(["git", "merge", "-q", "--no-ff", "--no-edit", "feat/rule"], cwd=local_repo)
+    monkeypatch.chdir(local_repo)
+
+    assert run(["land", "feat/rule", "--cleanup-only"]) == 0
+    assert not git.branch_exists(local_repo, "feat/rule")
+    assert_stayed_local(fake_bin)
+
+
+@pytest.mark.parametrize("failure", ["conflict", "dirty main", "checks"])
+def test_land_merge_in_the_window_keeps_the_session_and_shows_why(
+    failure: str, local_repo: Path, fake_bin: Path, monkeypatch, capsys
+) -> None:
+    """prefix+X m that fails: the window waits, the session and worktree stay."""
+    path = make_worktree(local_repo, "feat/stop", "dev")
+    commit_file(path, "same.txt", "branch\n")
+    reason = {
+        "conflict": "could not merge",
+        "dirty main": "main checkout",
+        "checks": "check failed",
+    }
+    if failure == "conflict":
+        commit_file(local_repo, "same.txt", "base\n")
+    elif failure == "dirty main":
+        (local_repo / "notes.txt").write_text("not committed\n")
+    else:
+        fail_checks(monkeypatch)
+    before = git_out(["rev-parse", "dev"], local_repo)
+    inside_session(monkeypatch, context.load(root=path).session)
+    asked: list[str] = []
+    monkeypatch.setattr("builtins.input", lambda prompt="": asked.append(prompt) or "")
+    monkeypatch.chdir(local_repo)
+
+    args = ["land", "feat/stop", "--window", "--merge"]
+    assert run(args + (["--skip-checks"] if failure == "conflict" else [])) == 1
+    assert reason[failure] in capsys.readouterr().err
+    assert len(asked) == 1 and "Press Enter" in asked[0]
+    calls = calls_of(fake_bin, "tmux")
+    assert not [c for c in calls if c.startswith(("run-shell", "kill-session"))]
+    assert not (local_repo / ".git" / "MERGE_HEAD").exists()
+    assert_nothing_landed(local_repo, "feat/stop", before)
+    assert_stayed_local(fake_bin)
+
+
+def test_config_validate_takes_a_land_mode_and_refuses_a_bad_one(
+    wtx_repo: Path, monkeypatch, capsys
+) -> None:
+    cfg = wtx_repo / "wtx.toml"
+    text = cfg.read_text()
+    monkeypatch.chdir(wtx_repo)
+
+    cfg.write_text(text.replace("[repo]\n", '[repo]\nland = "merge"\n', 1))
+    assert run(["config", "validate"]) == 0
+    assert "unknown key" not in capsys.readouterr().err
+
+    cfg.write_text(text.replace("[repo]\n", '[repo]\nland = "squash"\n', 1))
+    assert run(["config", "validate"]) == 1
+    assert "[repo].land 'squash' is not one of pr, merge" in capsys.readouterr().err
+
+
+def test_init_keeps_the_land_rule_through_an_edit(repo: Path) -> None:
+    answers = init_mod.scan(repo)
+    answers.pop("_notes", None)
+    init_mod.write_all(repo, answers)
+    assert "land =" not in (repo / "wtx.toml").read_text()
+    text = (repo / "wtx.toml").read_text().replace("[repo]\n", '[repo]\nland = "merge"\n', 1)
+    (repo / "wtx.toml").write_text(text)
+
+    merged = init_mod.edit_answers(repo)
+    merged.pop("_notes", None)
+    merged.pop("_changes", None)
+    init_mod.write_all(repo, merged, force=True)
+    assert config_mod.load(repo / "wtx.toml").repo.land == "merge"
+
+
+def test_the_schema_doc_and_its_skill_copy_are_identical() -> None:
+    root = Path(__file__).resolve().parents[1]
+    copy = root / "src" / "wtx" / "skills" / "wtx-init" / "references" / "schema.md"
+    assert (root / "docs" / "schema.md").read_bytes() == copy.read_bytes()
 
 
 def test_config_validate_warns_about_an_unknown_key(wtx_repo: Path, monkeypatch, capsys) -> None:

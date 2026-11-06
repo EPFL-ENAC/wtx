@@ -5,7 +5,11 @@ delete a branch that is checked out in a worktree, and the whole point of the
 push guard is that a worktree never touches the base branch.
 
 prefix+X l runs it from the branch session anyway, in a window whose folder
-is the main checkout. See open_window.
+is the main checkout. See open_window. prefix+X m does the same with --merge.
+
+Some repos must never talk to their remote, or have none. [repo].land = "merge"
+or --merge takes the other road: one `git merge --no-ff` in the main checkout,
+and nothing here touches the remote. See _land_merge.
 """
 
 from __future__ import annotations
@@ -18,6 +22,7 @@ import time
 from pathlib import Path
 
 from . import git, review, tmux, wt
+from .config import WtxConfig
 from .context import Ctx, session_name
 from .proc import CommandError, capture, capture_code, is_dry_run, run, run_shell, say, warn, which
 
@@ -27,6 +32,15 @@ WINDOW = "land"
 
 class LandError(Exception):
     pass
+
+
+def merges_locally(cfg: WtxConfig, asked: bool) -> bool:
+    """True when this land must stay off the remote, by the flag or the rule.
+
+    The land and its clean up are two processes and both ask here. A clean up
+    that gets it wrong pushes to a remote the land never touched.
+    """
+    return asked or cfg.repo.land == "merge"
 
 
 def _gh(args: list[str], cwd: Path) -> tuple[int, str, str]:
@@ -68,8 +82,13 @@ def _warn_on_review(ctx: Ctx, branch: str, path: Path) -> None:
         warn(f"the review of {branch} is older than its last commit")
 
 
-def cleanup(ctx: Ctx, branch: str, *, keep_branch: bool = False) -> None:
-    """Remove the worktree and the branch, local and remote."""
+def cleanup(ctx: Ctx, branch: str, *, keep_branch: bool = False, remote: bool = True) -> None:
+    """Remove the worktree and the branch, local and remote.
+
+    With remote=False the origin is left alone. The local branch can then be
+    the only copy of the work, so it goes only if the base really contains it.
+    The job runs after the land, and a commit can arrive between the two.
+    """
     if git.worktree_path_for(ctx.main, branch):
         try:
             wt.remove(ctx.main, branch)
@@ -77,7 +96,14 @@ def cleanup(ctx: Ctx, branch: str, *, keep_branch: bool = False) -> None:
             warn(f"could not remove the worktree: {exc}")
     if keep_branch:
         return
+    base = ctx.cfg.repo.base_branch
+    # In a dry run the merge was only printed, so the base has nothing yet.
+    if not remote and not is_dry_run() and not git.is_ancestor(ctx.main, branch, base):
+        warn(f"{base} does not contain all of {branch}, the branch is kept")
+        return
     run(["git", "branch", "-D", branch], cwd=ctx.main, check=False, quiet=True)
+    if not remote:
+        return
     run(
         ["git", "push", "origin", "--delete", branch],
         cwd=ctx.main,
@@ -91,6 +117,7 @@ def land(
     branch: str,
     *,
     local: bool = False,
+    merge: bool = False,
     skip_checks: bool = False,
     keep_branch: bool = False,
     poll_seconds: int = 20,
@@ -98,6 +125,7 @@ def land(
 ) -> None:
     cfg = ctx.cfg
     base = cfg.repo.base_branch
+    merge = merges_locally(cfg, merge)
 
     if ctx.is_worktree:
         raise LandError(f"run this from the main checkout ({ctx.main}), not from a worktree")
@@ -111,6 +139,38 @@ def land(
         raise LandError(f"{path} has uncommitted changes, commit or stash them first")
     _warn_on_review(ctx, branch, path)
 
+    if merge:
+        _land_merge(ctx, branch, base, path, skip_checks=skip_checks)
+    else:
+        _land_remote(
+            ctx,
+            branch,
+            base,
+            path,
+            local=local,
+            skip_checks=skip_checks,
+            poll_seconds=poll_seconds,
+            timeout_minutes=timeout_minutes,
+        )
+    if tmux.current_session() == session_name(ctx.repo_name, branch):
+        _hand_off_cleanup(ctx, branch, keep_branch=keep_branch, merge=merge)
+    else:
+        cleanup(ctx, branch, keep_branch=keep_branch, remote=not merge)
+    say(f"landed {branch} into {base}" + (", locally, nothing was pushed" if merge else ""))
+
+
+def _land_remote(
+    ctx: Ctx,
+    branch: str,
+    base: str,
+    path: Path,
+    *,
+    local: bool,
+    skip_checks: bool,
+    poll_seconds: int,
+    timeout_minutes: int,
+) -> None:
+    """The land that goes through origin: rebase, push, then a PR or a merge."""
     git.fetch(ctx.main)
     _refuse_a_branch_cut_from_elsewhere(ctx, branch, base)
 
@@ -142,27 +202,27 @@ def land(
             poll_seconds=poll_seconds,
             timeout_minutes=timeout_minutes,
         )
-    if tmux.current_session() == session_name(ctx.repo_name, branch):
-        _hand_off_cleanup(ctx, branch, keep_branch=keep_branch)
-    else:
-        cleanup(ctx, branch, keep_branch=keep_branch)
-    say(f"landed {branch} into {base}")
 
 
-def _hand_off_cleanup(ctx: Ctx, branch: str, *, keep_branch: bool) -> None:
+def _hand_off_cleanup(ctx: Ctx, branch: str, *, keep_branch: bool, merge: bool) -> None:
     """Removing the worktree kills its session, and this land runs in it
     (prefix+X l puts it there). The kill would stop the removal halfway, so
     the tmux server does the clean up, the way `wtx done` hands off.
+
+    --merge goes along: the job is another process, and without it a land
+    forced with the flag would end with a push to delete the remote branch.
     """
     argv = [sys.executable, "-m", "wtx", "land", branch, "--cleanup-only"]
     if keep_branch:
         argv.append("--keep-branch")
+    if merge:
+        argv.append("--merge")
     say("merged. The tmux server removes the worktree, this session is about to close")
     tmux.cmd(["run-shell", "-b", f"cd {shlex.quote(str(ctx.main))} && {shlex.join(argv)}"])
 
 
-def open_window(session: str, main: Path, branch: str) -> None:
-    """The `land` window, for prefix+X l.
+def open_window(session: str, main: Path, branch: str, *, merge: bool = False) -> None:
+    """The `land` window, for prefix+X l and prefix+X m.
 
     It sits in the branch's own session, so a rebase conflict or a failed
     check shows next to the agent that can fix it. It runs from the main
@@ -176,6 +236,8 @@ def open_window(session: str, main: Path, branch: str) -> None:
         tmux.cmd(["select-window", "-t", f"={session}:{WINDOW}"])
         return
     window = [sys.executable, "-m", "wtx", "land", branch, "--window"]
+    if merge:
+        window.append("--merge")
     tmux.cmd(
         [
             "new-window",
@@ -255,14 +317,47 @@ def _land_pr(ctx: Ctx, branch: str, base: str, *, poll_seconds: int, timeout_min
     )
 
 
-def _land_local(ctx: Ctx, branch: str, base: str) -> None:
+def _require_free_base(ctx: Ctx, base: str) -> None:
+    """The main checkout must be able to take the base branch and a merge."""
     if not git.is_clean(ctx.main):
         raise LandError(f"the main checkout {ctx.main} has uncommitted changes")
     other = git.worktree_path_for(ctx.main, base)
     if other and other.resolve() != ctx.main.resolve():
         raise LandError(f"{base} is checked out in {other}, cannot merge it here")
 
+
+def _land_local(ctx: Ctx, branch: str, base: str) -> None:
+    _require_free_base(ctx, base)
+
     run(["git", "checkout", base], cwd=ctx.main)
     run(["git", "pull", "--ff-only"], cwd=ctx.main)
     run(["git", "merge", "--no-ff", branch], cwd=ctx.main)
     run(["git", "push", "origin", base], cwd=ctx.main)
+
+
+def _land_merge(ctx: Ctx, branch: str, base: str, path: Path, *, skip_checks: bool) -> None:
+    """Merge into the local base branch. No fetch, no rebase, no push.
+
+    _refuse_a_branch_cut_from_elsewhere is not called: it only reads origin/*
+    refs, and a repo on this road may have none.
+    """
+    _require_free_base(ctx, base)
+    if not skip_checks:
+        # In the worktree, like --local: it has its own ports and the main
+        # checkout does not. There is no rebase here, so say what is tested.
+        behind = capture(["git", "rev-list", "--count", f"{branch}..{base}"], cwd=ctx.main)
+        if behind.isdigit() and int(behind) > 0:
+            warn(f"{base} moved on, the checks test {branch} alone, not the merge result")
+        _checks(ctx, path)
+
+    run(["git", "checkout", base], cwd=ctx.main)
+    say(f"merging {branch} into {base}")
+    try:
+        # --no-edit: the land window is a terminal, git would open an editor.
+        run(["git", "merge", "--no-ff", "--no-edit", branch], cwd=ctx.main)
+    except CommandError as exc:
+        run(["git", "merge", "--abort"], cwd=ctx.main, check=False, quiet=True)
+        raise LandError(
+            f"could not merge {branch} into {base}, nothing was merged. If it is a "
+            f"conflict, fix it in {path} (git merge {base}), commit, then run wtx land again"
+        ) from exc

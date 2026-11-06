@@ -489,6 +489,7 @@ def _land(args: argparse.Namespace) -> int:
             ctx,
             branch,
             local=args.local,
+            merge=args.merge,
             skip_checks=args.skip_checks,
             keep_branch=args.keep_branch,
         )
@@ -498,7 +499,7 @@ def _land(args: argparse.Namespace) -> int:
 
 
 def _land_from_tmux(args: argparse.Namespace) -> int:
-    """prefix+X l, from any pane of a branch session.
+    """prefix+X l and prefix+X m, from any pane of a branch session.
 
     The tmux server runs this with its output nowhere, so it only opens the
     land window, and the land runs there, where the human sees it. What fails
@@ -526,7 +527,7 @@ def _land_from_tmux(args: argparse.Namespace) -> int:
     except UserError as exc:
         tmux.cmd(["display-message", "-d", "5000", f"wtx land: {exc}"])
         return 1
-    land_mod.open_window(session, main, branch)
+    land_mod.open_window(session, main, branch, merge=args.merge)
     return 0
 
 
@@ -554,7 +555,8 @@ def _land_cleanup(args: argparse.Namespace) -> int:
     """
     ctx = _load()
     branch = args.branch
-    land_mod.cleanup(ctx, branch, keep_branch=args.keep_branch)
+    remote = not land_mod.merges_locally(ctx.cfg, args.merge)
+    land_mod.cleanup(ctx, branch, keep_branch=args.keep_branch, remote=remote)
     if git.worktree_path_for(ctx.main, branch):
         message = (
             f"wtx land: {branch} is merged, but its worktree is still there. Run wtx done {branch}"
@@ -1093,11 +1095,16 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("land", help="rebase, pull request, merge, clean up")
     s.add_argument("branch", nargs="?", default="")
     s.add_argument("--local", action="store_true", help="merge locally instead of a PR")
+    s.add_argument(
+        "--merge",
+        action="store_true",
+        help="merge into the local base branch, never touch the remote",
+    )
     s.add_argument("--skip-checks", action="store_true")
     s.add_argument("--keep-branch", action="store_true")
-    # prefix+X l passes the pane's folder and session, like done. The window
-    # it opens runs --window, and the land there hands --cleanup-only to the
-    # tmux server. See _land_from_tmux.
+    # prefix+X l and m pass the pane's folder and session, like done. The
+    # window they open runs --window, and the land there hands --cleanup-only
+    # to the tmux server. See _land_from_tmux.
     s.add_argument("--path", default="", help=argparse.SUPPRESS)
     s.add_argument("--session", default="", help=argparse.SUPPRESS)
     s.add_argument("--from-tmux", action="store_true", help=argparse.SUPPRESS)

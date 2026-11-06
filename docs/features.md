@@ -43,8 +43,9 @@ file.
 
 `prefix+X` opens a small menu on the session you are in: kill the session,
 close the worktree and keep the branch, close it and discard uncommitted
-changes, or land the branch (`l`, see [Landing](#landing)). `prefix+r` opens
-the review of the branch in hunk, see [Review](#review).
+changes, land the branch (`l`), or merge it locally with no push (`m`, see
+[Landing](#landing)). `prefix+r` opens the review of the branch in hunk, see
+[Review](#review).
 
 ## Ports
 
@@ -270,6 +271,33 @@ and the status line says `landed <branch> into <base>`. Press `prefix+X l`
 again while a land runs and you go back to its window. It does not start a
 second one.
 
+### Local merge
+
+Some repos have no remote, or must never push. With `land = "merge"` under
+`[repo]`, `wtx land` only runs `git merge --no-ff` into the base branch, in the
+main checkout. No fetch, no rebase, no push, and it does not need `gh`.
+`wtx land --merge` does the same for one land, on any repo.
+
+`prefix+X` then `m` runs `wtx land --merge` from the branch session, in the same
+`land` window. It works on any repo. On a repo with a remote, the base branch
+ends up ahead of `origin/<base>`, and you push it when you want. In a repo with
+the rule, `l` and `m` do the same thing.
+
+The land stops before anything changes if the worktree or the main checkout
+has uncommitted changes, or if a `[checks]` command fails. On a merge conflict
+it aborts the merge. In all these cases the session, the worktree and the
+branch stay, and the window shows why.
+
+`[checks]` run in the worktree before the merge, as with `--local`. There is no
+rebase, so if the base moved on, they test the branch alone, not the merge
+result. The land says so. `--skip-checks` and `--keep-branch` work the same.
+`--local` adds nothing here.
+
+After the merge the worktree and the local branch go. The remote branch, if
+there is one, is not touched. With no remote the local branch can be the only
+copy, so it is deleted only if the base contains it. If not, land warns and
+keeps it.
+
 ## Review
 
 `wtx review [branch]` shows the branch diff in [hunk](https://hunk.dev), with
@@ -367,7 +395,7 @@ You do not run these yourself. They are listed so nothing is a mystery.
 | `wtx go <branch> [base]` | branch, worktree, session, agent. Or `all`. |
 | `wtx all` | bring every worktree's session back, detached |
 | `wtx done [branch]` | close a worktree, keep the branch |
-| `wtx land [branch]` | rebase, pull request, merge, clean up |
+| `wtx land [branch]` | rebase, pull request, merge, clean up. `--merge`: local merge, nothing pushed |
 | `wtx review [branch]` | the agent's notes beside the diff, in hunk. `--notes` sends yours back |
 | `wtx open [family] [branch]` | print and open a dev server URL |
 | `wtx curl [family] [path] [curl flags]` | curl one of this worktree's servers, without knowing its port |

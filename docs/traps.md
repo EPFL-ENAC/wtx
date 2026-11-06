@@ -415,6 +415,16 @@ there until the job runs.
 failed check) would take the reason with it. In the window, land waits for
 Enter when it fails, and only then.
 
+**A land that must stay local has to tell its clean up job.** The job is
+another process. Forced with `--merge` on a repo without the rule, it reads
+`wtx.toml`, sees a normal repo, and runs `git push origin --delete`. So the
+hand-off passes `--merge` too, and the land and the job both ask
+`merges_locally`. A test runs the hand-off command and checks no push happens.
+
+**With no remote, `git branch -D` can delete the only copy.** A commit can
+arrive between the merge and the clean up job, and nothing on origin saves it.
+So a local clean up deletes the branch only if the base contains it.
+
 ## desktop notifications
 
 **A `default` action stops the notification from raising anything.** GNOME only

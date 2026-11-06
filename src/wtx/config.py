@@ -44,6 +44,8 @@ class RepoCfg:
     lab: str = ""
     base_branch: str = "main"
     protected_branches: tuple[str, ...] = ("main",)
+    # How `wtx land` lands: see LAND_MODES.
+    land: str = "pr"
 
 
 @dataclass(frozen=True)
@@ -129,6 +131,12 @@ PERMISSION_MODES = (
     "dontAsk",
     "bypassPermissions",
 )
+
+
+# What [repo].land may say. pr goes through the remote. merge never touches it:
+# a typo here would send a repo that must stay local to its remote, so it is an
+# error, not a fallback.
+LAND_MODES = ("pr", "merge")
 
 
 # The effort levels the agent accepts. Same reason as the permission modes.
@@ -579,6 +587,8 @@ def validate(cfg: WtxConfig) -> list[str]:
             f"[repo].protected_branches does not contain the base branch "
             f"'{cfg.repo.base_branch}', a worktree could push to it"
         )
+    if cfg.repo.land not in LAND_MODES:
+        errs.append(f"[repo].land '{cfg.repo.land}' is not one of {', '.join(LAND_MODES)}")
     seen_env: set[str] = set()
     for f in cfg.ports.families:
         if f.env_key in seen_env:
