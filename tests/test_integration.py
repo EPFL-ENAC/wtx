@@ -2392,7 +2392,7 @@ def test_both_agent_facing_documents_name_wtx_curl(wtx_repo: Path, fake_bin: Pat
 
 SIDECAR = {
     "version": 1,
-    "summary": "Add a health endpoint.",
+    "summary": "Add a health endpoint.\n\nChecked: pytest, all pass.",
     "files": [
         {
             "path": "backend/health.py",
@@ -2475,7 +2475,12 @@ def test_review_without_hunk_prints_the_notes_then_the_diff(
     out, err = capfd.readouterr()
     assert "hunk is not installed" in err
     summary = out.index("Add a health endpoint.")
-    assert summary < out.index("backend/health.py: the route") < out.index("+def health():")
+    assert (
+        summary
+        < out.index("Checked: pytest")
+        < out.index("backend/health.py: the route")
+        < out.index("+def health():")
+    )
 
 
 def test_an_answer_hunk_cannot_use_writes_nothing(

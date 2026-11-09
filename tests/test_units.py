@@ -1456,7 +1456,7 @@ def test_only_a_permission_error_blames_the_sandbox(monkeypatch) -> None:
 
 SIDECAR = {
     "version": 1,
-    "summary": "Add a health endpoint.",
+    "summary": "Add a health endpoint.\n\nChecked: pytest, all pass.",
     "files": [
         {
             "path": "backend/app.py",
@@ -1533,6 +1533,17 @@ def test_the_sidecar_is_found_in_prose_and_fences() -> None:
     assert review.extract_sidecar(text) == SIDECAR
     with pytest.raises(review.ReviewError, match="no JSON"):
         review.extract_sidecar("I could not run git diff.")
+
+
+def test_the_review_prompt_asks_what_was_checked() -> None:
+    """The reviewer must know what the agent ran, or that it ran nothing. It
+    goes in the summary: hunk reads the sidecar, so no new key."""
+    from wtx import review
+
+    prompt = review.REVIEW_PROMPT.format(rng="origin/dev...HEAD", author="claude")
+    assert "git diff origin/dev...HEAD" in prompt
+    assert "Checked:" in prompt and "Checked: nothing." in prompt
+    assert set(review.SIDECAR_SCHEMA["properties"]) == {"version", "summary", "files"}
 
 
 def test_a_sidecar_hunk_would_refuse_is_caught() -> None:

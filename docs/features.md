@@ -307,8 +307,9 @@ of the repo, like `wtx brief`, and refuses a protected branch.
 1. It asks the branch agent for its notes. This is one headless turn at the end
    of the worktree's last conversation, so the agent remembers why it did each
    thing. The turn is forked and not saved: the agent pane keeps its own
-   conversation. The answer is a short plan, the files in the order to read
-   them, and one note per hunk.
+   conversation. The answer is a short plan, what the agent ran to check the
+   change (tests, commands, a page it opened, or "nothing"), the files in the
+   order to read them, and one note per hunk.
 2. wtx checks the answer and writes it next to the handoff records, as
    `<session>.review` (the hunk sidecar) and `<session>.review.meta` (the
    commit it was written for). Nothing is written in the checkout.
