@@ -2,7 +2,7 @@
 
 The agent that wrote a branch knows why each hunk is there. wtx asks it, in its
 own conversation (a forked headless resume, never a new brief), for a hunk
-sidecar: the plan in a few lines, the files in reading order, one line per
+sidecar: the plan in a few lines, what it ran to check the change, the files in reading order, one line per
 hunk. hunk shows those notes beside the diff. Notes the human types in hunk go
 back to the same agent when hunk quits, or before with `wtx review --notes`.
 
@@ -46,7 +46,7 @@ Run exactly this command. Read more only when a hunk is not clear without it:
 Answer with one JSON object and nothing else. No prose, no code fence.
 The shape:
 {{"version": 1,
- "summary": "the plan you followed, in a few short lines",
+ "summary": "the plan you followed, then what you ran to check the change",
  "files": [{{"path": "path/from/the/repo/root",
             "summary": "what changed in this file, one line",
             "annotations": [{{"newRange": [12, 20],
@@ -55,6 +55,12 @@ The shape:
                              "author": "{author}"}}]}}]}}
 
 Rules:
+- The top summary is one string in two parts, a blank line between them.
+  First the plan you followed, in a few short lines. Then a part that starts
+  with "Checked:" and says in a few short lines what you ran to check the
+  change (tests, commands, a page you opened) and what it gave.
+- Only what you really ran in this conversation. If you checked nothing,
+  write "Checked: nothing."
 - Put the files in the order a reviewer should read them, the most important first.
 - One annotation per hunk. newRange is [c, c+d-1] from the hunk header @@ -a,b +c,d @@.
 - A hunk that only removes lines (d is 0) gets oldRange [a, a+b-1] instead.
