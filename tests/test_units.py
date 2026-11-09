@@ -1091,6 +1091,21 @@ def test_the_worktree_note_never_says_the_browser_is_no_use(tmp_path) -> None:
         assert "cannot" not in line and "not a way" not in line, line
 
 
+def test_the_worktree_note_says_to_read_the_page_and_click_by_ref(tmp_path) -> None:
+    """A screenshot and a click at a screen position is slow and misses. The
+    note sends the agent to the page tree and to element refs first."""
+    from wtx import envfile
+    from wtx.agents.claude import worktree_rules
+
+    envfile.write_worktree(tmp_path, {"BACKEND_PORT": "18042"}, ["BACKEND_PORT"])
+    ctx = replace(_rctx(_served()), root=tmp_path)
+    text = worktree_rules(ctx)
+
+    assert "`read_page`" in text and "`find`" in text
+    assert "element ref" in text
+    assert "click through the page" not in text
+
+
 def test_a_repo_with_no_servers_gets_no_note(tmp_path) -> None:
     """Nothing to say is better than a section saying nothing."""
     from wtx.agents.claude import worktree_rules
