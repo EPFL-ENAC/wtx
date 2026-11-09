@@ -105,8 +105,10 @@ def worktree_rules(ctx: RenderContext) -> str:
             "",
             "A browser opens these URLs fine. Claude in Chrome drives a real Chrome,",
             "outside the sandbox, so localhost is not blocked for it: open a URL",
-            "from the list above, click through the page, take a screenshot. Use",
-            "the ports listed here only, the other ones belong to other agents.",
+            "from the list above. Read the page with `read_page` or `find`, and",
+            "click by element ref, not by screen position. Take a screenshot only",
+            "when the look of the page matters. Use the ports listed here only,",
+            "the other ones belong to other agents.",
         ]
     if logs:
         out += [
