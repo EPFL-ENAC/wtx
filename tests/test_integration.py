@@ -798,7 +798,7 @@ def test_done_still_refuses_the_main_checkout(
     assert "protected" in capsys.readouterr().err
 
 
-def test_the_session_menu_has_land(fake_bin: Path) -> None:
+def test_the_session_menu_has_land_and_review(fake_bin: Path) -> None:
     from wtx import tmux
 
     tmux.server_options()
@@ -811,6 +811,10 @@ def test_the_session_menu_has_land(fake_bin: Path) -> None:
     assert (
         'merge: local merge, no push, then remove worktree and branch m run-shell -b "wtx land '
         "--path '#{pane_current_path}' --session '#{session_name}' --from-tmux --merge\""
+    ) in menu[0]
+    assert (
+        'review: open the branch review in hunk r run-shell -b "wtx review '
+        "--path '#{pane_current_path}' --from-tmux\""
     ) in menu[0]
 
 

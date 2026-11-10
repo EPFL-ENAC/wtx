@@ -41,7 +41,8 @@ ports. A pane with `log = true` is copied to `.wt-logs/<name>.log`. This is how
 the agent sees a server: it cannot reach the tmux socket, but it can read a
 file.
 
-`prefix+X` opens a small menu on the session you are in: kill the session,
+`prefix+X` opens a small menu on the session you are in: open the review
+(`r`, same as `prefix+r`), kill the session,
 close the worktree and keep the branch, close it and discard uncommitted
 changes, land the branch (`l`), or merge it locally with no push (`m`, see
 [Landing](#landing)). `prefix+r` opens the review of the branch in hunk, see
