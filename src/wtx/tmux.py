@@ -135,7 +135,8 @@ def server_options() -> None:
     detach-on-destroy off: killing a session moves the client to the next one
     instead of dropping out of tmux.
 
-    prefix+X: a small menu on the current session, with done, land and merge.
+    prefix+X: a small menu on the current session, with review, done, land
+    and merge.
     prefix+r: the review of the branch, in hunk. The bindings are server wide
     and the last run owns them, whatever repo it came from, so they bake in no
     path: wtx is on PATH and the branch comes from the pane's own directory.
@@ -150,6 +151,7 @@ def server_options() -> None:
         f'"run-shell -b \\"{resolve} --force\\""'
     )
     land = "wtx land --path '#{pane_current_path}' --session '#{session_name}' --from-tmux"
+    review = "wtx review --path '#{pane_current_path}' --from-tmux"
     cmd(
         [
             "bind-key",
@@ -157,6 +159,10 @@ def server_options() -> None:
             "display-menu",
             "-T",
             " #S ",
+            "review: open the branch review in hunk",
+            "r",
+            f'run-shell -b "{review}"',
+            "",
             "kill session (stay in tmux)",
             "k",
             "kill-session",
@@ -176,7 +182,6 @@ def server_options() -> None:
         ]
     )
     # In place of tmux's own `r`, which redraws the screen.
-    review = "wtx review --path '#{pane_current_path}' --from-tmux"
     cmd(["bind-key", "r", "run-shell", "-b", review])
 
 
