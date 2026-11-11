@@ -185,6 +185,39 @@ def plan_from(payload: dict) -> str:
     return ""
 
 
+def model_from(payload: dict) -> str:
+    """The model that wrote the plan: the one on the last assistant line of
+    the transcript the hook names. Empty when there is no transcript.
+
+    The configured model is only a guess. A revision accepted after the
+    handoff runs on build_model, and /model switches without wtx knowing. Only
+    the end of the file is read: a transcript grows to many megabytes.
+    """
+    name = payload.get("transcript_path")
+    if not isinstance(name, str) or not name:
+        return ""
+    with contextlib.suppress(OSError):
+        with open(name, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            fh.seek(max(0, fh.tell() - 2_000_000))
+            tail = fh.read().decode(errors="replace")
+        for line in reversed(tail.splitlines()):
+            if '"assistant"' not in line:
+                continue
+            try:
+                entry = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(entry, dict) or entry.get("type") != "assistant":
+                continue
+            message = entry.get("message")
+            model = message.get("model") if isinstance(message, dict) else None
+            # "<synthetic>" marks a line Claude Code wrote, not a model.
+            if isinstance(model, str) and model and not model.startswith("<"):
+                return model
+    return ""
+
+
 def save_plan(ctx: context.Ctx, plan: str, model: str) -> None:
     """Append an accepted plan to PLAN.md. Append, never overwrite: a worktree
     can accept several plans, a revision or stage 2 of a big issue.
@@ -297,7 +330,7 @@ def capture(payload: dict, *, cwd: Path | None = None) -> str:
         return ""  # not a wtx checkout, not ours to orchestrate
     orch = ctx.cfg.agent.orchestration
     plan = plan_from(payload)
-    save_plan(ctx, plan, ctx.plan_model if orch.enabled else ctx.llm)
+    save_plan(ctx, plan, model_from(payload) or (ctx.plan_model if orch.enabled else ctx.llm))
     if not orch.enabled:
         trace(f"  no: orchestration off in {ctx.main}")
         return ""

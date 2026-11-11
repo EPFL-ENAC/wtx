@@ -1746,7 +1746,7 @@ def _enable_orchestration(root: Path, **over) -> None:
     (root / "wtx.toml").write_text("\n".join(kept) + f"\n\n[agent.orchestration]\n{body}\n")
 
 
-def _accept(path: Path, plan: str, *, conversation: str = "conv-1") -> str:
+def _accept(path: Path, plan: str, *, conversation: str = "conv-1", **extra: str) -> str:
     from wtx import orchestrate
 
     return orchestrate.capture(
@@ -1755,6 +1755,7 @@ def _accept(path: Path, plan: str, *, conversation: str = "conv-1") -> str:
             "session_id": conversation,
             "tool_name": "ExitPlanMode",
             "tool_input": {"plan": plan},
+            **extra,
         }
     )
 
@@ -2893,6 +2894,35 @@ def test_every_accepted_plan_is_kept_in_the_worktree(wtx_repo: Path, fake_bin: P
     assert text.count("# Plan, ") == 2
     assert text.index("the first plan") < text.index("the revised plan")
     assert git.is_clean(path)
+
+
+def test_the_plan_header_names_the_model_that_wrote_the_plan(
+    wtx_repo: Path, fake_bin: Path, tmp_path: Path
+) -> None:
+    """Not the configured one: a /model switch or a revision after the handoff
+    runs on another model. Without a transcript, the configured one."""
+    from wtx import orchestrate
+
+    path = make_worktree(wtx_repo, "feat/which-model")
+    transcript = tmp_path / "conv.jsonl"
+    lines = [
+        {"type": "assistant", "message": {"model": "claude-old-1"}},
+        {"type": "user", "message": {"content": "use another model"}},
+        {"type": "assistant", "message": {"model": "claude-test-9"}},
+        {"type": "assistant", "message": {"model": "<synthetic>"}},
+        {"type": "user", "message": {"content": "assistant"}},
+    ]
+    transcript.write_text("".join(json.dumps(x) + "\n" for x in lines) + "{not json\n")
+    _accept(path, "1. the first plan\n", transcript_path=str(transcript))
+    _accept(path, "1. the second plan\n")
+
+    heads = [
+        line
+        for line in (path / orchestrate.PLAN_FILE).read_text().splitlines()
+        if line.startswith("# Plan, ")
+    ]
+    assert heads[0].endswith(", claude-test-9")
+    assert len(heads) == 2 and "claude-test-9" not in heads[1]
 
 
 def test_a_plan_md_that_git_does_not_ignore_is_left_alone(wtx_repo: Path, fake_bin: Path) -> None:
