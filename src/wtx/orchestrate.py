@@ -192,11 +192,21 @@ def save_plan(ctx: context.Ctx, plan: str, model: str) -> None:
     The main checkout is skipped, land never reads it. The same plan twice in a
     row is skipped too, the hook can fire more than once for one acceptance.
     A failed write only traces: it must never change what the hook answers.
+
+    Only an ignored PLAN.md is written. Otherwise it is the repo's own file
+    (tracked, land would publish its text as a plan), or install-machine was
+    not re-run and the plan would make the worktree dirty.
     """
     if not plan or not ctx.is_worktree:
         return
     path = ctx.root / PLAN_FILE
-    with contextlib.suppress(OSError):
+    ignored = subprocess.run(
+        ["git", "check-ignore", "-q", PLAN_FILE], cwd=ctx.root, capture_output=True, check=False
+    )
+    if ignored.returncode != 0:
+        trace(f"  plan not saved: git does not ignore {path}")
+        return
+    with contextlib.suppress(OSError, ValueError):
         if path.is_file() and path.read_text().rstrip().endswith(plan.rstrip()):
             trace(f"  plan already in {path}")
             return

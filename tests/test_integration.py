@@ -2895,6 +2895,36 @@ def test_every_accepted_plan_is_kept_in_the_worktree(wtx_repo: Path, fake_bin: P
     assert git.is_clean(path)
 
 
+def test_a_plan_md_that_git_does_not_ignore_is_left_alone(wtx_repo: Path, fake_bin: Path) -> None:
+    """A tracked PLAN.md is the repo's own file: land would publish its text."""
+    from wtx import orchestrate
+
+    path = make_worktree(wtx_repo, "feat/own-plan")
+    (path / ".gitignore").write_text("")
+    commit_file(path, orchestrate.PLAN_FILE, "our roadmap\n")
+    assert _accept(path, "1. a plan\n") == ""
+    assert (path / orchestrate.PLAN_FILE).read_text() == "our roadmap\n"
+
+
+def test_a_marker_quoted_in_a_sentence_does_not_cut_the_text(tmp_path: Path) -> None:
+    """wtx dogfoods itself: its briefs and plans talk about these markers."""
+    from wtx import land as land_mod
+    from wtx import orchestrate
+
+    (tmp_path / "PROMPT.sent.md").write_text(
+        f"Split on `{orchestrate.INSTRUCTION_MARK}` lines.\nKeep this.\n"
+        + orchestrate.PLAN_INSTRUCTION
+    )
+    (tmp_path / orchestrate.PLAN_FILE).write_text(
+        f"{orchestrate.PLAN_MARK}\n# Plan, 2026-11-11 10:00, m\n\n"
+        f"1. split on\n{orchestrate.PLAN_MARK}\nlines\n2. the end\n\n"
+    )
+    text = land_mod._plans_text(tmp_path, collapsed=True)
+    assert text.count("<details>") == 2
+    assert "Keep this." in text and "2. the end" in text
+    assert "Added by wtx" not in text
+
+
 _PLANS_GH = """#!{python}
 import json, os, sys
 from pathlib import Path
@@ -2955,6 +2985,7 @@ def test_land_posts_the_brief_and_the_plans_once(
     """Before the merge, while the worktree still holds the files. A re-run of
     land finds its own comment and posts no second copy."""
     from wtx import land as land_mod
+    from wtx import orchestrate
 
     path = make_worktree(wtx_repo, "feat/kept")
     commit(path, "work")
@@ -2968,7 +2999,8 @@ def test_land_posts_the_brief_and_the_plans_once(
     monkeypatch.chdir(wtx_repo)
     assert run(["land", "feat/kept"]) == 0
     # The worktree is gone now: run the post again on a copy of its files.
-    land_mod._post_plans(context.load(root=wtx_repo), "feat/kept", saved)
+    ctx = context.load(root=wtx_repo)
+    land_mod._post_plans(ctx, "feat/kept", saved)
 
     gh = calls_of(fake_bin, "gh")
     comments = [i for i, c in enumerate(gh) if c.startswith("pr comment feat/kept")]
@@ -2978,11 +3010,32 @@ def test_land_posts_the_brief_and_the_plans_once(
     assert not any(c.startswith("pr edit") or c.startswith("issue") for c in gh)
 
     body = (state / "pr-feat-kept.md").read_text()
-    assert body.startswith("<!-- wtx-plans feat/kept -->")
+    assert body.startswith("<!-- wtx-plans feat/kept ")
     assert body.count("<details>") == 3
     assert "Keep the plans." in body
     assert "first plan" in body and "second plan" in body
     assert "Added by wtx" not in body
+
+    # A plan accepted after that comment (a failed land, a fix) is posted.
+    with (saved / "PLAN.md").open("a") as fh:
+        fh.write(f"{orchestrate.PLAN_MARK}\n# Plan, 2026-11-11 10:00, m\n\n1. the fix\n\n")
+    land_mod._post_plans(ctx, "feat/kept", saved)
+    gh = calls_of(fake_bin, "gh")
+    assert len([c for c in gh if c.startswith("pr comment feat/kept")]) == 2
+    assert "the fix" in (state / "pr-feat-kept.md").read_text()
+
+
+def test_a_pr_merged_by_hand_still_gets_the_plans(
+    wtx_repo: Path, fake_bin: Path, monkeypatch
+) -> None:
+    path = make_worktree(wtx_repo, "feat/by-hand")
+    commit(path, "work")
+    _brief_and_plans(path)
+    state = _plans_gh(fake_bin)
+    (state / "merged").touch()
+    monkeypatch.chdir(wtx_repo)
+    assert run(["land", "feat/by-hand"]) == 0
+    assert any(c.startswith("pr comment feat/by-hand") for c in calls_of(fake_bin, "gh"))
 
 
 def test_land_posts_no_comment_without_a_brief_or_a_plan(
@@ -3059,3 +3112,30 @@ def test_plans_docs_commits_one_file_on_the_branch(
     assert "Keep the plans." in doc and "first plan" in doc and "second plan" in doc
     assert "Added by wtx" not in doc
     assert_stayed_local(fake_bin)
+
+
+def test_plans_docs_writes_nothing_in_a_dry_run_and_undoes_a_failed_commit(
+    local_repo: Path, fake_bin: Path, monkeypatch
+) -> None:
+    """A file left behind makes the worktree dirty, and the next land stops."""
+    from wtx import land as land_mod
+    from wtx import proc
+
+    _set_plans(local_repo, "docs")
+    path = make_worktree(local_repo, "feat/undo", "dev")
+    _brief_and_plans(path)
+    ctx = context.load(root=local_repo)
+    head = git_out(["rev-parse", "HEAD"], path)
+
+    monkeypatch.setattr(proc, "DRY_RUN", True)
+    land_mod._commit_plans(ctx, "feat/undo", path)
+    monkeypatch.setattr(proc, "DRY_RUN", False)
+    assert git.is_clean(path)
+
+    hook = Path(git_out(["rev-parse", "--git-common-dir"], path)) / "hooks" / "pre-commit"
+    hook.write_text("#!/bin/sh\nexit 1\n")
+    hook.chmod(0o755)
+    with pytest.raises(land_mod.LandError):
+        land_mod._commit_plans(ctx, "feat/undo", path)
+    assert git.is_clean(path)
+    assert git_out(["rev-parse", "HEAD"], path) == head

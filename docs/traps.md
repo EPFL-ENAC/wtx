@@ -505,10 +505,13 @@ and the agent carries on. `wtx notify` still sends a desktop notification,
 titled with the directory, and the Explore agent runs on haiku there too.
 Nothing breaks, but it surprises people.
 
-**Plans are split on a marker line, not on headings.** A plan has its own
+**`wtx land` splits plans on a marker line, not on headings.** A plan has its own
 `#` headings and `---` rules, so `wtx land` cannot tell one plan from the next
 by those. Each entry in `PLAN.md` starts with `<!-- wtx-plan -->`, and land
-splits on that. The comment that land posts starts with
-`<!-- wtx-plans <branch> -->`, and a second land looks for it before it posts.
-The marker names the branch, so stage 2 of an issue (a new branch) still posts
-on the same issue. A test posts twice and finds one comment.
+uses that line. The comment that land posts starts with
+`<!-- wtx-plans <branch> <hash> -->`, and a second land looks for it before
+it posts. The marker names the branch, so stage 2 of an issue (a new branch)
+still posts on the same issue. The hash is of the text, so a plan accepted
+after a failed land is posted on the next land. Both markers count only as a
+whole line, because a wtx brief often quotes them in a sentence. A test posts
+twice and finds one comment.

@@ -18,8 +18,10 @@ and _commit_plans.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import re
 import shlex
 import sys
 import tempfile
@@ -143,8 +145,8 @@ def land(
         raise LandError(f"no worktree for {branch}")
     if not git.is_clean(path):
         raise LandError(f"{path} has uncommitted changes, commit or stash them first")
+    _warn_on_review(ctx, branch, path)  # before the docs commit moves HEAD
     _commit_plans(ctx, branch, path)
-    _warn_on_review(ctx, branch, path)
 
     if merge:
         _land_merge(ctx, branch, base, path, skip_checks=skip_checks)
@@ -296,13 +298,14 @@ def _land_pr(
             cwd=ctx.main,
         )
         state, url = pr_state(ctx.main, branch)
+    if url:
+        say(f"pull request: {url}")
+    # Before the merge, and before the merged return: once land goes on, the
+    # worktree and its files are removed. A merged PR still takes a comment.
+    _post_plans(ctx, branch, path)
     if state == "MERGED":
         say(f"already merged: {url}")
         return
-    if url:
-        say(f"pull request: {url}")
-    # Before the merge: once it lands, the worktree and its files are removed.
-    _post_plans(ctx, branch, path)
 
     code = run(
         ["gh", "pr", "merge", branch, "--merge", "--auto"],
@@ -379,26 +382,31 @@ def _land_merge(ctx: Ctx, branch: str, base: str, path: Path, *, skip_checks: bo
 # the brief and the plans, published before the worktree goes
 
 
+_PLAN_SPLIT = re.compile(rf"(?m)^{re.escape(orchestrate.PLAN_MARK)}\n(?=# Plan, )")
+
+
 def _plans_text(path: Path, *, collapsed: bool) -> str:
     """The brief and every accepted plan, empty when the worktree has neither.
 
     collapsed puts each one in a <details> block, for a comment. The blank
     line after </summary> is what makes GitHub render the markdown inside.
     wtx's own instruction to the planner is cut from the brief: it is not the
-    human's task.
+    human's task. Both marks count only as a whole line, so a brief or a plan
+    that quotes them in a sentence is not cut there.
     """
     parts: list[tuple[str, str]] = []
     brief_file = path / PROMPT_SENT
     if brief_file.is_file():
-        brief = brief_file.read_text().split(orchestrate.INSTRUCTION_MARK)[0].strip()
-        if brief:
-            parts.append(("Brief", brief))
+        brief = brief_file.read_text(errors="replace")
+        brief = brief.rpartition(f"\n{orchestrate.INSTRUCTION_MARK}\n")[0] or brief
+        if brief.strip():
+            parts.append(("Brief", brief.strip()))
     plan_file = path / orchestrate.PLAN_FILE
     if plan_file.is_file():
-        for entry in plan_file.read_text().split(orchestrate.PLAN_MARK):
-            head, _, body = entry.strip().partition("\n")
-            if head:
-                parts.append((head.lstrip("# ").strip(), body.strip()))
+        text = plan_file.read_text(errors="replace")
+        for entry in _PLAN_SPLIT.split(text)[1:]:
+            head, _, body = entry.partition("\n")
+            parts.append((head.lstrip("# ").strip(), body.strip()))
     if collapsed:
         blocks = [f"<details><summary>{t}</summary>\n\n{b}\n\n</details>" for t, b in parts]
     else:
@@ -414,7 +422,11 @@ def _closing_issues(cwd: Path, branch: str) -> list[str]:
         refs = json.loads(out).get("closingIssuesReferences") or []
     except (json.JSONDecodeError, AttributeError):
         return []
-    return [str(r["number"]) for r in refs if isinstance(r, dict) and r.get("number")]
+    # The url, not the number: "Fixes other/repo#5" closes an issue that gh
+    # would read as #5 of this repo.
+    return [
+        str(r.get("url") or r["number"]) for r in refs if isinstance(r, dict) and r.get("number")
+    ]
 
 
 def _has_comment(cwd: Path, kind: str, ref: str, marker: str) -> bool:
@@ -435,9 +447,10 @@ def _has_comment(cwd: Path, kind: str, ref: str, marker: str) -> bool:
 def _post_plans(ctx: Ctx, branch: str, path: Path) -> None:
     """One comment with the brief and the plans, on the PR or its issue.
 
-    Once per target: a re-run of land finds the marker and posts nothing. The
-    marker names the branch, so stage 2 of an issue (a second PR, a second
-    branch) still posts on that issue. A failure only warns: record keeping
+    Once per target and per text: a re-run of land finds the marker and posts
+    nothing. The marker names the branch, so stage 2 of an issue (a second PR,
+    a second branch) still posts on that issue. It also holds a hash of the
+    text, so a plan accepted after a failed land is posted on the next one. A failure only warns: record keeping
     does not block a merge. The body goes through a file, a multi-line
     argument would break the one-line-per-call logs.
     """
@@ -454,7 +467,8 @@ def _post_plans(ctx: Ctx, branch: str, path: Path) -> None:
             targets = [("issue", n) for n in issues]
         else:
             say("the pull request closes no issue, the plans go on the pull request")
-    marker = f"<!-- wtx-plans {branch} -->"
+    digest = hashlib.sha256(text.encode()).hexdigest()[:12]
+    marker = f"<!-- wtx-plans {branch} {digest} -->"
     body = f"{marker}\n\n{text}\n"
     for kind, ref in targets:
         if _has_comment(ctx.main, kind, ref, marker):
@@ -486,7 +500,12 @@ def _commit_plans(ctx: Ctx, branch: str, path: Path) -> None:
         return
     rel = Path(ctx.cfg.repo.plans_dir) / f"{git.slug(branch)}.md"
     target = path / rel
-    if target.is_file() and target.read_text() == text + "\n":
+    # Config validation only warns on this road: refuse here, before a write.
+    if not target.resolve().is_relative_to(path.resolve()):
+        raise LandError(f"plans_dir {ctx.cfg.repo.plans_dir!r} is outside the repo")
+    # HEAD, not the file: a file left by a failed commit must not count as done.
+    code, committed, _ = capture_code(["git", "show", f"HEAD:{rel.as_posix()}"], cwd=path)
+    if code == 0 and committed == text.strip():
         return
     if is_dry_run():
         say(f"would write and commit {rel}")
@@ -498,4 +517,7 @@ def _commit_plans(ctx: Ctx, branch: str, path: Path) -> None:
         run(["git", "add", "--", str(rel)], cwd=path, quiet=True)
         run(["git", "commit", "-q", "-m", f"docs: plan for {branch}", "--", str(rel)], cwd=path)
     except CommandError as exc:
+        # Undo, or the next land stops on a dirty worktree for a file wtx made.
+        run(["git", "reset", "-q", "--", str(rel)], cwd=path, check=False, quiet=True)
+        target.unlink(missing_ok=True)
         raise LandError(f"could not commit {rel} in {path}") from exc
