@@ -185,6 +185,39 @@ def forget_conversation(session: str) -> None:
         conversation_file(session).unlink(missing_ok=True)
 
 
+PHASES = ("plan", "build")
+
+
+def phase_file(session: str) -> Path:
+    """Beside the state file, but not *.json: the monitor reads those."""
+    return state_dir() / f"{safe_name(session)}.phase"
+
+
+def remember_phase(session: str, phase: str) -> None:
+    """plan or build, for the agent's status line. See statusline.py.
+
+    The agent pane cannot say it: a resumed conversation does not know it was
+    briefed, and plan mode is not in what Claude Code gives the status line.
+    """
+    if phase not in PHASES or is_dry_run():
+        return
+    with contextlib.suppress(OSError):
+        phase_file(session).write_text(phase)
+
+
+def phase(session: str) -> str:
+    try:
+        value = phase_file(session).read_text().strip()
+    except OSError:
+        return ""
+    return value if value in PHASES else ""
+
+
+def forget_phase(session: str) -> None:
+    with contextlib.suppress(OSError):
+        phase_file(session).unlink(missing_ok=True)
+
+
 def clear_state(session: str) -> None:
     with contextlib.suppress(OSError):
         state_file(session).unlink(missing_ok=True)

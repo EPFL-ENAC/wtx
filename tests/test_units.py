@@ -484,8 +484,40 @@ def test_install_machine_says_already_there_once_the_hooks_are_in(tmp_path) -> N
     before = change.path.read_text()
     assert change.needed()
     assert change.path.read_text() == before  # asking writes nothing
-    machine._merge_hooks(change.path, json.loads(change.body)["hooks"])
+    machine._merge_settings(change.path, json.loads(change.body))
     assert not change.needed()
+
+
+def test_install_machine_sets_the_status_line_and_keeps_a_users_own(tmp_path) -> None:
+    """The wtx status line goes in once. A status line the user wrote stays:
+    it is theirs, and show() says so."""
+    from wtx import machine
+
+    body = json.loads(machine.planned("claude")[-1].body)
+    settings = _settings(tmp_path, Stop=[("", "/x/persist.sh")])
+    assert machine._merge_settings(settings, body)
+    data = json.loads(settings.read_text())
+    assert data["statusLine"]["command"] == "wtx statusline"
+    assert data["env"]["FORCE_HYPERLINK"] == "1"
+    assert machine._merge_settings(settings, body) is False  # second run: nothing to do
+
+    data["statusLine"] = {"type": "command", "command": "~/my-line.sh"}
+    data["env"]["FORCE_HYPERLINK"] = "0"
+    settings.write_text(json.dumps(data))
+    assert machine._merge_settings(settings, body) is False
+    data = json.loads(settings.read_text())
+    assert data["statusLine"]["command"] == "~/my-line.sh"
+    assert data["env"]["FORCE_HYPERLINK"] == "0"
+
+
+def test_tmux_lets_links_through_from_3_4(tmp_path, monkeypatch) -> None:
+    from wtx import machine
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(machine, "tmux_version", lambda: (3, 4))
+    assert any(machine.HYPERLINKS_LINE in c.body for c in machine.planned("claude"))
+    monkeypatch.setattr(machine, "tmux_version", lambda: (3, 3))
+    assert not any(machine.HYPERLINKS_LINE in c.body for c in machine.planned("claude"))
 
 
 def test_install_machine_installs_every_shipped_skill(tmp_path) -> None:
