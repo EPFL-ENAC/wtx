@@ -53,6 +53,11 @@ wtx land feat/thing                   # rebase, PR, merge, clean up (main checko
 wtx done feat/thing                   # close the worktree, keep the branch
 ```
 
+wtx appends every plan that you accept to `PLAN.md` in the worktree. `wtx land`
+posts the brief and the plans as one comment on the pull request before the
+merge. `[repo].plans` sends them to the issue or to a file in `docs/`
+instead, or turns this off.
+
 ## Docs
 
 - [`docs/features.md`](docs/features.md), a short tour of every feature and command

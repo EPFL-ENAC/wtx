@@ -175,6 +175,15 @@ next message (`claude -r <id>`, the id its hooks gave `wtx notify`; `claude
 In Claude Code, the `/wtx-create` skill writes the brief with you and runs
 `wtx go` for you.
 
+wtx appends every plan that you accept to `PLAN.md` at the worktree root,
+with a header that gives the date and the model. It does this with or without
+orchestration. A revision, or stage 2 of a big issue, goes after the first
+plan and does not replace it. Both ignore lists carry `PLAN.md`, so the
+worktree stays clean. wtx writes `PLAN.md` only when git ignores it, so a
+`PLAN.md` that your repo tracks stays as it is. `wtx land` publishes the brief
+and the plans before it removes the worktree. See [Keeping the plans](#keeping-the-plans). opencode has
+no `ExitPlanMode` hook, so it saves no plan.
+
 ## Plan on one model, build on another
 
 Turn on `[agent.orchestration]` and a brief plans on `plan_model`, in plan
@@ -298,6 +307,34 @@ After the merge the worktree and the local branch go. The remote branch, if
 there is one, is not touched. With no remote the local branch can be the only
 copy, so it is deleted only if the base contains it. If not, land warns and
 keeps it.
+
+### Keeping the plans
+
+The brief (`PROMPT.sent.md`) and the accepted plans (`PLAN.md`) exist only in
+the worktree, and the land removes it. `plans` under `[repo]` tells `wtx land`
+where to publish them first. If the worktree has neither file, the land does
+nothing.
+
+| `plans` | What `wtx land` does |
+| --- | --- |
+| `pr` (default) | One comment on the pull request, before the merge. The brief and each plan are in their own collapsed block. |
+| `issue` | The same comment, on each issue that the pull request closes. If it closes none, the comment goes on the pull request. |
+| `docs` | Writes `<plans_dir>/<branch>.md` (`docs/plans` by default) in the worktree and commits it on the branch, before the land. No comment. |
+| `off` | Nothing. wtx still keeps `PLAN.md` in the worktree. |
+
+The comment starts with one line that you can read without a click. The
+brief and each plan are folded below it, and each plan names its date and its
+model. GitHub refuses a comment over 65,536 characters, so land splits a
+longer text over several comments.
+
+Land posts a comment once per branch and text. A second land finds it and
+posts no copy. If you accept a new plan between two lands, the second land
+posts a new comment with it. If a land stops halfway through several
+comments, the next land posts only the missing ones.
+`pr` and `issue` need a pull request, so `--local` and `--merge` post nothing.
+`docs` works with every kind of land (pull request, `--local`, `--merge`),
+because it is only a commit. A comment that fails gives a warning and the
+land goes on. wtx never changes the pull request body.
 
 ## Review
 

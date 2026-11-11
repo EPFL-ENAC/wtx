@@ -32,7 +32,9 @@ usually the better lever and that model choice suits the kind of work rather
 than the individual task, so every plan implements on `build_model` and the
 plan's own `wtx-effort:` line decides how hard it works.
 
-Nothing here happens unless a repo sets `[agent.orchestration].enabled`.
+Nothing here hands off unless a repo sets `[agent.orchestration].enabled`.
+Saving the accepted plan to PLAN.md happens everywhere: keeping the plan is
+not the model handoff, and `wtx land` reads that file to publish it.
 """
 
 from __future__ import annotations
@@ -51,6 +53,13 @@ from .agents import base as agents
 from .proc import warn
 
 EFFORT_MARKER = "wtx-effort:"
+
+# Every accepted plan is appended here, at the worktree root. Both ignore
+# lists carry it, or the first plan makes the worktree dirty and land refuses.
+PLAN_FILE = "PLAN.md"
+# Starts each entry. Land splits on it: a plan has its own headings and `---`
+# rules, so neither can tell one plan from the next.
+PLAN_MARK = "<!-- wtx-plan -->"
 
 # Marks the block wtx appends to a brief, so a reader can tell wtx's
 # instructions to the planner from the human's own task.
@@ -176,6 +185,71 @@ def plan_from(payload: dict) -> str:
     return ""
 
 
+def model_from(payload: dict) -> str:
+    """The model that wrote the plan: the one on the last assistant line of
+    the transcript the hook names. Empty when there is no transcript.
+
+    The configured model is only a guess. A revision accepted after the
+    handoff runs on build_model, and /model switches without wtx knowing. Only
+    the end of the file is read: a transcript grows to many megabytes.
+    """
+    name = payload.get("transcript_path")
+    if not isinstance(name, str) or not name:
+        return ""
+    with contextlib.suppress(OSError):
+        with open(name, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            fh.seek(max(0, fh.tell() - 2_000_000))
+            tail = fh.read().decode(errors="replace")
+        for line in reversed(tail.splitlines()):
+            if '"assistant"' not in line:
+                continue
+            try:
+                entry = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(entry, dict) or entry.get("type") != "assistant":
+                continue
+            message = entry.get("message")
+            model = message.get("model") if isinstance(message, dict) else None
+            # "<synthetic>" marks a line Claude Code wrote, not a model.
+            if isinstance(model, str) and model and not model.startswith("<"):
+                return model
+    return ""
+
+
+def save_plan(ctx: context.Ctx, plan: str, model: str) -> None:
+    """Append an accepted plan to PLAN.md. Append, never overwrite: a worktree
+    can accept several plans, a revision or stage 2 of a big issue.
+
+    The main checkout is skipped, land never reads it. The same plan twice in a
+    row is skipped too, the hook can fire more than once for one acceptance.
+    A failed write only traces: it must never change what the hook answers.
+
+    Only an ignored PLAN.md is written. Otherwise it is the repo's own file
+    (tracked, land would publish its text as a plan), or install-machine was
+    not re-run and the plan would make the worktree dirty.
+    """
+    if not plan or not ctx.is_worktree:
+        return
+    path = ctx.root / PLAN_FILE
+    ignored = subprocess.run(
+        ["git", "check-ignore", "-q", PLAN_FILE], cwd=ctx.root, capture_output=True, check=False
+    )
+    if ignored.returncode != 0:
+        trace(f"  plan not saved: git does not ignore {path}")
+        return
+    with contextlib.suppress(OSError, ValueError):
+        if path.is_file() and path.read_text().rstrip().endswith(plan.rstrip()):
+            trace(f"  plan already in {path}")
+            return
+        stamp = time.strftime("%Y-%m-%d %H:%M")
+        header = f"# Plan, {stamp}, {model}" if model else f"# Plan, {stamp}"
+        with path.open("a") as fh:
+            fh.write(f"{PLAN_MARK}\n{header}\n\n{plan.rstrip()}\n\n")
+        trace(f"  plan saved to {path}")
+
+
 # ---------------------------------------------------------------------------
 # the record a handoff leaves behind
 
@@ -236,7 +310,8 @@ def claim(session: str) -> Path | None:
 def capture(payload: dict, *, cwd: Path | None = None) -> str:
     """PostToolUse on ExitPlanMode. Returns what the hook should print.
 
-    An empty string means wtx has nothing to say and the agent carries on, the
+    The plan is saved to PLAN.md first, orchestration or not. After that, an
+    empty string means wtx has nothing to say and the agent carries on, the
     answer for every repo that has not turned orchestration on.
     """
     # A headless run (wtx review) is a side trip. Its plan is nobody's to hand off.
@@ -257,10 +332,11 @@ def capture(payload: dict, *, cwd: Path | None = None) -> str:
     # the handoff below. The status line shows it.
     notify.remember_phase(ctx.session, "build")
     orch = ctx.cfg.agent.orchestration
+    plan = plan_from(payload)
+    save_plan(ctx, plan, model_from(payload) or (ctx.plan_model if orch.enabled else ctx.llm))
     if not orch.enabled:
         trace(f"  no: orchestration off in {ctx.main}")
         return ""
-    plan = plan_from(payload)
     conversation = str(payload.get("session_id", ""))
     if not plan or not conversation:
         # With no conversation to resume there is no handoff to make, and

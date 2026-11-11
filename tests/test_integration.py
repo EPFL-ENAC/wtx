@@ -1746,7 +1746,7 @@ def _enable_orchestration(root: Path, **over) -> None:
     (root / "wtx.toml").write_text("\n".join(kept) + f"\n\n[agent.orchestration]\n{body}\n")
 
 
-def _accept(path: Path, plan: str, *, conversation: str = "conv-1") -> str:
+def _accept(path: Path, plan: str, *, conversation: str = "conv-1", **extra: str) -> str:
     from wtx import orchestrate
 
     return orchestrate.capture(
@@ -1755,6 +1755,7 @@ def _accept(path: Path, plan: str, *, conversation: str = "conv-1") -> str:
             "session_id": conversation,
             "tool_name": "ExitPlanMode",
             "tool_input": {"plan": plan},
+            **extra,
         }
     )
 
@@ -1780,6 +1781,7 @@ def test_an_accepted_plan_continues_on_the_implementation_model(
     )
     assert answer["continue"] is False
     assert "opus" in answer["stopReason"]
+    assert "1. write it" in (path / orchestrate.PLAN_FILE).read_text()
 
     assert len(no_fork) == 1
     orchestrate.run(no_fork[0])
@@ -2868,3 +2870,335 @@ def test_teardown_drops_the_review(wtx_repo: Path, fake_bin: Path) -> None:
     teardown.run_teardown(ctx)
     assert not review.sidecar_file(ctx.session).exists()
     assert not review.meta_file(ctx.session).exists()
+
+
+# -- keeping the plans ----------------------------------------------------------
+
+
+def test_every_accepted_plan_is_kept_in_the_worktree(wtx_repo: Path, fake_bin: Path) -> None:
+    """Saving the plan is not the handoff: it happens with orchestration off.
+
+    A revision or stage 2 is appended, never written over the first plan. The
+    hook can fire twice for one acceptance, and that adds nothing. And the file
+    is ignored, or the first plan makes the worktree dirty and land refuses it.
+    """
+    from wtx import orchestrate
+
+    path = make_worktree(wtx_repo, "feat/plans")
+    assert _accept(path, "1. the first plan\n") == ""
+    assert _accept(path, "1. the revised plan\n") == ""
+    assert _accept(path, "1. the revised plan\n") == ""
+
+    text = (path / orchestrate.PLAN_FILE).read_text()
+    assert text.count(orchestrate.PLAN_MARK) == 2
+    assert text.count("# Plan, ") == 2
+    assert text.index("the first plan") < text.index("the revised plan")
+    assert git.is_clean(path)
+
+
+def test_the_plan_header_names_the_model_that_wrote_the_plan(
+    wtx_repo: Path, fake_bin: Path, tmp_path: Path
+) -> None:
+    """Not the configured one: a /model switch or a revision after the handoff
+    runs on another model. Without a transcript, the configured one."""
+    from wtx import orchestrate
+
+    path = make_worktree(wtx_repo, "feat/which-model")
+    transcript = tmp_path / "conv.jsonl"
+    lines = [
+        {"type": "assistant", "message": {"model": "claude-old-1"}},
+        {"type": "user", "message": {"content": "use another model"}},
+        {"type": "assistant", "message": {"model": "claude-test-9"}},
+        {"type": "assistant", "message": {"model": "<synthetic>"}},
+        {"type": "user", "message": {"content": "assistant"}},
+    ]
+    transcript.write_text("".join(json.dumps(x) + "\n" for x in lines) + "{not json\n")
+    _accept(path, "1. the first plan\n", transcript_path=str(transcript))
+    _accept(path, "1. the second plan\n")
+
+    heads = [
+        line
+        for line in (path / orchestrate.PLAN_FILE).read_text().splitlines()
+        if line.startswith("# Plan, ")
+    ]
+    assert heads[0].endswith(", claude-test-9")
+    assert len(heads) == 2 and "claude-test-9" not in heads[1]
+
+
+def test_a_plan_md_that_git_does_not_ignore_is_left_alone(wtx_repo: Path, fake_bin: Path) -> None:
+    """A tracked PLAN.md is the repo's own file: land would publish its text."""
+    from wtx import orchestrate
+
+    path = make_worktree(wtx_repo, "feat/own-plan")
+    (path / ".gitignore").write_text("")
+    commit_file(path, orchestrate.PLAN_FILE, "our roadmap\n")
+    assert _accept(path, "1. a plan\n") == ""
+    assert (path / orchestrate.PLAN_FILE).read_text() == "our roadmap\n"
+
+
+def test_a_marker_quoted_in_a_sentence_does_not_cut_the_text(tmp_path: Path) -> None:
+    """wtx dogfoods itself: its briefs and plans talk about these markers."""
+    from wtx import land as land_mod
+    from wtx import orchestrate
+
+    (tmp_path / "PROMPT.sent.md").write_text(
+        f"Split on `{orchestrate.INSTRUCTION_MARK}` lines.\nKeep this.\n"
+        + orchestrate.PLAN_INSTRUCTION
+    )
+    (tmp_path / orchestrate.PLAN_FILE).write_text(
+        f"{orchestrate.PLAN_MARK}\n# Plan, 2026-11-11 10:00, m\n\n"
+        f"1. split on\n{orchestrate.PLAN_MARK}\nlines\n2. the end\n</details>\n```sh\n\n"
+    )
+    text = "\n\n".join(land_mod._comment_texts(land_mod._plans_parts(tmp_path)))
+    assert text.count("<details>") == 2
+    assert "Keep this." in text and "2. the end" in text
+    assert "Added by wtx" not in text
+    # A </details> or an open fence in a plan must not break the blocks.
+    assert text.count("</details>") == 2
+    assert text.count("```") % 2 == 0
+
+
+_PLANS_GH = """#!{python}
+import json, os, sys
+from pathlib import Path
+
+args = sys.argv[1:]
+with open(os.environ["WTX_TEST_CALLS"], "a") as fh:
+    fh.write("gh\\t" + " ".join(args) + "\\n")
+state = Path({state!r})
+key = "-".join(args[0:3:2]).replace("/", "-")
+if args[1:2] == ["comment"]:
+    body = Path(args[args.index("--body-file") + 1]).read_text()
+    (state / f"{{key}}.md").write_text(body)
+    with (state / f"{{key}}.all").open("a") as fh:
+        fh.write(json.dumps(body) + "\\n")
+elif args[1:2] == ["merge"]:
+    (state / "merged").touch()
+elif "--json" in args:
+    field = args[args.index("--json") + 1]
+    if field == "comments":
+        posted = state / f"{{key}}.all"
+        bodies = [json.loads(b) for b in posted.read_text().splitlines()] if posted.exists() else []
+        print(json.dumps({{"comments": [{{"body": b}} for b in bodies]}}))
+    elif field == "closingIssuesReferences":
+        closing = json.loads((state / "closing.json").read_text())
+        print(json.dumps({{"closingIssuesReferences": [{{"number": n}} for n in closing]}}))
+    else:
+        merged = (state / "merged").exists()
+        print(json.dumps({{"state": "MERGED" if merged else "OPEN", "url": "http://x/1"}}))
+"""
+
+
+def _plans_gh(fake_bin: Path, closing: tuple[int, ...] = ()) -> Path:
+    """A gh that keeps what it is told: comments posted, a PR merged, the issues
+    the PR closes. Returns the folder it keeps them in."""
+    state = fake_bin.parent / "gh-state"
+    state.mkdir(exist_ok=True)
+    (state / "closing.json").write_text(json.dumps(list(closing)))
+    gh = fake_bin / "gh"
+    gh.write_text(_PLANS_GH.format(python=sys.executable, state=str(state)))
+    gh.chmod(0o755)
+    return state
+
+
+def _brief_and_plans(path: Path) -> None:
+    from wtx import orchestrate
+
+    (path / "PROMPT.sent.md").write_text("Keep the plans.\n" + orchestrate.PLAN_INSTRUCTION)
+    _accept(path, "1. first plan\n\nwtx-effort: low\n")
+    _accept(path, "1. second plan\n\nwtx-effort: high\n")
+
+
+def _set_plans(repo: Path, value: str) -> None:
+    cfg = repo / "wtx.toml"
+    cfg.write_text(cfg.read_text().replace("[repo]\n", f'[repo]\nplans = "{value}"\n', 1))
+    subprocess.run(["git", "commit", "-qam", f"plans {value}"], cwd=repo, check=True)
+
+
+def test_land_posts_the_brief_and_the_plans_once(
+    wtx_repo: Path, fake_bin: Path, monkeypatch, tmp_path
+) -> None:
+    """Before the merge, while the worktree still holds the files. A re-run of
+    land finds its own comment and posts no second copy."""
+    from wtx import land as land_mod
+    from wtx import orchestrate
+
+    path = make_worktree(wtx_repo, "feat/kept")
+    commit(path, "work")
+    _brief_and_plans(path)
+    saved = tmp_path / "saved"
+    saved.mkdir()
+    for name in ("PROMPT.sent.md", "PLAN.md"):
+        shutil.copy(path / name, saved / name)
+    state = _plans_gh(fake_bin)
+
+    monkeypatch.chdir(wtx_repo)
+    assert run(["land", "feat/kept"]) == 0
+    # The worktree is gone now: run the post again on a copy of its files.
+    ctx = context.load(root=wtx_repo)
+    land_mod._post_plans(ctx, "feat/kept", saved)
+
+    gh = calls_of(fake_bin, "gh")
+    comments = [i for i, c in enumerate(gh) if c.startswith("pr comment feat/kept")]
+    merges = [i for i, c in enumerate(gh) if c.startswith("pr merge")]
+    assert len(comments) == 1
+    assert comments[0] < merges[0], "the comment must come before the merge"
+    assert not any(c.startswith("pr edit") or c.startswith("issue") for c in gh)
+
+    body = (state / "pr-feat-kept.md").read_text()
+    assert body.startswith("<!-- wtx-plans feat/kept ")
+    assert body.count("<details>") == 3
+    assert "Keep the plans." in body
+    assert "first plan" in body and "second plan" in body
+    assert "Added by wtx" not in body
+
+    # A plan accepted after that comment (a failed land, a fix) is posted.
+    with (saved / "PLAN.md").open("a") as fh:
+        fh.write(f"{orchestrate.PLAN_MARK}\n# Plan, 2026-11-11 10:00, m\n\n1. the fix\n\n")
+    land_mod._post_plans(ctx, "feat/kept", saved)
+    gh = calls_of(fake_bin, "gh")
+    assert len([c for c in gh if c.startswith("pr comment feat/kept")]) == 2
+    assert "the fix" in (state / "pr-feat-kept.md").read_text()
+
+
+def test_plans_over_the_github_limit_go_in_several_comments(
+    wtx_repo: Path, fake_bin: Path, tmp_path: Path
+) -> None:
+    """GitHub refuses a comment over 65,536 characters. A land that fails
+    halfway posts only the missing parts on the next run."""
+    from wtx import land as land_mod
+    from wtx import orchestrate
+
+    long = "".join(f"{i}. a step of the long plan, with some words\n" for i in range(3000))
+    (tmp_path / "PROMPT.sent.md").write_text("Keep the plans.\n")
+    (tmp_path / orchestrate.PLAN_FILE).write_text(
+        f"{orchestrate.PLAN_MARK}\n# Plan, 2026-11-11 10:00, m\n\n{long}\n"
+    )
+    state = _plans_gh(fake_bin)
+    ctx = context.load(root=wtx_repo)
+    land_mod._post_plans(ctx, "feat/long", tmp_path)
+    land_mod._post_plans(ctx, "feat/long", tmp_path)
+
+    bodies = [json.loads(b) for b in (state / "pr-feat-long.all").read_text().splitlines()]
+    assert len(bodies) >= 3
+    assert all(len(b) < 65_536 for b in bodies)
+    assert bodies[0].startswith("<!-- wtx-plans feat/long ")
+    joined = "".join(bodies)
+    assert "0. a step" in joined and "2999. a step" in joined
+    assert "part 1 of" in joined
+
+
+def test_a_pr_merged_by_hand_still_gets_the_plans(
+    wtx_repo: Path, fake_bin: Path, monkeypatch
+) -> None:
+    path = make_worktree(wtx_repo, "feat/by-hand")
+    commit(path, "work")
+    _brief_and_plans(path)
+    state = _plans_gh(fake_bin)
+    (state / "merged").touch()
+    monkeypatch.chdir(wtx_repo)
+    assert run(["land", "feat/by-hand"]) == 0
+    assert any(c.startswith("pr comment feat/by-hand") for c in calls_of(fake_bin, "gh"))
+
+
+def test_land_posts_no_comment_without_a_brief_or_a_plan(
+    wtx_repo: Path, fake_bin: Path, monkeypatch
+) -> None:
+    path = make_worktree(wtx_repo, "feat/bare")
+    commit(path, "work")
+    _plans_gh(fake_bin)
+    monkeypatch.chdir(wtx_repo)
+    assert run(["land", "feat/bare"]) == 0
+    gh = calls_of(fake_bin, "gh")
+    assert not any("comment" in c for c in gh)
+
+
+def test_plans_off_posts_nothing(wtx_repo: Path, fake_bin: Path) -> None:
+    from wtx import land as land_mod
+    from wtx import orchestrate
+
+    _set_plans(wtx_repo, "off")
+    path = make_worktree(wtx_repo, "feat/quiet")
+    _brief_and_plans(path)
+    assert (path / orchestrate.PLAN_FILE).is_file(), "off still keeps PLAN.md"
+    _plans_gh(fake_bin)
+    land_mod._post_plans(context.load(root=wtx_repo), "feat/quiet", path)
+    assert calls_of(fake_bin, "gh") == []
+
+
+def test_plans_issue_comments_on_the_issue_the_pr_closes(wtx_repo: Path, fake_bin: Path) -> None:
+    """And on the PR when it closes none, rather than nowhere."""
+    from wtx import land as land_mod
+
+    _set_plans(wtx_repo, "issue")
+    path = make_worktree(wtx_repo, "feat/issue")
+    _brief_and_plans(path)
+    ctx = context.load(root=wtx_repo)
+
+    state = _plans_gh(fake_bin, closing=(7,))
+    land_mod._post_plans(ctx, "feat/issue", path)
+    land_mod._post_plans(ctx, "feat/issue", path)
+    gh = calls_of(fake_bin, "gh")
+    assert [c for c in gh if " comment " in f" {c} "] == [
+        c for c in gh if c.startswith("issue comment 7 ")
+    ]
+    assert len([c for c in gh if c.startswith("issue comment 7 ")]) == 1
+    assert "first plan" in (state / "issue-7.md").read_text()
+
+    (state / "closing.json").write_text("[]")
+    land_mod._post_plans(ctx, "feat/issue", path)
+    assert any(c.startswith("pr comment feat/issue ") for c in calls_of(fake_bin, "gh"))
+
+
+def test_plans_docs_commits_one_file_on_the_branch(
+    local_repo: Path, fake_bin: Path, monkeypatch
+) -> None:
+    """docs works on every road, the merge road too: it is only a commit. The
+    same text again adds no commit."""
+    from wtx import land as land_mod
+
+    _set_plans(local_repo, "docs")
+    path = make_worktree(local_repo, "feat/doc", "dev")
+    commit_file(path, "feature.txt", "x\n")
+    _brief_and_plans(path)
+
+    ctx = context.load(root=local_repo)
+    before = git_out(["rev-list", "--count", "HEAD"], path)
+    land_mod._commit_plans(ctx, "feat/doc", path)
+    land_mod._commit_plans(ctx, "feat/doc", path)
+    assert int(git_out(["rev-list", "--count", "HEAD"], path)) == int(before) + 1
+
+    monkeypatch.chdir(local_repo)
+    assert run(["land", "feat/doc"]) == 0
+    doc = git_out(["show", "dev:docs/plans/feat-doc.md"], local_repo)
+    assert doc.startswith("# Brief")
+    assert "Keep the plans." in doc and "first plan" in doc and "second plan" in doc
+    assert "Added by wtx" not in doc
+    assert_stayed_local(fake_bin)
+
+
+def test_plans_docs_writes_nothing_in_a_dry_run_and_undoes_a_failed_commit(
+    local_repo: Path, fake_bin: Path, monkeypatch
+) -> None:
+    """A file left behind makes the worktree dirty, and the next land stops."""
+    from wtx import land as land_mod
+    from wtx import proc
+
+    _set_plans(local_repo, "docs")
+    path = make_worktree(local_repo, "feat/undo", "dev")
+    _brief_and_plans(path)
+    ctx = context.load(root=local_repo)
+    head = git_out(["rev-parse", "HEAD"], path)
+
+    monkeypatch.setattr(proc, "DRY_RUN", True)
+    land_mod._commit_plans(ctx, "feat/undo", path)
+    monkeypatch.setattr(proc, "DRY_RUN", False)
+    assert git.is_clean(path)
+
+    hook = Path(git_out(["rev-parse", "--git-common-dir"], path)) / "hooks" / "pre-commit"
+    hook.write_text("#!/bin/sh\nexit 1\n")
+    hook.chmod(0o755)
+    with pytest.raises(land_mod.LandError):
+        land_mod._commit_plans(ctx, "feat/undo", path)
+    assert git.is_clean(path)
+    assert git_out(["rev-parse", "HEAD"], path) == head
