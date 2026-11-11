@@ -10,6 +10,10 @@ is the main checkout. See open_window. prefix+X m does the same with --merge.
 Some repos must never talk to their remote, or have none. [repo].land = "merge"
 or --merge takes the other road: one `git merge --no-ff` in the main checkout,
 and nothing here touches the remote. See _land_merge.
+
+The brief and the accepted plans live only in the worktree, so they go away
+with it. [repo].plans says where land publishes them first. See _post_plans
+and _commit_plans.
 """
 
 from __future__ import annotations
@@ -18,10 +22,12 @@ import json
 import os
 import shlex
 import sys
+import tempfile
 import time
 from pathlib import Path
 
-from . import git, review, tmux, wt
+from . import git, orchestrate, review, tmux, wt
+from .agents.base import PROMPT_SENT
 from .config import WtxConfig
 from .context import Ctx, session_name
 from .proc import CommandError, capture, capture_code, is_dry_run, run, run_shell, say, warn, which
@@ -137,6 +143,7 @@ def land(
         raise LandError(f"no worktree for {branch}")
     if not git.is_clean(path):
         raise LandError(f"{path} has uncommitted changes, commit or stash them first")
+    _commit_plans(ctx, branch, path)
     _warn_on_review(ctx, branch, path)
 
     if merge:
@@ -199,6 +206,7 @@ def _land_remote(
             ctx,
             branch,
             base,
+            path,
             poll_seconds=poll_seconds,
             timeout_minutes=timeout_minutes,
         )
@@ -274,7 +282,9 @@ def _refuse_a_branch_cut_from_elsewhere(ctx: Ctx, branch: str, base: str) -> Non
             )
 
 
-def _land_pr(ctx: Ctx, branch: str, base: str, *, poll_seconds: int, timeout_minutes: int) -> None:
+def _land_pr(
+    ctx: Ctx, branch: str, base: str, path: Path, *, poll_seconds: int, timeout_minutes: int
+) -> None:
     if which("gh") is None:
         raise LandError("gh is not installed, use --local or open the PR by hand")
 
@@ -291,6 +301,8 @@ def _land_pr(ctx: Ctx, branch: str, base: str, *, poll_seconds: int, timeout_min
         return
     if url:
         say(f"pull request: {url}")
+    # Before the merge: once it lands, the worktree and its files are removed.
+    _post_plans(ctx, branch, path)
 
     code = run(
         ["gh", "pr", "merge", branch, "--merge", "--auto"],
@@ -361,3 +373,129 @@ def _land_merge(ctx: Ctx, branch: str, base: str, path: Path, *, skip_checks: bo
             f"could not merge {branch} into {base}, nothing was merged. If it is a "
             f"conflict, fix it in {path} (git merge {base}), commit, then run wtx land again"
         ) from exc
+
+
+# ---------------------------------------------------------------------------
+# the brief and the plans, published before the worktree goes
+
+
+def _plans_text(path: Path, *, collapsed: bool) -> str:
+    """The brief and every accepted plan, empty when the worktree has neither.
+
+    collapsed puts each one in a <details> block, for a comment. The blank
+    line after </summary> is what makes GitHub render the markdown inside.
+    wtx's own instruction to the planner is cut from the brief: it is not the
+    human's task.
+    """
+    parts: list[tuple[str, str]] = []
+    brief_file = path / PROMPT_SENT
+    if brief_file.is_file():
+        brief = brief_file.read_text().split(orchestrate.INSTRUCTION_MARK)[0].strip()
+        if brief:
+            parts.append(("Brief", brief))
+    plan_file = path / orchestrate.PLAN_FILE
+    if plan_file.is_file():
+        for entry in plan_file.read_text().split(orchestrate.PLAN_MARK):
+            head, _, body = entry.strip().partition("\n")
+            if head:
+                parts.append((head.lstrip("# ").strip(), body.strip()))
+    if collapsed:
+        blocks = [f"<details><summary>{t}</summary>\n\n{b}\n\n</details>" for t, b in parts]
+    else:
+        blocks = [f"# {t}\n\n{b}" for t, b in parts]
+    return "\n\n".join(blocks)
+
+
+def _closing_issues(cwd: Path, branch: str) -> list[str]:
+    code, out, _ = _gh(["pr", "view", branch, "--json", "closingIssuesReferences"], cwd)
+    if code != 0 or not out:
+        return []
+    try:
+        refs = json.loads(out).get("closingIssuesReferences") or []
+    except (json.JSONDecodeError, AttributeError):
+        return []
+    return [str(r["number"]) for r in refs if isinstance(r, dict) and r.get("number")]
+
+
+def _has_comment(cwd: Path, kind: str, ref: str, marker: str) -> bool:
+    """True when that PR or issue already holds this branch's comment.
+
+    Anything gh says that is not a list of comments reads as "not yet".
+    """
+    code, out, _ = _gh([kind, "view", ref, "--json", "comments"], cwd)
+    if code != 0 or not out:
+        return False
+    try:
+        comments = json.loads(out).get("comments") or []
+    except (json.JSONDecodeError, AttributeError):
+        return False
+    return any(marker in str(c.get("body", "")) for c in comments if isinstance(c, dict))
+
+
+def _post_plans(ctx: Ctx, branch: str, path: Path) -> None:
+    """One comment with the brief and the plans, on the PR or its issue.
+
+    Once per target: a re-run of land finds the marker and posts nothing. The
+    marker names the branch, so stage 2 of an issue (a second PR, a second
+    branch) still posts on that issue. A failure only warns: record keeping
+    does not block a merge. The body goes through a file, a multi-line
+    argument would break the one-line-per-call logs.
+    """
+    mode = ctx.cfg.repo.plans
+    if mode not in ("pr", "issue"):
+        return
+    text = _plans_text(path, collapsed=True)
+    if not text:
+        return
+    targets = [("pr", branch)]
+    if mode == "issue":
+        issues = _closing_issues(ctx.main, branch)
+        if issues:
+            targets = [("issue", n) for n in issues]
+        else:
+            say("the pull request closes no issue, the plans go on the pull request")
+    marker = f"<!-- wtx-plans {branch} -->"
+    body = f"{marker}\n\n{text}\n"
+    for kind, ref in targets:
+        if _has_comment(ctx.main, kind, ref, marker):
+            continue
+        say(f"posting the brief and the plans on {kind} {ref}")
+        with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False) as fh:
+            fh.write(body)
+        try:
+            code = run(
+                ["gh", kind, "comment", ref, "--body-file", fh.name], cwd=ctx.main, check=False
+            )
+        finally:
+            Path(fh.name).unlink(missing_ok=True)
+        if code != 0:
+            warn(f"could not comment on {kind} {ref}, the plans were not posted")
+
+
+def _commit_plans(ctx: Ctx, branch: str, path: Path) -> None:
+    """plans = "docs": commit the brief and the plans on the branch itself.
+
+    Runs on every road (pr, --local, --merge), because it is only a commit.
+    The same text as the last land means nothing to commit, so a re-run adds
+    no commit.
+    """
+    if ctx.cfg.repo.plans != "docs":
+        return
+    text = _plans_text(path, collapsed=False)
+    if not text:
+        return
+    rel = Path(ctx.cfg.repo.plans_dir) / f"{git.slug(branch)}.md"
+    target = path / rel
+    if target.is_file() and target.read_text() == text + "\n":
+        return
+    if is_dry_run():
+        say(f"would write and commit {rel}")
+        return
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(text + "\n")
+    say(f"committing the brief and the plans as {rel}")
+    try:
+        run(["git", "add", "--", str(rel)], cwd=path, quiet=True)
+        run(["git", "commit", "-q", "-m", f"docs: plan for {branch}", "--", str(rel)], cwd=path)
+    except CommandError as exc:
+        raise LandError(f"could not commit {rel} in {path}") from exc

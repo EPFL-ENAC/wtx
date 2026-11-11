@@ -39,6 +39,7 @@ GITIGNORE_LINES = [
     ".wt-logs/",
     "PROMPT.md",
     "PROMPT.sent.md",
+    "PLAN.md",
     ".claude/settings.local.json",
     ".claude/agents/Explore.md",
     ".claude/rules/wtx.md",
@@ -625,7 +626,7 @@ def render_toml(answers: dict[str, Any]) -> str:
         *_keys(repo, ("name", "lab", "base_branch"), always=("name", "base_branch")),
         "# The single source for the push guard, the completion and the deny rules.",
         f"protected_branches = {_v(repo.get('protected_branches', ['main']))}",
-        *_keys(repo, ("land",)),
+        *_keys(repo, ("land", "plans", "plans_dir")),
         "",
     ]
 

@@ -4,6 +4,14 @@
 
 New:
 
+- Accepted plans are kept. Every plan accepted in a worktree is appended to
+  `PLAN.md` at its root, with or without `[agent.orchestration]`. `wtx land`
+  then publishes the brief (`PROMPT.sent.md`) and the plans before it removes
+  the worktree. `[repo].plans` says where: `pr` (default, one comment on the
+  pull request, posted once), `issue` (on each issue the pull request closes),
+  `docs` (a file in `[repo].plans_dir`, committed on the branch) or `off`.
+  `PLAN.md` is a new ignored file: re-run `wtx install-machine --apply`, or
+  `wtx land` refuses a worktree with a plan in it as dirty.
 - `[agent.orchestration]`: plan on one model, implement on another. A brief
   starts the agent on `plan_model` in plan mode; accepting the plan carries the
   same conversation on to `build_model` with `claude -r`, at the effort the

@@ -46,6 +46,10 @@ class RepoCfg:
     protected_branches: tuple[str, ...] = ("main",)
     # How `wtx land` lands: see LAND_MODES.
     land: str = "pr"
+    # Where `wtx land` publishes the brief and the accepted plans: see PLANS_MODES.
+    plans: str = "pr"
+    # The folder plans = "docs" writes into, relative to the worktree root.
+    plans_dir: str = "docs/plans"
 
 
 @dataclass(frozen=True)
@@ -137,6 +141,11 @@ PERMISSION_MODES = (
 # a typo here would send a repo that must stay local to its remote, so it is an
 # error, not a fallback.
 LAND_MODES = ("pr", "merge")
+
+# What [repo].plans may say. pr and issue post one comment, docs commits a
+# file on the branch, off publishes nothing. A typo is an error: falling back
+# to a comment would publish a brief the repo meant to keep to itself.
+PLANS_MODES = ("pr", "issue", "docs", "off")
 
 
 # The effort levels the agent accepts. Same reason as the permission modes.
@@ -589,6 +598,14 @@ def validate(cfg: WtxConfig) -> list[str]:
         )
     if cfg.repo.land not in LAND_MODES:
         errs.append(f"[repo].land '{cfg.repo.land}' is not one of {', '.join(LAND_MODES)}")
+    if cfg.repo.plans not in PLANS_MODES:
+        errs.append(f"[repo].plans '{cfg.repo.plans}' is not one of {', '.join(PLANS_MODES)}")
+    if cfg.repo.plans == "docs" and (
+        not cfg.repo.plans_dir
+        or Path(cfg.repo.plans_dir).is_absolute()
+        or ".." in Path(cfg.repo.plans_dir).parts
+    ):
+        errs.append(f"[repo].plans_dir '{cfg.repo.plans_dir}' must be a folder inside the repo")
     seen_env: set[str] = set()
     for f in cfg.ports.families:
         if f.env_key in seen_env:

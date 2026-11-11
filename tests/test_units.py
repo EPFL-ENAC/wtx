@@ -211,6 +211,19 @@ def test_the_land_rule_defaults_to_pr_and_refuses_a_typo() -> None:
     assert any("[repo].land 'mrege'" in p for p in validate(parse({"repo": {"land": "mrege"}})))
 
 
+def test_the_plans_rule_defaults_to_pr_and_refuses_a_typo() -> None:
+    """A typo must not fall back to a comment: that publishes a brief the repo
+    meant to keep to itself."""
+    assert parse({}).repo.plans == "pr"
+    for value in ("issue", "docs", "off"):
+        data = {"repo": {"name": "x", "plans": value}}
+        assert validate(parse(data)) == []
+        assert config.unknown_keys(data) == []
+    assert any("[repo].plans 'isue'" in p for p in validate(parse({"repo": {"plans": "isue"}})))
+    outside = {"repo": {"plans": "docs", "plans_dir": "../elsewhere"}}
+    assert any("[repo].plans_dir" in p for p in validate(parse(outside)))
+
+
 def test_validate_catches_a_base_branch_left_unprotected() -> None:
     cfg = parse({"repo": {"base_branch": "dev", "protected_branches": ["main"]}})
     assert any("base branch" in p for p in validate(cfg))
@@ -822,7 +835,7 @@ def test_every_generated_file_is_in_both_ignore_lists() -> None:
     from wtx import init, machine
 
     assert [f"**/{line}" for line in init.GITIGNORE_LINES] == machine.GIT_IGNORE_LINES
-    for name in (".env.worktree", "PROMPT.md", "PROMPT.sent.md", "opencode.json"):
+    for name in (".env.worktree", "PROMPT.md", "PROMPT.sent.md", "PLAN.md", "opencode.json"):
         assert name in init.GITIGNORE_LINES
 
 

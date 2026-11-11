@@ -16,6 +16,7 @@ build/
 .wt-logs/
 PROMPT.md
 PROMPT.sent.md
+PLAN.md
 .wt-prompts/
 .claude/settings.local.json
 .claude/agents/Explore.md

@@ -109,6 +109,7 @@ wtx.toml
 .wt-logs/
 PROMPT.md
 PROMPT.sent.md
+PLAN.md
 .claude/settings.local.json
 .claude/agents/Explore.md
 .claude/rules/wtx.md
