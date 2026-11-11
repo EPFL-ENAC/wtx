@@ -341,6 +341,39 @@ It runs on demand only, never on a hook: each run costs one agent turn.
 `wtx land` warns (and goes on) when a branch has no review or an old one, and
 `wtx status` shows it.
 
+## The Claude status line
+
+`wtx install-machine` also sets the Claude Code status line to
+`wtx statusline`. It shows, on one line:
+
+```
+Opus 5.5 high · 84k/500k 17% before compact · ⎇ feat/x · PR #29 · wtx build · 3 to land in dev
+```
+
+- the model and its effort (and `fast` in fast mode);
+- the context in use, against the size where Claude Code compacts. That size
+  comes from `autoCompactWindow`, read in the same settings files Claude Code
+  reads (a value per model wins). Green, then yellow at 60%, red at 85%;
+- the branch. It is a link to the branch on GitHub (or GitLab) once it is
+  pushed, and dim before. The open pull request is a link too;
+- in a wtx session, the phase: `plan` (the brief started in plan mode),
+  `build` (the plan is accepted, or the brief started in build mode), or
+  `review` (a `wtx review` matches the branch, or notes went back to the
+  agent);
+- in a wtx repo, whether the work is in the base branch: `3 to land in dev`
+  (dim) while commits are not in it, `✓ landed in dev` (green) once they all
+  are. A fresh branch with no commit shows neither. It reads local refs only,
+  so a merge done on GitHub shows after the next fetch. A squash merge done on
+  GitHub is not seen (its commit is a new one); `wtx land` never squashes.
+
+Links need a terminal that knows OSC 8 (GNOME Terminal, Ptyxis, kitty,
+WezTerm, iTerm2). In tmux, `install-machine` adds the `hyperlinks` terminal
+feature (tmux 3.4 or later). It also sets `FORCE_HYPERLINK=1` in the Claude
+settings, because inside tmux Claude Code thinks links do not work. Ctrl+click
+opens them.
+
+If you already have a status line, wtx keeps yours and says so.
+
 ## Machine setup
 
 `wtx install-machine` prints what it would change. `--apply` writes it, with a
@@ -357,7 +390,9 @@ backup of each file. It sets up:
 - `~/.config/wt/config.toml`: worktrees go under `.claude/worktrees/`.
 - `~/.claude/agents/Explore.md`: the search agent on haiku.
 - `~/.claude/settings.json`: the hooks that call `wtx notify` and
-  `wtx handoff`.
+  `wtx handoff`, and the status line (`wtx statusline`).
+- `~/.tmux.conf`, with tmux 3.4 or later: OSC 8 links go through, so the
+  branch in the status line can be clicked.
 - the skills `/wtx-init` and `/wtx-create` in `~/.claude/skills`.
 
 The hooks and the Explore agent are machine-wide. They also apply to Claude
@@ -387,6 +422,7 @@ You do not run these yourself. They are listed so nothing is a mystery.
 | `wtx notify <state>` | the agent hooks, to record the session state |
 | `wtx handoff` | the `ExitPlanMode` hook, to start the build |
 | `wtx tmux-status` | the tmux status line |
+| `wtx statusline` | the Claude Code status line |
 
 ## Every command
 
@@ -410,6 +446,7 @@ You do not run these yourself. They are listed so nothing is a mystery.
 | `wtx notify <state>` | called by the agent's hooks |
 | `wtx handoff` | called by the agent's `ExitPlanMode` hook |
 | `wtx tmux-status` | one line for tmux `status-right` |
+| `wtx statusline` | the Claude Code status line, reads its JSON on stdin |
 | `wtx monitor` | every session on one screen |
 | `wtx doctor` | check this machine |
 | `wtx install-machine` | the shell, tmux and agent hook setup |

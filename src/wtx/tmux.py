@@ -305,8 +305,18 @@ def respawn_agent(ctx: Ctx, line: str, *, note: str = "") -> bool:
     return True
 
 
+def brief_phase(rctx: RenderContext) -> str:
+    """What a brief starts: a plan when it starts in plan mode, else a build."""
+    if rctx.phase == "build" or rctx.permission_mode != "plan":
+        return "build"
+    return "plan"
+
+
 def send_brief(ctx: Ctx, agent: Agent, rctx: RenderContext) -> bool:
     """Restart the agent pane on the checkout's PROMPT.md."""
+    from . import notify  # notify imports tmux
+
+    notify.remember_phase(ctx.session, brief_phase(rctx))
     return respawn_agent(
         ctx,
         agent.launch_cmd(rctx, brief=True),
@@ -407,6 +417,10 @@ def ensure_session(
     logs = ctx.logs_dir
     load = envfile.load_snippet(ctx.cfg.owned_env_keys)
     want_brief = brief and (ctx.root / PROMPT_FILE).is_file()
+    if want_brief:
+        from . import notify  # notify imports tmux
+
+        notify.remember_phase(ctx.session, brief_phase(rctx))
     for pane_id, pane in zip(ids, ordered, strict=False):
         line = pane_command(ctx, pane, agent, rctx, brief=want_brief and pane.role == "agent")
         cmd(["send-keys", "-t", pane_id, f"{load}; {line}", "C-m"])

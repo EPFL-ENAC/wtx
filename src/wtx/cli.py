@@ -958,6 +958,12 @@ def cmd_tmux_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_statusline(args: argparse.Namespace) -> int:
+    from . import statusline
+
+    return statusline.main()
+
+
 def cmd_monitor(args: argparse.Namespace) -> int:
     if args.peek:
         return monitor.peek(args.peek)
@@ -1206,6 +1212,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("tmux-status", help="one line for tmux status-right")
     s.set_defaults(func=cmd_tmux_status)
+
+    s = sub.add_parser("statusline", help="the Claude Code status line, reads its JSON on stdin")
+    s.set_defaults(func=cmd_statusline)
 
     s = sub.add_parser("monitor", help="every session on one screen")
     s.add_argument("--grid", action="store_true", help="tile every agent pane")

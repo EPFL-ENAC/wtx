@@ -46,6 +46,7 @@ def close_session(session: str) -> None:
     # sits in the desktop list for ever, and clicking it opens nothing.
     notify.settle(session)
     notify.forget_conversation(session)
+    notify.forget_phase(session)
     orchestrate.clear_record(session)
     review.clear(session)
 

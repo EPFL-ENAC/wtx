@@ -253,6 +253,9 @@ def capture(payload: dict, *, cwd: Path | None = None) -> str:
     except (context.ContextError, config_mod.ConfigError):
         trace("  no: not a wtx checkout")
         return ""  # not a wtx checkout, not ours to orchestrate
+    # The plan is accepted: from here the agent implements, here or after
+    # the handoff below. The status line shows it.
+    notify.remember_phase(ctx.session, "build")
     orch = ctx.cfg.agent.orchestration
     if not orch.enabled:
         trace(f"  no: orchestration off in {ctx.main}")
