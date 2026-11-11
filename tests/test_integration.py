@@ -2917,12 +2917,15 @@ def test_a_marker_quoted_in_a_sentence_does_not_cut_the_text(tmp_path: Path) -> 
     )
     (tmp_path / orchestrate.PLAN_FILE).write_text(
         f"{orchestrate.PLAN_MARK}\n# Plan, 2026-11-11 10:00, m\n\n"
-        f"1. split on\n{orchestrate.PLAN_MARK}\nlines\n2. the end\n\n"
+        f"1. split on\n{orchestrate.PLAN_MARK}\nlines\n2. the end\n</details>\n```sh\n\n"
     )
-    text = land_mod._plans_text(tmp_path, collapsed=True)
+    text = "\n\n".join(land_mod._comment_texts(land_mod._plans_parts(tmp_path)))
     assert text.count("<details>") == 2
     assert "Keep this." in text and "2. the end" in text
     assert "Added by wtx" not in text
+    # A </details> or an open fence in a plan must not break the blocks.
+    assert text.count("</details>") == 2
+    assert text.count("```") % 2 == 0
 
 
 _PLANS_GH = """#!{python}
@@ -2937,13 +2940,16 @@ key = "-".join(args[0:3:2]).replace("/", "-")
 if args[1:2] == ["comment"]:
     body = Path(args[args.index("--body-file") + 1]).read_text()
     (state / f"{{key}}.md").write_text(body)
+    with (state / f"{{key}}.all").open("a") as fh:
+        fh.write(json.dumps(body) + "\\n")
 elif args[1:2] == ["merge"]:
     (state / "merged").touch()
 elif "--json" in args:
     field = args[args.index("--json") + 1]
     if field == "comments":
-        posted = state / f"{{key}}.md"
-        print(json.dumps({{"comments": [{{"body": posted.read_text()}}] if posted.exists() else []}}))
+        posted = state / f"{{key}}.all"
+        bodies = [json.loads(b) for b in posted.read_text().splitlines()] if posted.exists() else []
+        print(json.dumps({{"comments": [{{"body": b}} for b in bodies]}}))
     elif field == "closingIssuesReferences":
         closing = json.loads((state / "closing.json").read_text())
         print(json.dumps({{"closingIssuesReferences": [{{"number": n}} for n in closing]}}))
@@ -3023,6 +3029,33 @@ def test_land_posts_the_brief_and_the_plans_once(
     gh = calls_of(fake_bin, "gh")
     assert len([c for c in gh if c.startswith("pr comment feat/kept")]) == 2
     assert "the fix" in (state / "pr-feat-kept.md").read_text()
+
+
+def test_plans_over_the_github_limit_go_in_several_comments(
+    wtx_repo: Path, fake_bin: Path, tmp_path: Path
+) -> None:
+    """GitHub refuses a comment over 65,536 characters. A land that fails
+    halfway posts only the missing parts on the next run."""
+    from wtx import land as land_mod
+    from wtx import orchestrate
+
+    long = "".join(f"{i}. a step of the long plan, with some words\n" for i in range(3000))
+    (tmp_path / "PROMPT.sent.md").write_text("Keep the plans.\n")
+    (tmp_path / orchestrate.PLAN_FILE).write_text(
+        f"{orchestrate.PLAN_MARK}\n# Plan, 2026-11-11 10:00, m\n\n{long}\n"
+    )
+    state = _plans_gh(fake_bin)
+    ctx = context.load(root=wtx_repo)
+    land_mod._post_plans(ctx, "feat/long", tmp_path)
+    land_mod._post_plans(ctx, "feat/long", tmp_path)
+
+    bodies = [json.loads(b) for b in (state / "pr-feat-long.all").read_text().splitlines()]
+    assert len(bodies) >= 3
+    assert all(len(b) < 65_536 for b in bodies)
+    assert bodies[0].startswith("<!-- wtx-plans feat/long ")
+    joined = "".join(bodies)
+    assert "0. a step" in joined and "2999. a step" in joined
+    assert "part 1 of" in joined
 
 
 def test_a_pr_merged_by_hand_still_gets_the_plans(

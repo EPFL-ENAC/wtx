@@ -7,9 +7,11 @@ New:
 - wtx keeps accepted plans. It appends every plan that you accept in a
   worktree to `PLAN.md` at the worktree root, with or without
   `[agent.orchestration]`. `wtx land` then publishes the brief
-  (`PROMPT.sent.md`) and the plans before it removes the worktree. `[repo].plans` says where: `pr` (default, one comment on the
-  pull request, posted once), `issue` (on each issue the pull request closes),
-  `docs` (a file in `[repo].plans_dir`, committed on the branch) or `off`.
+  (`PROMPT.sent.md`) and the plans before it removes the worktree.
+  `[repo].plans` says where: `pr` (default, one comment on the pull request,
+  posted once, split when it is over the GitHub limit), `issue` (on each
+  issue the pull request closes), `docs` (a file in `[repo].plans_dir`,
+  committed on the branch) or `off`.
   Re-run `wtx install-machine --apply`, because `PLAN.md` is a new ignored
   file. Until you do, wtx saves no plan: it writes `PLAN.md` only when git
   ignores it. An unignored `PLAN.md` is an uncommitted change, and `wtx land`

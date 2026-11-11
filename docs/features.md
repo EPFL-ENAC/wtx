@@ -322,9 +322,15 @@ nothing.
 | `docs` | Writes `<plans_dir>/<branch>.md` (`docs/plans` by default) in the worktree and commits it on the branch, before the land. No comment. |
 | `off` | Nothing. wtx still keeps `PLAN.md` in the worktree. |
 
+The comment starts with one line that you can read without a click. The
+brief and each plan are folded below it, and each plan names its date and its
+model. GitHub refuses a comment over 65,536 characters, so land splits a
+longer text over several comments.
+
 Land posts a comment once per branch and text. A second land finds it and
 posts no copy. If you accept a new plan between two lands, the second land
-posts a new comment with it.
+posts a new comment with it. If a land stops halfway through several
+comments, the next land posts only the missing ones.
 `pr` and `issue` need a pull request, so `--local` and `--merge` post nothing.
 `docs` works with every kind of land (pull request, `--local`, `--merge`),
 because it is only a commit. A comment that fails gives a warning and the

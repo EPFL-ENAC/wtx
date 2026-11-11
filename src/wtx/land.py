@@ -385,11 +385,15 @@ def _land_merge(ctx: Ctx, branch: str, base: str, path: Path, *, skip_checks: bo
 _PLAN_SPLIT = re.compile(rf"(?m)^{re.escape(orchestrate.PLAN_MARK)}\n(?=# Plan, )")
 
 
-def _plans_text(path: Path, *, collapsed: bool) -> str:
-    """The brief and every accepted plan, empty when the worktree has neither.
+# GitHub refuses a comment over 65,536 characters. The margin covers the
+# marker, the opener and the <details> tags around each part.
+COMMENT_LIMIT = 60_000
 
-    collapsed puts each one in a <details> block, for a comment. The blank
-    line after </summary> is what makes GitHub render the markdown inside.
+
+def _plans_parts(path: Path) -> list[tuple[str, str]]:
+    """(title, text) for the brief and each accepted plan, empty when the
+    worktree has neither.
+
     wtx's own instruction to the planner is cut from the brief: it is not the
     human's task. Both marks count only as a whole line, so a brief or a plan
     that quotes them in a sentence is not cut there.
@@ -407,11 +411,50 @@ def _plans_text(path: Path, *, collapsed: bool) -> str:
         for entry in _PLAN_SPLIT.split(text)[1:]:
             head, _, body = entry.partition("\n")
             parts.append((head.lstrip("# ").strip(), body.strip()))
-    if collapsed:
-        blocks = [f"<details><summary>{t}</summary>\n\n{b}\n\n</details>" for t, b in parts]
-    else:
-        blocks = [f"# {t}\n\n{b}" for t, b in parts]
-    return "\n\n".join(blocks)
+    return parts
+
+
+def _plans_text(path: Path) -> str:
+    """The brief and the plans as one markdown file, for plans = "docs"."""
+    return "\n\n".join(f"# {t}\n\n{b}" for t, b in _plans_parts(path))
+
+
+def _cut(text: str, size: int) -> list[str]:
+    """Pieces of at most size characters, cut at a line end when one exists."""
+    pieces = []
+    while len(text) > size:
+        cut = text.rfind("\n", 0, size)
+        cut = cut if cut > 0 else size
+        pieces.append(text[:cut])
+        text = text[cut:].lstrip("\n")
+    return [*pieces, text]
+
+
+def _details(title: str, text: str) -> str:
+    """One collapsed block. The blank line after </summary> is what makes
+    GitHub render the markdown inside. A </details> or an open code fence in
+    the text would close the block early or swallow the next ones."""
+    text = text.replace("</details>", "&lt;/details&gt;")
+    if text.count("```") % 2:
+        text += "\n```"
+    return f"<details><summary>{title}</summary>\n\n{text}\n\n</details>"
+
+
+def _comment_texts(parts: list[tuple[str, str]]) -> list[str]:
+    """The blocks packed into as few comments as the size limit permits. A
+    part too long for one comment is cut at line ends into numbered pieces."""
+    blocks = []
+    for title, text in parts:
+        pieces = _cut(text, COMMENT_LIMIT - 1000)
+        for i, piece in enumerate(pieces, 1):
+            name = title if len(pieces) == 1 else f"{title}, part {i} of {len(pieces)}"
+            blocks.append(_details(name, piece))
+    comments: list[list[str]] = [[]]
+    for block in blocks:
+        if comments[-1] and len("\n\n".join([*comments[-1], block])) > COMMENT_LIMIT:
+            comments.append([])
+        comments[-1].append(block)
+    return ["\n\n".join(c) for c in comments]
 
 
 def _closing_issues(cwd: Path, branch: str) -> list[str]:
@@ -429,36 +472,38 @@ def _closing_issues(cwd: Path, branch: str) -> list[str]:
     ]
 
 
-def _has_comment(cwd: Path, kind: str, ref: str, marker: str) -> bool:
-    """True when that PR or issue already holds this branch's comment.
+def _comments(cwd: Path, kind: str, ref: str) -> str:
+    """Every comment on that PR or issue, as one text to look for markers in.
 
-    Anything gh says that is not a list of comments reads as "not yet".
+    Anything gh says that is not a list of comments reads as "none yet".
     """
     code, out, _ = _gh([kind, "view", ref, "--json", "comments"], cwd)
     if code != 0 or not out:
-        return False
+        return ""
     try:
         comments = json.loads(out).get("comments") or []
     except (json.JSONDecodeError, AttributeError):
-        return False
-    return any(marker in str(c.get("body", "")) for c in comments if isinstance(c, dict))
+        return ""
+    return "\n".join(str(c.get("body", "")) for c in comments if isinstance(c, dict))
 
 
 def _post_plans(ctx: Ctx, branch: str, path: Path) -> None:
-    """One comment with the brief and the plans, on the PR or its issue.
+    """The brief and the plans as comments on the PR or its issue.
 
-    Once per target and per text: a re-run of land finds the marker and posts
-    nothing. The marker names the branch, so stage 2 of an issue (a second PR,
-    a second branch) still posts on that issue. It also holds a hash of the
-    text, so a plan accepted after a failed land is posted on the next one. A failure only warns: record keeping
-    does not block a merge. The body goes through a file, a multi-line
-    argument would break the one-line-per-call logs.
+    Usually one comment. A text over the size limit of GitHub goes in several,
+    each with its own marker, so a land that fails halfway posts only the
+    missing ones next time. The marker names the branch, so stage 2 of an
+    issue (a second PR, a second branch) still posts on that issue. It also
+    holds a hash of the text, so a plan accepted after a failed land is posted
+    on the next one. A failure only warns: record keeping does not block a
+    merge. The body goes through a file, a multi-line argument would break the
+    one-line-per-call logs.
     """
     mode = ctx.cfg.repo.plans
     if mode not in ("pr", "issue"):
         return
-    text = _plans_text(path, collapsed=True)
-    if not text:
+    parts = _plans_parts(path)
+    if not parts:
         return
     targets = [("pr", branch)]
     if mode == "issue":
@@ -467,23 +512,35 @@ def _post_plans(ctx: Ctx, branch: str, path: Path) -> None:
             targets = [("issue", n) for n in issues]
         else:
             say("the pull request closes no issue, the plans go on the pull request")
-    digest = hashlib.sha256(text.encode()).hexdigest()[:12]
-    marker = f"<!-- wtx-plans {branch} {digest} -->"
-    body = f"{marker}\n\n{text}\n"
+    texts = _comment_texts(parts)
+    digest = hashlib.sha256("".join(texts).encode()).hexdigest()[:12]
+    plans = sum(1 for title, _ in parts if title != "Brief")
+    what = "the brief" if plans == 0 else f"{plans} accepted plan" + "s" * (plans > 1)
+    if plans and parts[0][0] == "Brief":
+        what = f"the brief and {what}"
     for kind, ref in targets:
-        if _has_comment(ctx.main, kind, ref, marker):
-            continue
-        say(f"posting the brief and the plans on {kind} {ref}")
-        with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False) as fh:
-            fh.write(body)
-        try:
-            code = run(
-                ["gh", kind, "comment", ref, "--body-file", fh.name], cwd=ctx.main, check=False
-            )
-        finally:
-            Path(fh.name).unlink(missing_ok=True)
-        if code != 0:
-            warn(f"could not comment on {kind} {ref}, the plans were not posted")
+        posted = _comments(ctx.main, kind, ref)
+        for i, text in enumerate(texts, 1):
+            part = f" {i}/{len(texts)}" if len(texts) > 1 else ""
+            marker = f"<!-- wtx-plans {branch} {digest}{part} -->"
+            if marker in posted:
+                continue
+            # One line people read without a click, the agent text folded below.
+            opener = f"wtx posted {what} for `{branch}` when it landed the branch."
+            if part:
+                opener += f" Part {i} of {len(texts)}."
+            say(f"posting the brief and the plans on {kind} {ref}{part}")
+            with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False) as fh:
+                fh.write(f"{marker}\n{opener}\n\n{text}\n")
+            try:
+                code = run(
+                    ["gh", kind, "comment", ref, "--body-file", fh.name], cwd=ctx.main, check=False
+                )
+            finally:
+                Path(fh.name).unlink(missing_ok=True)
+            if code != 0:
+                warn(f"could not comment on {kind} {ref}, the plans were not posted")
+                break
 
 
 def _commit_plans(ctx: Ctx, branch: str, path: Path) -> None:
@@ -495,7 +552,7 @@ def _commit_plans(ctx: Ctx, branch: str, path: Path) -> None:
     """
     if ctx.cfg.repo.plans != "docs":
         return
-    text = _plans_text(path, collapsed=False)
+    text = _plans_text(path)
     if not text:
         return
     rel = Path(ctx.cfg.repo.plans_dir) / f"{git.slug(branch)}.md"
