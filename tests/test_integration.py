@@ -1072,6 +1072,39 @@ def test_land_merge_refuses_a_dirty_worktree(
     assert_stayed_local(fake_bin)
 
 
+def test_land_goes_through_sandbox_stubs_in_both_checkouts(
+    local_repo: Path, fake_bin: Path, monkeypatch
+) -> None:
+    """The Claude Code sandbox leaves empty files in every checkout. They are
+    not work: land must not refuse them, and the worktree must still go,
+    though `git worktree remove` refuses untracked files without --force."""
+    path = make_worktree(local_repo, "feat/stubs", "dev")
+    commit_file(path, "feature.txt", "x\n")
+    for root in (path, local_repo):
+        (root / ".mcp.json").write_text("")
+        (root / ".claude" / ".claude").mkdir(parents=True, exist_ok=True)
+        (root / ".claude" / ".claude" / "settings.json").write_text("")
+    monkeypatch.chdir(local_repo)
+
+    assert run(["land", "feat/stubs"]) == 0
+    assert (local_repo / "feature.txt").is_file()
+    assert git.worktree_path_for(local_repo, "feat/stubs") is None
+    assert not path.exists()
+    # The main checkout's stubs are left alone, the sandbox may hold them.
+    assert (local_repo / ".mcp.json").is_file()
+
+
+def test_done_removes_a_worktree_holding_only_sandbox_stubs(
+    wtx_repo: Path, fake_bin: Path, monkeypatch
+) -> None:
+    path = make_worktree(wtx_repo, "feat/stubdone")
+    (path / ".bashrc").write_text("")
+    monkeypatch.chdir(wtx_repo)
+
+    assert run(["done", "--path", str(path), "--from-tmux"]) == 0
+    assert git.worktree_path_for(wtx_repo, "feat/stubdone") is None
+
+
 def test_land_merge_refuses_a_dirty_main_checkout(
     local_repo: Path, fake_bin: Path, monkeypatch, capsys
 ) -> None:

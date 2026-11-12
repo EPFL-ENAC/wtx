@@ -36,6 +36,10 @@ New:
 
 Fixed:
 
+- `wtx land` and `wtx done` no longer refuse a checkout because of the empty
+  files the Claude Code sandbox leaves (`.bashrc`, `.mcp.json`,
+  `.claude/.claude/...`). Untracked files of 0 bytes don't count as changes,
+  and they are deleted before the worktree is removed.
 - The push guard could loop forever with lefthook: `lefthook install` moved
   the guard to `pre-push.old` and lefthook ran it again from there (one push
   left 33,000 processes). The hook now stops on re-entry, `wtx setup` removes

@@ -425,6 +425,16 @@ hand-off passes `--merge` too, and the land and the job both ask
 arrive between the merge and the clean up job, and nothing on origin saves it.
 So a local clean up deletes the branch only if the base contains it.
 
+**The Claude Code sandbox leaves empty files in every checkout.** It mounts a
+read-only file on each path it protects (`.bashrc`, `.mcp.json`,
+`.claude/settings.json`, ...). When the path does not exist it creates an empty
+file and never deletes it. `git status` sees them, and land refused every
+checkout. So `git.is_clean()` ignores untracked files of 0 bytes, found by
+looking at the files, not by a list of names that changes with each version.
+Then `wt remove` runs `git worktree remove` without `--force`, which refuses
+any untracked file. So `wt.remove()` deletes the empty untracked files first.
+It never passes `--force` for that: real work can arrive after the check.
+
 ## desktop notifications
 
 **A `default` action stops the notification from raising anything.** GNOME only

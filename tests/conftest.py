@@ -59,7 +59,7 @@ case "$3" in
   create) git worktree add -q -b "$4" ".claude/worktrees/$slug" "$5";;
   checkout) git worktree add -q ".claude/worktrees/$slug" "$4";;
   remove) p=$(git worktree list --porcelain | awk -v b="refs/heads/$4" '/^worktree /{w=$2} $0=="branch "b{print w}')
-          [ -n "$p" ] && git worktree remove --force "$p";;
+          [ -n "$p" ] && git worktree remove $5 "$p";;
 esac""",
     "npm": 'case "$*" in *ci*) mkdir -p node_modules;; esac',
     "pnpm": 'case "$*" in *install*) mkdir -p node_modules;; esac',

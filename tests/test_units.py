@@ -1678,3 +1678,52 @@ def test_a_headless_run_leaves_the_session_state_alone(tmp_path, monkeypatch) ->
     assert notify.all_states() == {}
     payload = {"cwd": str(tmp_path), "session_id": "c", "tool_input": {"plan": "p"}}
     assert orchestrate.capture(payload) == ""
+
+
+def _stub_repo(tmp_path: Path) -> Path:
+    root = tmp_path / "r"
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    (root / "tracked.txt").write_text("content\n")
+    subprocess.run(["git", "add", "-A"], cwd=root, check=True)
+    subprocess.run(
+        ["git", "-c", "user.email=t@example.org", "-c", "user.name=T", "commit", "-qm", "x"],
+        cwd=root,
+        check=True,
+    )
+    return root
+
+
+def _sandbox_stubs(root: Path) -> None:
+    """What the Claude Code sandbox leaves: empty files, some in a folder git
+    would fold into one status line."""
+    (root / ".bashrc").write_text("")
+    (root / ".mcp.json").write_text("")
+    (root / ".claude" / ".claude").mkdir(parents=True)
+    (root / ".claude" / ".claude" / "settings.json").write_text("")
+
+
+def test_empty_untracked_files_do_not_make_a_checkout_dirty(tmp_path: Path) -> None:
+    from wtx import git
+
+    root = _stub_repo(tmp_path)
+    _sandbox_stubs(root)
+    assert git.is_clean(root)
+    assert len(git.empty_untracked(root)) == 3
+
+
+def test_an_untracked_file_with_content_is_still_dirty(tmp_path: Path) -> None:
+    from wtx import git
+
+    root = _stub_repo(tmp_path)
+    _sandbox_stubs(root)
+    (root / "notes.txt").write_text("forgot to commit\n")
+    assert not git.is_clean(root)
+
+
+def test_a_tracked_file_made_empty_is_still_dirty(tmp_path: Path) -> None:
+    from wtx import git
+
+    root = _stub_repo(tmp_path)
+    (root / "tracked.txt").write_text("")
+    assert not git.is_clean(root)
+    assert git.empty_untracked(root) == []
