@@ -8,10 +8,12 @@ and is never read anywhere in wtx.
 
 from __future__ import annotations
 
+import contextlib
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 
-from .proc import capture, capture_code, run
+from .proc import capture, capture_code, is_dry_run, run, say
 
 
 def git(args: list[str], *, cwd: Path) -> str:
@@ -104,8 +106,78 @@ def branch_exists(cwd: Path, ref: str) -> bool:
     return code == 0
 
 
+def _status(cwd: Path) -> list[str]:
+    """The entries of `git status`, one string each, in porcelain v2.
+
+    v2 because capture() strips its output and a v1 line can start with a
+    space. --untracked-files=all because git otherwise folds a folder of
+    untracked files into one line, and we must look at each file.
+    """
+    out = capture(
+        ["git", "status", "--porcelain=v2", "-z", "--untracked-files=all"],
+        cwd=cwd,
+    )
+    entries: list[str] = []
+    parts = out.split("\0")
+    i = 0
+    while i < len(parts):
+        entry = parts[i]
+        i += 1
+        if not entry:
+            continue
+        entries.append(entry)
+        if entry.startswith("2 "):
+            i += 1  # a rename or copy carries its old path in the next field
+    return entries
+
+
+def _empty_file(path: Path) -> bool:
+    try:
+        st = path.lstat()
+    except OSError:
+        return False
+    return stat.S_ISREG(st.st_mode) and st.st_size == 0
+
+
+def _stubs_and_rest(cwd: Path) -> tuple[list[Path], int]:
+    root = toplevel(cwd) or cwd
+    stubs: list[Path] = []
+    rest = 0
+    for entry in _status(cwd):
+        if entry.startswith("? ") and _empty_file(root / entry[2:]):
+            stubs.append(root / entry[2:])
+        else:
+            rest += 1
+    return stubs, rest
+
+
+def empty_untracked(cwd: Path) -> list[Path]:
+    """Untracked files of 0 bytes, the stubs the Claude Code sandbox leaves.
+
+    The sandbox mounts a read-only file on each path it protects. When the
+    path does not exist it creates an empty file and never deletes it
+    (.bashrc, .mcp.json, .claude/settings.json, ...). The list of names
+    changes with each Claude Code version, so we look at the files instead.
+    """
+    return _stubs_and_rest(cwd)[0]
+
+
 def is_clean(cwd: Path) -> bool:
-    return capture(["git", "status", "--porcelain"], cwd=cwd) == ""
+    """No change worth keeping: sandbox stubs (empty untracked files) don't
+    count. A tracked file made empty still does, and so does an untracked
+    file with content, that is work someone forgot to commit."""
+    return _stubs_and_rest(cwd)[1] == 0
+
+
+def remove_empty_untracked(cwd: Path) -> None:
+    """Delete the sandbox stubs. `git worktree remove` refuses a worktree
+    with untracked files, and wt calls it without --force."""
+    for path in empty_untracked(cwd):
+        if is_dry_run():
+            say(f"[dry-run] rm {path}")
+            continue
+        with contextlib.suppress(OSError):
+            path.unlink()
 
 
 def is_ancestor(cwd: Path, ancestor: str, descendant: str) -> bool:
