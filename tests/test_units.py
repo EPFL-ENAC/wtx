@@ -16,7 +16,7 @@ from wtx import config, envfile, guard, orchestrate
 from wtx.agents.base import RenderContext
 from wtx.agents.claude import ClaudeAgent, protected_branch_rules
 from wtx.cli import UserError, _split_curl_args
-from wtx.config import parse, validate
+from wtx.config import default_base, parse, validate
 from wtx.context import session_name
 from wtx.ports import cksum
 from wtx.repos import parse_with
@@ -209,6 +209,13 @@ def test_the_land_rule_defaults_to_pr_and_refuses_a_typo() -> None:
     assert config.unknown_keys(data) == []
 
     assert any("[repo].land 'mrege'" in p for p in validate(parse({"repo": {"land": "mrege"}})))
+
+
+def test_default_base_is_local_only_under_the_merge_rule() -> None:
+    pr = parse({"repo": {"base_branch": "dev", "protected_branches": ["dev"]}})
+    assert default_base(pr) == "origin/dev"
+    merge = parse({"repo": {"base_branch": "dev", "protected_branches": ["dev"], "land": "merge"}})
+    assert default_base(merge) == "dev"
 
 
 def test_validate_catches_a_base_branch_left_unprotected() -> None:

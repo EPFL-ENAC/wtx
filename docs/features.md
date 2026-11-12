@@ -7,8 +7,9 @@ A short tour, one section per feature. Every key named here is in
 
 `wtx go <branch> [base]` makes the branch, its worktree, its tmux session and
 its agent, then attaches you to the session. The base is
-`origin/<base_branch>` unless you give one, and wtx fetches `origin` first. The
-worktree is created by `wt` under `<repo>/.claude/worktrees/<branch>`.
+`origin/<base_branch>` unless you give one, and wtx fetches `origin` first.
+With `land = "merge"` the default base is the local `<base_branch>`, with no
+fetch (see [Local merge](#local-merge)). The worktree is created by `wt` under `<repo>/.claude/worktrees/<branch>`.
 
 A protected branch is refused: it stays in the main checkout. Running
 `wtx go` again on a branch that already has a worktree is safe, setup just runs
@@ -299,6 +300,14 @@ there is one, is not touched. With no remote the local branch can be the only
 copy, so it is deleted only if the base contains it. If not, land warns and
 keeps it.
 
+With the rule, the local base branch is also the default base for the rest.
+`wtx go` cuts a new worktree from the local `<base_branch>`, not from
+`origin/<base_branch>`, and does not fetch. `wtx review` diffs from it too. So
+a new worktree sees what was landed and not pushed yet, and a review does not
+show those commits as part of the branch. A base you give (`wtx go feat/x
+origin/dev`, `wtx review --base <ref>`) still wins. `wtx land --merge` on a
+repo without the rule does not change this: the default base stays origin.
+
 ## Review
 
 `wtx review [branch]` shows the branch diff in [hunk](https://hunk.dev), with
@@ -315,7 +324,7 @@ of the repo, like `wtx brief`, and refuses a protected branch.
    `<session>.review` (the hunk sidecar) and `<session>.review.meta` (the
    commit it was written for). Nothing is written in the checkout.
 3. It opens `hunk diff origin/<base_branch>...HEAD --agent-context <file>` in a
-   `review` window of the branch session. Outside tmux, hunk runs in the
+   `review` window (the local `<base_branch>` with `land = "merge"`) of the branch session. Outside tmux, hunk runs in the
    current terminal.
 
 The notes are reused while the branch does not move. `--force` asks again,

@@ -139,6 +139,18 @@ PERMISSION_MODES = (
 LAND_MODES = ("pr", "merge")
 
 
+def default_base(cfg: WtxConfig) -> str:
+    """What `wtx go` cuts a worktree from and what `wtx review` diffs against,
+    when the user gives no base.
+
+    Under land = "merge" the local base branch is the truth: lands go there
+    and are not pushed, so origin/<base> is behind it. With pr, origin is the
+    truth and a local ref can be stale (see docs/traps.md).
+    """
+    name = cfg.repo.base_branch
+    return name if cfg.repo.land == "merge" else f"origin/{name}"
+
+
 # The effort levels the agent accepts. Same reason as the permission modes.
 # Also the levels a plan's wtx-effort: line may name, so it must match the
 # list PLAN_INSTRUCTION gives the planner.

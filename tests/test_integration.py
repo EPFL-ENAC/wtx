@@ -1235,6 +1235,73 @@ def test_land_merge_dry_run_changes_nothing(
     assert_stayed_local(fake_bin)
 
 
+def _merge_rule_ahead_of_origin(repo: Path) -> str:
+    """Turn the merge rule on and leave local dev ahead of origin/dev, the way
+    a local land does. Returns the commit origin does not have."""
+    cfg = repo / "wtx.toml"
+    cfg.write_text(cfg.read_text().replace("[repo]\n", '[repo]\nland = "merge"\n', 1))
+    subprocess.run(["git", "commit", "-qam", "land by local merge"], cwd=repo, check=True)
+    commit(repo, "landed, not pushed")
+    return git_out(["rev-parse", "dev"], repo)
+
+
+def test_go_under_the_merge_rule_cuts_from_the_local_base(
+    wtx_repo: Path, git_calls: Path, monkeypatch
+) -> None:
+    """Lands go to the local base and are not pushed. A worktree cut from
+    origin/<base> would miss them."""
+    local = _merge_rule_ahead_of_origin(wtx_repo)
+    monkeypatch.chdir(wtx_repo)
+
+    run(["go", "feat/fresh", "--no-attach"])
+    path = git.worktree_path_for(wtx_repo, "feat/fresh")
+    assert path is not None
+    assert git.is_ancestor(wtx_repo, local, "feat/fresh")
+    assert remote_git_calls(git_calls) == []
+    assert git_out(["rev-parse", "--abbrev-ref", "feat/fresh@{upstream}"], wtx_repo) == ""
+
+
+def test_go_under_the_merge_rule_still_takes_a_given_base(
+    wtx_repo: Path, git_calls: Path, monkeypatch
+) -> None:
+    local = _merge_rule_ahead_of_origin(wtx_repo)
+    monkeypatch.chdir(wtx_repo)
+
+    run(["go", "feat/remote", "origin/dev", "--no-attach"])
+    assert git.worktree_path_for(wtx_repo, "feat/remote") is not None
+    assert not git.is_ancestor(wtx_repo, local, "feat/remote")
+    assert "fetch origin" in remote_git_calls(git_calls)
+
+
+def test_go_under_the_pr_rule_cuts_from_origin(
+    wtx_repo: Path, git_calls: Path, monkeypatch
+) -> None:
+    commit(wtx_repo, "local, not pushed")
+    local = git_out(["rev-parse", "dev"], wtx_repo)
+    monkeypatch.chdir(wtx_repo)
+
+    run(["go", "feat/pr", "--no-attach"])
+    assert git.worktree_path_for(wtx_repo, "feat/pr") is not None
+    assert not git.is_ancestor(wtx_repo, local, "feat/pr")
+    assert "fetch origin" in remote_git_calls(git_calls)
+
+
+def test_review_under_the_merge_rule_diffs_from_the_local_base(
+    wtx_repo: Path, git_calls: Path
+) -> None:
+    """From origin/dev the diff would show the lands not pushed yet as if this
+    branch made them."""
+    from wtx import review
+
+    _merge_rule_ahead_of_origin(wtx_repo)
+    path = make_worktree(wtx_repo, "feat/diff", "dev")
+    ctx = context.load(root=path)
+
+    assert review.diff_range(ctx) == "dev...HEAD"
+    assert review.diff_range(ctx, "origin/dev") == "origin/dev...HEAD"
+    assert remote_git_calls(git_calls) == []
+
+
 def test_merge_key_opens_the_land_window_with_merge(
     wtx_repo: Path, fake_bin: Path, monkeypatch
 ) -> None:
