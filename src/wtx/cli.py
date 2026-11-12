@@ -213,7 +213,7 @@ def cmd_go(args: argparse.Namespace) -> int:
     if not wt.available():
         raise UserError("wt is not installed. See `wtx doctor`.")
 
-    base = args.base or f"origin/{cfg.repo.base_branch}"
+    base = args.base or config_mod.default_base(cfg)
     if base.startswith("origin/"):
         git.fetch(main)
 
@@ -1053,7 +1053,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("go", help="branch, worktree, session, agent. Or 'all'.")
     s.add_argument("branch")
-    s.add_argument("base", nargs="?", default="", help="default origin/<base_branch>")
+    s.add_argument(
+        "base",
+        nargs="?",
+        default="",
+        help="default origin/<base_branch>, or <base_branch> with land = merge",
+    )
     s.add_argument("--prompt", default="", help="a brief: a file, or the text itself")
     s.add_argument("--no-attach", action="store_true")
     s.add_argument("--agent", default="", choices=["", "claude", "opencode"])
@@ -1184,7 +1189,7 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("review", help="the branch agent's notes beside the diff, in hunk")
     s.add_argument("branch", nargs="?", default="")
     s.add_argument(
-        "--base", default="", metavar="REF", help="diff from this ref, default origin/<base_branch>"
+        "--base", default="", metavar="REF", help="diff from this ref, default the base of wtx go"
     )
     s.add_argument("--force", action="store_true", help="ask the agent again")
     s.add_argument("--no-open", action="store_true", help="write the notes, do not open hunk")

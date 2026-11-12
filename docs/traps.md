@@ -17,7 +17,9 @@ only the first, because a branch can predate the fix.
 
 **A local ref makes a stale base.** `wt create x somebranch` resolves whatever
 that ref pointed at last time it was fetched. `wtx go` defaults to
-`origin/<base>` and fetches first.
+`origin/<base>` and fetches first. Except with `land = "merge"`: there the
+local base is the fresh one, because lands go there and are not pushed. So
+`wtx go` and `wtx review` use the local `<base>`, with no fetch.
 
 **A hook must be a list in `.wt.toml`.** `post_create = "wtx hook post-create"`
 parses fine and then never runs, so a repo looks set up and has no ports, no
