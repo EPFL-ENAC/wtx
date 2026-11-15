@@ -185,6 +185,37 @@ def is_ancestor(cwd: Path, ancestor: str, descendant: str) -> bool:
     return code == 0
 
 
+# What merge_commit_of asks git log for: the merge, then its parents.
+MERGES_FORMAT = "%H %P"
+
+
+def pick_merge(lines: list[str], head: str) -> str:
+    """The merge, among `git log --merges --format=MERGES_FORMAT` lines, that
+    took head in as a second parent. "" when there is none.
+
+    Apart from merge_commit_of so the status line can run git its own way,
+    with a timeout, and still read the answer the same way.
+    """
+    for line in lines:
+        words = line.split()
+        if len(words) > 2 and head in words[2:]:
+            return words[0]
+    return ""
+
+
+def merge_commit_of(cwd: Path, head: str, ref: str) -> str:
+    """The merge in ref that brought head in, or "".
+
+    Every road of wtx land merges with --no-ff (a PR merge commit on the
+    forge, git merge --no-ff here), so a landed branch always has one. A
+    branch with no commits of its own has none: it is not landed.
+    """
+    out = capture(
+        ["git", "log", "--merges", f"--format={MERGES_FORMAT}", f"{head}..{ref}"], cwd=cwd
+    )
+    return pick_merge(out.splitlines(), head)
+
+
 def slug(branch: str) -> str:
     """Worktree directory name for a branch, matching wt's separator."""
     return branch.replace("/", "-")

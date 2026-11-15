@@ -875,19 +875,24 @@ def test_land_key_refuses_the_main_checkout_on_the_status_line(
 
 
 def test_land_inside_its_own_session_hands_the_cleanup_to_tmux(
-    wtx_repo: Path, fake_bin: Path, monkeypatch
+    wtx_repo: Path, fake_bin: Path, monkeypatch, capsys
 ) -> None:
     """Removing the worktree kills its session. A land running in that
-    session would die in the middle of its own clean up."""
+    session would die in the middle of its own clean up. And it waits for
+    Enter: a session that dies under you is how a land went unnoticed."""
     import shlex
 
     path = make_worktree(wtx_repo, "feat/inside")
     setup_mod.run_setup(context.load(root=path), start_tmux=False)
     commit(path)
     inside_session(monkeypatch, context.load(root=path).session)
+    keys: list[str] = []
+    monkeypatch.setattr("builtins.input", lambda prompt="": keys.append(prompt) or "")
     monkeypatch.chdir(wtx_repo)
 
-    assert run(["land", "feat/inside", "--local", "--skip-checks"]) == 0
+    assert run(["land", "feat/inside", "--local", "--skip-checks", "--window"]) == 0
+    assert "✓ landed feat/inside into dev" in capsys.readouterr().out
+    assert len(keys) == 1, "the clean up waits for Enter"
     assert git.is_ancestor(wtx_repo, "feat/inside", "dev")
     assert git.worktree_path_for(wtx_repo, "feat/inside") is not None
     handoff = [c for c in calls_of(fake_bin, "tmux") if c.startswith("run-shell -b")]
@@ -909,7 +914,9 @@ def test_land_inside_its_own_session_hands_the_cleanup_to_tmux(
         "until a key is pressed, on the client that watched the land"
     )
     banner = calls_of(fake_bin, "notify-send")
-    assert banner and banner[-1].endswith(f"wtx land {done}")
+    assert len(banner) == 1 and "Press Enter" in banner[0], (
+        "one banner when it landed, none after Enter: the human is looking"
+    )
 
 
 def test_a_cleanup_that_leaves_the_worktree_says_so(
@@ -932,10 +939,11 @@ def test_a_cleanup_that_leaves_the_worktree_says_so(
     )
 
 
-def test_the_land_window_waits_only_when_land_stops(
+def test_the_land_window_waits_when_land_stops_and_when_it_lands(
     wtx_repo: Path, fake_bin: Path, monkeypatch, capsys
 ) -> None:
-    """The window closes when its command ends, and the reason with it."""
+    """The window closes when its command ends, and the reason with it. When
+    it lands, finish waits for Enter: the window is the only place to ask."""
     from wtx import land as land_mod
 
     path = make_worktree(wtx_repo, "feat/stops")
@@ -948,9 +956,16 @@ def test_the_land_window_waits_only_when_land_stops(
     assert "uncommitted changes" in capsys.readouterr().err
     assert len(asked) == 1 and "Press Enter" in asked[0]
 
-    monkeypatch.setattr(land_mod, "land", lambda *a, **kw: None)
+    landed = land_mod.Landed("feat/stops", "dev")
+    finished: list[bool] = []
+    monkeypatch.setattr(land_mod, "land", lambda *a, **kw: landed)
+    monkeypatch.setattr(land_mod, "finish", lambda ctx, done, ask: finished.append(ask))
     assert run(["land", "feat/stops", "--window"]) == 0
-    assert len(asked) == 1
+    assert finished == [True]
+    assert len(asked) == 1, "no second prompt from the window itself"
+
+    assert run(["land", "feat/stops"]) == 0
+    assert finished == [True, False], "a plain land in a terminal does not wait"
 
 
 # -- land by local merge --------------------------------------------------------
@@ -1431,6 +1446,106 @@ def test_land_merge_in_the_window_keeps_the_session_and_shows_why(
     assert not (local_repo / ".git" / "MERGE_HEAD").exists()
     assert_nothing_landed(local_repo, "feat/stop", before)
     assert_stayed_local(fake_bin)
+
+
+def test_q_in_the_land_window_keeps_a_landed_session_marked(
+    local_repo: Path, fake_bin: Path, monkeypatch, capsys
+) -> None:
+    """q keeps everything, and the session says it landed. Land it again and
+    it goes straight to the recap: no checks, no second merge."""
+    import json
+
+    from wtx import notify
+
+    path = make_worktree(local_repo, "feat/kept", "dev")
+    commit_file(path, "kept.txt", "work\n")
+    session = context.load(root=path).session
+    inside_session(monkeypatch, session)
+    monkeypatch.setattr("builtins.input", lambda prompt="": "q")
+    monkeypatch.chdir(local_repo)
+
+    assert run(["land", "feat/kept", "--window", "--skip-checks"]) == 0
+    out, err = capsys.readouterr()
+    assert "✓ landed feat/kept into dev" in out
+    assert "merged locally, nothing was pushed" in out
+    assert "kept. prefix+X m shows this again" in err
+    assert git.is_ancestor(local_repo, "feat/kept", "dev")
+    assert git.worktree_path_for(local_repo, "feat/kept") is not None
+    assert git.branch_exists(local_repo, "feat/kept")
+    calls = calls_of(fake_bin, "tmux")
+    assert not [c for c in calls if c.startswith(("run-shell", "kill-session"))]
+    assert f"set-option -t ={session}: @wtx_state landed" in calls
+    state = json.loads(notify.state_file(session).read_text())
+    assert state["state"] == "landed"
+    assert state["message"] == "feat/kept landed in dev"
+    fake_sessions(session)
+    assert notify.status_line() == f"✅ {session}", "it waits on you"
+
+    fail_checks(monkeypatch)
+    before = git_out(["rev-parse", "dev"], local_repo)
+    monkeypatch.setattr("builtins.input", lambda prompt="": "")
+    assert run(["land", "feat/kept", "--window"]) == 0
+    out, err = capsys.readouterr()
+    assert "✓ feat/kept already landed in dev" in out
+    assert "1 commit, 1 file changed, 1 insertion(+)" in out
+    assert "check failed" not in err
+    assert git_out(["rev-parse", "dev"], local_repo) == before, "no second merge"
+    handoff = [c for c in calls_of(fake_bin, "tmux") if c.startswith("run-shell -b")]
+    assert len(handoff) == 1 and "--cleanup-only --merge" in handoff[0]
+
+
+def test_a_plain_land_prints_the_recap_and_cleans_up_at_once(
+    local_repo: Path, fake_bin: Path, monkeypatch, capsys
+) -> None:
+    """From a terminal, the human runs the land and reads it: nothing to
+    press, and no landed mark left behind."""
+    from wtx import notify
+
+    path = make_worktree(local_repo, "feat/plain", "dev")
+    commit_file(path, "plain.txt", "work\n")
+    session = context.load(root=path).session
+    monkeypatch.setattr("builtins.input", lambda prompt="": pytest.fail("asked a key"))
+    monkeypatch.chdir(local_repo)
+
+    assert run(["land", "feat/plain", "--skip-checks"]) == 0
+    out, err = capsys.readouterr()
+    assert "✓ landed feat/plain into dev" in out
+    assert "worktree removed, branch deleted, nothing was pushed" in err
+    assert git.worktree_path_for(local_repo, "feat/plain") is None
+    assert not notify.state_file(session).exists()
+    assert not [c for c in calls_of(fake_bin, "tmux") if "@wtx_state landed" in c]
+
+
+def test_the_recap_lists_what_landed(local_repo: Path, fake_bin: Path) -> None:
+    from wtx import land as land_mod
+
+    path = make_worktree(local_repo, "feat/many", "dev")
+    commit_file(path, "a.txt", "a\n")
+    for i in range(land_mod.RECAP_COMMITS + 2):
+        commit(path, f"step {i}")
+    subprocess.run(
+        ["git", "merge", "-q", "--no-ff", "--no-edit", "feat/many"], cwd=local_repo, check=True
+    )
+    ctx = context.load(root=local_repo)
+
+    text = land_mod.recap(ctx, land_mod.Landed("feat/many", "dev", merge=True))
+    lines = text.splitlines()
+    assert lines[0] == "✓ landed feat/many into dev"
+    assert lines[1] == "  merged locally, nothing was pushed"
+    total = land_mod.RECAP_COMMITS + 3
+    assert lines[2] == f"  {total} commits, 1 file changed, 1 insertion(+)"
+    assert lines[3].endswith(f"step {land_mod.RECAP_COMMITS + 1}"), "newest first"
+    assert len(lines) == 3 + land_mod.RECAP_COMMITS + 1
+    assert lines[-1] == "    ... and 3 more"
+
+    pr = land_mod.Landed("feat/many", "dev", url="https://forge/pull/7", already=True)
+    text = land_mod.recap(ctx, pr)
+    assert text.splitlines()[:2] == [
+        "✓ feat/many already landed in dev",
+        "  pull request https://forge/pull/7",
+    ]
+    # The PR road reads origin/dev, which this repo has not: only the title.
+    assert len(text.splitlines()) == 2
 
 
 def test_config_validate_takes_a_land_mode_and_refuses_a_bad_one(
@@ -3189,6 +3304,27 @@ def test_auto_land_lands_once_the_agent_fixed_it(
     assert (local_repo / "same.txt").read_text() == "both\n"
     assert git.worktree_path_for(local_repo, "feat/fixed") is None
     assert not autoland.record_file(session).exists()
+
+
+def test_auto_land_in_the_window_ends_on_the_recap(
+    local_repo: Path, fake_bin: Path, monkeypatch, capsys
+) -> None:
+    """The try that lands waits for Enter like any land in the window."""
+    path, session = _clash(local_repo, "feat/auto")
+    keys: list[str] = []
+    monkeypatch.setattr("builtins.input", lambda prompt="": keys.append(prompt) or "q")
+    monkeypatch.chdir(local_repo)
+    assert run(["land", "feat/auto", "--auto", "--skip-checks", "--window"]) == 0
+    assert keys == [], "a try handed to the agent does not wait"
+
+    subprocess.run(["git", "merge", "dev"], cwd=path, capture_output=True)
+    (path / "same.txt").write_text("both\n")
+    subprocess.run(["git", "commit", "-qam", "merge dev"], cwd=path, check=True)
+
+    assert run(["land", "feat/auto", "--auto", "--resume", "--window"]) == 0
+    assert "✓ landed feat/auto into dev" in capsys.readouterr().out
+    assert len(keys) == 1
+    assert git.worktree_path_for(local_repo, "feat/auto") is not None, "q keeps it"
 
 
 def test_auto_land_gives_up_when_the_agent_changed_nothing(

@@ -27,12 +27,16 @@ from __future__ import annotations
 import contextlib
 import json
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from . import config as config_mod
 from . import context, git, notify, repos, tmux
 from .agents import base as agents
 from .context import Ctx, session_name
 from .proc import is_dry_run, say
+
+if TYPE_CHECKING:
+    from .land import Landed
 
 MAX_TRIES = 3
 
@@ -99,8 +103,9 @@ def _head(path: Path | None) -> str:
     return git.git(["rev-parse", "HEAD"], cwd=path)
 
 
-def run(ctx: Ctx, branch: str, flags: dict, *, resume: bool = False) -> str:
-    """One try, from the main checkout. Returns what to tell the human.
+def run(ctx: Ctx, branch: str, flags: dict, *, resume: bool = False) -> str | Landed:
+    """One try, from the main checkout. Returns what landed, or what to tell
+    the human when it did not land. land.finish shows the first.
 
     Raises GiveUp when the human must take over, and LandError for a stop the
     agent cannot fix. Both end the auto-land. `resume` is a try the Stop hook
@@ -127,11 +132,11 @@ def run(ctx: Ctx, branch: str, flags: dict, *, resume: bool = False) -> str:
         clear(session)
         raise GiveUp(f"the agent changed nothing on {branch} since the last try")
 
-    # Taken now: a land that works removes the session, and a stop that is
-    # not ours to fix ends the auto-land.
+    # Taken now: a land that works ends the auto-land, and so does a stop
+    # that is not ours to fix.
     clear(session)
     try:
-        land_mod.land(ctx, branch, **flags)
+        landed = land_mod.land(ctx, branch, **flags)
     except land_mod.Fixable as exc:
         tries += 1
         if tries > MAX_TRIES:
@@ -139,7 +144,7 @@ def run(ctx: Ctx, branch: str, flags: dict, *, resume: bool = False) -> str:
         _hand_to_agent(ctx, branch, exc.task)
         write(session, _record(ctx, branch, flags, tries, _head(path)))
         return f"auto-land try {tries} of {MAX_TRIES}: {exc}. The agent is on it"
-    return ""
+    return landed
 
 
 def _record(ctx: Ctx, branch: str, flags: dict, tries: int, head: str) -> dict:

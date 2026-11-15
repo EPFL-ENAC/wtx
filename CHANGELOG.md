@@ -41,6 +41,13 @@ New:
 
 Fixed:
 
+- A landed session gave no sign that it had landed. The land killed it right
+  after the merge, or, when the clean up did not run, left it as it was. Now
+  the land window shows a recap (what landed into what, the PR, the commits,
+  the size) and waits. Enter removes the worktree and the branch and closes
+  the session. q keeps it, marked `landed` in green in the picker and on the
+  board. A land on a branch that is already in the base goes straight to the
+  recap. The green in the picker needs `wtx install-machine --apply` again.
 - After `prefix+X l`, you saw no clear result: a 5 second message, often
   missed. Now the land result stays on the status line until you press a key,
   on the client that was in the session, and a desktop notification says it
