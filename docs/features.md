@@ -276,16 +276,45 @@ You can also land from the branch session itself: press `prefix+X`, then `l`.
 A `land` window opens in that session and runs `wtx land <branch>` from the
 main checkout, so you see every step. If the land stops (a rebase conflict, a
 failed check, a PR that is still open after 30 minutes), the window stays open
-with the reason, next to the agent. If it works, the session closes on its own
-and your tmux client moves to another session. There the status line says how
-it ended, for example `landed feat/x into dev, worktree removed, branch
-deleted`, and it stays until you press a key. A desktop notification says the
-same. If the worktree could not be removed, both say so and tell you to run
-`wtx done <branch>`. Press `prefix+X l` again while a land runs and you go
-back to its window. It does not start a second one.
+with the reason, next to the agent. Press `prefix+X l` again while a land runs
+and you go back to its window. It does not start a second one.
 
-A plain `wtx land` ends with the same line, read from the repo after the clean
-up, not guessed.
+If the land works, the window shows what landed and waits:
+
+```
+✓ landed feat/x into dev
+  pull request https://github.com/org/repo/pull/37
+  2 commits, 4 files changed, 120 insertions(+), 8 deletions(-)
+    913b62d feat(land): auto-land, the agent fixes what stops the land
+    7b3b654 fix(land): say clearly how an in-session land ended
+
+  Enter  remove the worktree and the branch, close this session
+  q      keep them, close this window
+```
+
+The commits and the size come from the merge commit. On the merge road the
+second line is `merged locally, nothing was pushed`. A desktop notification
+says the branch landed, because a PR land can take 30 minutes.
+
+- Enter removes the worktree, closes the session and deletes the branch, local
+  and remote (with `--keep-branch`, the branch stays). Your tmux client moves
+  to another session. There the status line says how it ended, for example
+  `landed feat/x into dev, worktree removed, branch deleted`, until you press
+  a key. If the worktree could not be removed, it says so and tells you to run
+  `wtx done <branch>`.
+- q or Esc keeps everything. The session stays marked `landed`: in green in
+  the picker (`prefix+s`), and in the waiting list of `wtx monitor`. Other keys
+  do nothing.
+
+Land a branch that is already in the base (a PR merged on GitHub, a land
+window you closed with q) and it skips the rebase, the checks and the merge.
+It goes straight to the same recap, so `prefix+X l` again is how you close a
+landed session. It looks for the merge commit of the branch in
+`origin/<base_branch>`, or in `<base_branch>` on the merge road.
+
+A plain `wtx land` in a terminal prints the same recap, then cleans up at
+once, with no key to press. Its last line is read from the repo after the
+clean up, not guessed.
 
 ### Auto-land
 

@@ -10,18 +10,26 @@ is the main checkout. See open_window. prefix+X m does the same with --merge.
 Some repos must never talk to their remote, or have none. [repo].land = "merge"
 or --merge takes the other road: one `git merge --no-ff` in the main checkout,
 and nothing here touches the remote. See _land_merge.
+
+land() only merges. finish() shows what landed and cleans up. In the land
+window it waits for Enter first: a session that dies under you is how a
+landed session went unnoticed. See finish.
 """
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import shlex
 import sys
+import termios
 import time
+import tty
+from dataclasses import dataclass
 from pathlib import Path
 
-from . import git, review, tmux, wt
+from . import git, notify, review, tmux, wt
 from .config import WtxConfig
 from .context import Ctx, session_name
 from .proc import CommandError, capture, capture_code, is_dry_run, run, run_shell, say, warn, which
@@ -32,6 +40,25 @@ WINDOW = "land"
 
 class LandError(Exception):
     pass
+
+
+@dataclass
+class Landed:
+    """What a land did. finish() shows it and cleans up after it.
+
+    keep_branch and merge ride along: the clean up can run in another
+    process, and an auto-land try reads its flags from its record, not from
+    the command line.
+    """
+
+    branch: str
+    base: str
+    merge: bool = False
+    keep_branch: bool = False
+    # The pull request, on the PR road.
+    url: str = ""
+    # It was in the base before this land started: nothing was merged now.
+    already: bool = False
 
 
 # The end of every task: the agent must be free to refuse, and never to land.
@@ -146,7 +173,8 @@ def land(
     keep_branch: bool = False,
     poll_seconds: int = 20,
     timeout_minutes: int = 30,
-) -> None:
+) -> Landed:
+    """Merge the branch into the base. The clean up is finish()'s job."""
     cfg = ctx.cfg
     base = cfg.repo.base_branch
     merge = merges_locally(cfg, merge)
@@ -166,12 +194,25 @@ def land(
             f"work on {branch}. Leave out what must not be committed (scratch files, "
             "secrets) and say what you left.",
         )
-    _warn_on_review(ctx, branch, path)
+    done = Landed(branch, base, merge=merge, keep_branch=keep_branch)
 
+    if not merge:
+        git.fetch(ctx.main)
+    if _merge_commit(ctx, done):
+        # A PR merged on the forge, a land whose window was closed before
+        # Enter: no second rebase, no checks, no second merge. Straight to
+        # the recap, where Enter closes the worktree.
+        say(f"{branch} already landed in {base}, there is nothing to merge")
+        done.already = True
+        if not merge:
+            done.url = pr_state(ctx.main, branch)[1] if which("gh") else ""
+        return done
+
+    _warn_on_review(ctx, branch, path)
     if merge:
         _land_merge(ctx, branch, base, path, skip_checks=skip_checks)
     else:
-        _land_remote(
+        done.url = _land_remote(
             ctx,
             branch,
             base,
@@ -181,13 +222,7 @@ def land(
             poll_seconds=poll_seconds,
             timeout_minutes=timeout_minutes,
         )
-    if tmux.current_session() == session_name(ctx.repo_name, branch):
-        # The clean up is another process, and it says how the land ended.
-        # Here the worktree is still there, so "landed" would be a guess.
-        _hand_off_cleanup(ctx, branch, keep_branch=keep_branch, merge=merge)
-        return
-    cleanup(ctx, branch, keep_branch=keep_branch, remote=not merge)
-    say(outcome(ctx, branch, merge=merge))
+    return done
 
 
 def outcome(ctx: Ctx, branch: str, *, merge: bool) -> str:
@@ -208,6 +243,153 @@ def outcome(ctx: Ctx, branch: str, *, merge: bool) -> str:
     return f"landed {branch} into {base}, worktree removed, {left}{pushed}"
 
 
+def _merge_commit(ctx: Ctx, landed: Landed) -> str:
+    """The merge that brought the branch into the base, or "".
+
+    The PR road reads origin/<base>: the merge is on the forge, and the local
+    base can be far behind. The merge road has only the local base.
+    """
+    head = git.git(["rev-parse", "--verify", "-q", f"refs/heads/{landed.branch}"], cwd=ctx.main)
+    if not head:
+        return ""
+    ref = landed.base if landed.merge else f"origin/{landed.base}"
+    return git.merge_commit_of(ctx.main, head, ref)
+
+
+# More than this and the recap pushes its own first line off the window.
+RECAP_COMMITS = 15
+
+
+def recap(ctx: Ctx, landed: Landed) -> str:
+    """What landed, read from the merge commit: the commits and the size.
+
+    Read after the merge and before the clean up, which deletes the branch.
+    A merge done by hand as a fast-forward has no merge commit: then only the
+    first line.
+    """
+    branch, base = landed.branch, landed.base
+    if landed.already:
+        title = f"{branch} already landed in {base}"
+    else:
+        title = f"landed {branch} into {base}"
+    lines = [f"✓ {title}"]
+    if landed.url:
+        lines.append(f"  pull request {landed.url}")
+    if landed.merge:
+        lines.append("  merged locally, nothing was pushed")
+    merge = "" if is_dry_run() else _merge_commit(ctx, landed)
+    if merge:
+        log = ["log", "--oneline", "--no-decorate", f"{merge}^1..{merge}^2"]
+        commits = git.git(log, cwd=ctx.main).splitlines()
+        size = git.git(["diff", "--shortstat", f"{merge}^1", merge], cwd=ctx.main)
+        count = f"{len(commits)} commit{'' if len(commits) == 1 else 's'}"
+        lines.append(f"  {count}, {size}" if size else f"  {count}")
+        lines += [f"    {line}" for line in commits[:RECAP_COMMITS]]
+        if len(commits) > RECAP_COMMITS:
+            lines.append(f"    ... and {len(commits) - RECAP_COMMITS} more")
+    return "\n".join(lines)
+
+
+def finish(ctx: Ctx, landed: Landed, *, ask: bool = False) -> None:
+    """Show what landed, then clean up.
+
+    ask=False is a plain `wtx land` in a terminal: it cleans up at once, the
+    way it always did.
+
+    ask=True is the land window. It waits for Enter before the clean up. A
+    clean up that ran on its own killed the session under the human, and when
+    it did not run (a PR merged later, a window closed early) nothing in the
+    session said the branch had landed. Until Enter, the session is marked
+    `landed`: in the picker, on the board, and in a desktop banner, since a PR
+    land can take 30 minutes and an auto-land ends while you look elsewhere.
+    """
+    print(recap(ctx, landed), flush=True)
+    branch = landed.branch
+    if not ask:
+        _clean_up(ctx, landed)
+        return
+    session = session_name(ctx.repo_name, branch)
+    _mark_landed(session, landed)
+    what = "the worktree" if landed.keep_branch else "the worktree and the branch"
+    print(f"\n  Enter  remove {what}, close this session\n  q      keep them, close this window")
+    if is_dry_run():
+        say(f"[dry-run] Enter would remove {what} of {branch}")
+        return
+    if not _wait_for_enter():
+        key = "m" if landed.merge else "l"
+        say(f"kept. prefix+X {key} shows this again, prefix+X d closes it")
+        return
+    _clean_up(ctx, landed)
+
+
+def _clean_up(ctx: Ctx, landed: Landed) -> None:
+    branch = landed.branch
+    if tmux.current_session() == session_name(ctx.repo_name, branch):
+        # The clean up is another process, and it says how the land ended.
+        # Here the worktree is still there, so "landed" would be a guess.
+        _hand_off_cleanup(ctx, branch, keep_branch=landed.keep_branch, merge=landed.merge)
+        return
+    cleanup(ctx, branch, keep_branch=landed.keep_branch, remote=not landed.merge)
+    say(outcome(ctx, branch, merge=landed.merge))
+
+
+# The session state of a branch that landed and waits for its clean up.
+LANDED = "landed"
+
+
+def _mark_landed(session: str, landed: Landed) -> None:
+    """The mark goes with the session: teardown.close_session settles it."""
+    if is_dry_run():
+        return
+    what = "is in" if landed.already else "landed in"
+    state = f"{landed.branch} {what} {landed.base}"
+    notify.write_state(session, LANDED, state)
+    if tmux.available():
+        tmux.set_session_option(session, tmux.STATE_OPTION, LANDED)
+    notify.announce("wtx land", f"{state}. Press Enter in its land window to close it")
+
+
+ENTER = (b"\r", b"\n")
+# q, and Esc: the key that means "go away" in every other prompt.
+KEEP = (b"q", b"Q", b"\x1b")
+
+
+def _wait_for_enter() -> bool:
+    """True on Enter. False on q, Esc, Ctrl-C or the end of the input.
+
+    One key, no Enter after it: cbreak mode on the land window's terminal.
+    Every other key is ignored, so a stray key never removes a worktree. And
+    the keys typed before the question are dropped (TCSAFLUSH): an Enter
+    pressed during a 30 minute PR wait is not an answer.
+    Not a terminal (a test, a pipe): one line, empty for Enter.
+    """
+    try:
+        if not sys.stdin.isatty():
+            while True:
+                answer = input().strip()
+                if not answer:
+                    return True
+                if answer.encode() in KEEP:
+                    return False
+        fd = sys.stdin.fileno()
+        old = termios.tcgetattr(fd)
+        try:
+            tty.setcbreak(fd, termios.TCSAFLUSH)
+            while True:
+                key = os.read(fd, 1)
+                if not key:
+                    return False
+                if key in ENTER:
+                    return True
+                if key in KEEP:
+                    return False
+        finally:
+            with contextlib.suppress(termios.error):
+                termios.tcsetattr(fd, termios.TCSADRAIN, old)
+    except (EOFError, KeyboardInterrupt, OSError, termios.error):
+        return False
+
+
 def _land_remote(
     ctx: Ctx,
     branch: str,
@@ -218,9 +400,11 @@ def _land_remote(
     skip_checks: bool,
     poll_seconds: int,
     timeout_minutes: int,
-) -> None:
-    """The land that goes through origin: rebase, push, then a PR or a merge."""
-    git.fetch(ctx.main)
+) -> str:
+    """The land that goes through origin: rebase, push, then a PR or a merge.
+
+    Returns the PR url, "" with --local. land() fetched just before.
+    """
     _refuse_a_branch_cut_from_elsewhere(ctx, branch, base)
 
     say(f"rebasing {branch} onto origin/{base}")
@@ -247,14 +431,14 @@ def _land_remote(
 
     if local:
         _land_local(ctx, branch, base)
-    else:
-        _land_pr(
-            ctx,
-            branch,
-            base,
-            poll_seconds=poll_seconds,
-            timeout_minutes=timeout_minutes,
-        )
+        return ""
+    return _land_pr(
+        ctx,
+        branch,
+        base,
+        poll_seconds=poll_seconds,
+        timeout_minutes=timeout_minutes,
+    )
 
 
 def _hand_off_cleanup(ctx: Ctx, branch: str, *, keep_branch: bool, merge: bool) -> None:
@@ -275,7 +459,7 @@ def _hand_off_cleanup(ctx: Ctx, branch: str, *, keep_branch: bool, merge: bool) 
     client = tmux.out(["display-message", "-p", "#{client_name}"]).strip()
     if client:
         argv += ["--client", client]
-    say("merged. The tmux server removes the worktree, this session is about to close")
+    say("the tmux server removes the worktree, this session is about to close")
     tmux.cmd(["run-shell", "-b", f"cd {shlex.quote(str(ctx.main))} && {shlex.join(argv)}"])
 
 
@@ -345,7 +529,12 @@ def _refuse_a_branch_cut_from_elsewhere(ctx: Ctx, branch: str, base: str) -> Non
             )
 
 
-def _land_pr(ctx: Ctx, branch: str, base: str, *, poll_seconds: int, timeout_minutes: int) -> None:
+def _land_pr(ctx: Ctx, branch: str, base: str, *, poll_seconds: int, timeout_minutes: int) -> str:
+    """Open the PR if needed, merge it, wait until it is merged. Returns its url.
+
+    Once merged, fetch: the merge commit is on the forge, and the recap reads
+    it from origin/<base>.
+    """
     if which("gh") is None:
         raise LandError("gh is not installed, use --local or open the PR by hand")
 
@@ -359,7 +548,8 @@ def _land_pr(ctx: Ctx, branch: str, base: str, *, poll_seconds: int, timeout_min
         state, url = pr_state(ctx.main, branch)
     if state == "MERGED":
         say(f"already merged: {url}")
-        return
+        git.fetch(ctx.main)
+        return url
     if url:
         say(f"pull request: {url}")
 
@@ -373,12 +563,13 @@ def _land_pr(ctx: Ctx, branch: str, base: str, *, poll_seconds: int, timeout_min
         run(["gh", "pr", "merge", branch, "--merge"], cwd=ctx.main)
 
     if is_dry_run():
-        return
+        return url
     deadline = time.time() + timeout_minutes * 60
     while time.time() < deadline:
         state, _ = pr_state(ctx.main, branch)
         if state == "MERGED":
-            return
+            git.fetch(ctx.main)
+            return url
         if state == "CLOSED":
             raise LandError("the pull request was closed without merging")
         time.sleep(poll_seconds)

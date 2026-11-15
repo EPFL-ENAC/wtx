@@ -493,7 +493,7 @@ def _land(args: argparse.Namespace) -> int:
     ctx = _load()
     branch = args.branch or git.current_branch(Path.cwd())
     try:
-        land_mod.land(
+        landed = land_mod.land(
             ctx,
             branch,
             local=args.local,
@@ -503,6 +503,7 @@ def _land(args: argparse.Namespace) -> int:
         )
     except land_mod.LandError as exc:
         raise UserError(str(exc)) from exc
+    land_mod.finish(ctx, landed, ask=args.window)
     return 0
 
 
@@ -524,6 +525,10 @@ def _auto_land(args: argparse.Namespace) -> int:
     except land_mod.LandError as exc:
         autoland.announce(branch, str(exc))
         raise UserError(str(exc)) from exc
+    if isinstance(note, land_mod.Landed):
+        # The try landed. The window waits for Enter like any land.
+        land_mod.finish(ctx, note, ask=args.window)
+        return 0
     if note:
         say(note)
         if args.window:
@@ -568,8 +573,9 @@ def _land_from_tmux(args: argparse.Namespace) -> int:
 def _land_in_window(args: argparse.Namespace) -> int:
     """What the land window runs.
 
-    When the land works, the session closes on its own. When it stops, the
-    window waits, or it would close and take the reason with it.
+    When the land works, the window shows what landed and waits for Enter,
+    which removes the worktree and closes the session (land.finish). When it
+    stops, the window waits too, or it would close and take the reason with it.
     """
     if args.resume:
         # The agent's Stop hook opened this window. Let the hook end before a
@@ -592,8 +598,11 @@ def _land_cleanup(args: argparse.Namespace) -> int:
     Its output goes nowhere and the land window is gone with the session. A
     5 second message on no client in particular was easy to miss, and the
     human ran land again to see if it had worked. So the result stays on the
-    status line of the client that watched the land until a key is pressed,
-    and a desktop banner says it too.
+    status line of the client that watched the land until a key is pressed.
+
+    The human just pressed Enter in the land window, so they look at that
+    client. A desktop banner only when the clean up left the worktree: that
+    one needs them to act.
     """
     ctx = _load()
     branch = args.branch
@@ -604,9 +613,10 @@ def _land_cleanup(args: argparse.Namespace) -> int:
     if args.client:
         show += ["-c", args.client]
     # A client that went away in the meantime is no error for tmux, the
-    # message just shows nowhere. The banner below is for that case too.
+    # message just shows nowhere.
     tmux.cmd([*show, f"wtx: {message}"])
-    notify.announce("wtx land", message)
+    if git.worktree_path_for(ctx.main, branch):
+        notify.announce("wtx land", message)
     return 0
 
 

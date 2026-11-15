@@ -447,13 +447,22 @@ a loop, and an agent that waits on a question has a reason to stop with work
 in progress. The marker goes on the next `start` or `running`, and on
 teardown.
 
-**The result of an in-session land must outlive the session.** The land
-window dies with the session, and the clean up job has no client and no
-output. A 5 second status message on no client in particular was easy to
-miss, so the human ran land again to see what happened. The land names the
-client that watches it (`#{client_name}`) and passes it to the job with
-`--client`. The job shows the result with `display-message -c <client> -d 0`
-(until a key), plus a desktop banner, `notify.announce`. The text comes from
+**A land never closes the session on its own.** It did once: the clean up
+ran right after the merge, and the session died under the human. The result
+was a status message on some other session, easy to miss. When the clean up
+did not run (a PR merged later, a land window closed early), the session
+stayed with nothing in it to say the branch had landed. So `land.finish` shows
+a recap in the land window and waits for Enter. Until then the session is
+marked `landed` (the state file and `@wtx_state`), and a second land on it
+finds the merge commit and goes straight back to the recap. A plain `wtx land`
+in a terminal does not wait: the human runs it and reads its output.
+
+**The result of the clean up must outlive the session.** Enter hands the clean
+up to the tmux server, and the land window dies with the session. The land
+names the client that watches it (`#{client_name}`) and passes it to the job
+with `--client`. The job shows the result with `display-message -c <client> -d
+0` (until a key). It sends a desktop banner only if the worktree is still
+there, because then the human has to act. The text comes from
 `land.outcome`, which looks at the repo: a "landed" next to a worktree still on
 disk is a lie.
 
