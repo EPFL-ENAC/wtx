@@ -877,19 +877,10 @@ def test_land_inside_its_own_session_hands_the_cleanup_to_tmux(
     session would die in the middle of its own clean up."""
     import shlex
 
-    from wtx import tmux
-
     path = make_worktree(wtx_repo, "feat/inside")
     setup_mod.run_setup(context.load(root=path), start_tmux=False)
     commit(path)
-    session = context.load(root=path).session
-    real_out = tmux.out
-    monkeypatch.setenv("TMUX", "/tmp/fake,1,0")
-    monkeypatch.setattr(
-        tmux,
-        "out",
-        lambda args, **kw: session if args[0] == "display-message" else real_out(args, **kw),
-    )
+    inside_session(monkeypatch, context.load(root=path).session)
     monkeypatch.chdir(wtx_repo)
 
     assert run(["land", "feat/inside", "--local", "--skip-checks"]) == 0
@@ -897,16 +888,44 @@ def test_land_inside_its_own_session_hands_the_cleanup_to_tmux(
     assert git.worktree_path_for(wtx_repo, "feat/inside") is not None
     handoff = [c for c in calls_of(fake_bin, "tmux") if c.startswith("run-shell -b")]
     assert len(handoff) == 1
-    tail = shlex.join([sys.executable, "-m", "wtx", "land", "feat/inside", "--cleanup-only"])
+    tail = shlex.join(
+        [sys.executable, "-m", "wtx", "land", "feat/inside", "--cleanup-only"]
+        + ["--client", CLIENT]
+    )
     assert handoff[0].endswith(f"&& {tail}")
 
     # What the tmux server then runs, from the main checkout.
     monkeypatch.delenv("TMUX")
-    assert run(["land", "feat/inside", "--cleanup-only"]) == 0
+    assert run(["land", "feat/inside", "--cleanup-only", "--client", CLIENT]) == 0
     assert git.worktree_path_for(wtx_repo, "feat/inside") is None
     assert not git.branch_exists(wtx_repo, "feat/inside")
+    done = "landed feat/inside into dev, worktree removed, branch deleted"
     shown = [c for c in calls_of(fake_bin, "tmux") if c.startswith("display-message")]
-    assert any("landed feat/inside into dev" in c for c in shown)
+    assert shown[-1] == f"display-message -d 0 -c {CLIENT} wtx: {done}", (
+        "until a key is pressed, on the client that watched the land"
+    )
+    banner = calls_of(fake_bin, "notify-send")
+    assert banner and banner[-1].endswith(f"wtx land {done}")
+
+
+def test_a_cleanup_that_leaves_the_worktree_says_so(
+    wtx_repo: Path, fake_bin: Path, monkeypatch
+) -> None:
+    """A "landed" that hides a worktree still on disk is why the human ran
+    land twice to see what happened."""
+    from wtx import wt
+
+    path = make_worktree(wtx_repo, "feat/stuck")
+    commit(path)
+    monkeypatch.setattr(wt, "remove", lambda *a, **kw: None)
+    monkeypatch.chdir(wtx_repo)
+
+    assert run(["land", "feat/stuck", "--cleanup-only", "--keep-branch"]) == 0
+    shown = [c for c in calls_of(fake_bin, "tmux") if c.startswith("display-message")]
+    assert shown[-1] == (
+        "display-message -d 0 wtx: feat/stuck is merged into dev, "
+        "but its worktree is still there. Run wtx done feat/stuck"
+    )
 
 
 def test_the_land_window_waits_only_when_land_stops(
@@ -959,17 +978,22 @@ def fail_checks(monkeypatch) -> None:
     monkeypatch.setattr(land_mod, "_checks", failing)
 
 
+CLIENT = "/dev/pts/7"
+
+
 def inside_session(monkeypatch, session: str) -> None:
-    """Make land believe it runs in that tmux session."""
+    """Make land believe it runs in that tmux session, watched by CLIENT."""
     from wtx import tmux
 
     real_out = tmux.out
+
+    def out(args: list[str], **kw) -> str:
+        if args[0] != "display-message":
+            return real_out(args, **kw)
+        return CLIENT if "#{client_name}" in args else session
+
     monkeypatch.setenv("TMUX", "/tmp/fake,1,0")
-    monkeypatch.setattr(
-        tmux,
-        "out",
-        lambda args, **kw: session if args[0] == "display-message" else real_out(args, **kw),
-    )
+    monkeypatch.setattr(tmux, "out", out)
 
 
 def test_the_git_log_sees_a_land_that_goes_to_the_remote(
@@ -1002,7 +1026,11 @@ def test_land_merge_makes_a_merge_commit_and_cleans_up(
     assert (local_repo / "feature.txt").is_file()
     assert git.worktree_path_for(local_repo, "feat/local") is None
     assert not git.branch_exists(local_repo, "feat/local")
-    assert "nothing was pushed" in capsys.readouterr().err
+    assert (
+        "landed feat/local into dev, worktree removed, branch deleted, nothing was pushed"
+        in capsys.readouterr().err
+    )
+    assert not calls_of(fake_bin, "notify-send"), "the human watches a plain land"
     assert_stayed_local(fake_bin)
 
 
@@ -1153,7 +1181,7 @@ def test_land_merge_runs_the_checks_in_the_worktree(
 
 
 def test_land_merge_honours_skip_checks_and_keep_branch(
-    local_repo: Path, fake_bin: Path, monkeypatch
+    local_repo: Path, fake_bin: Path, monkeypatch, capsys
 ) -> None:
     path = make_worktree(local_repo, "feat/flags", "dev")
     commit(path)
@@ -1164,6 +1192,7 @@ def test_land_merge_honours_skip_checks_and_keep_branch(
     assert git.is_ancestor(local_repo, "feat/flags", "dev")
     assert git.worktree_path_for(local_repo, "feat/flags") is None
     assert git.branch_exists(local_repo, "feat/flags")
+    assert "worktree removed, the branch is kept" in capsys.readouterr().err
     assert_stayed_local(fake_bin)
 
 
@@ -1336,6 +1365,7 @@ def test_land_merge_inside_its_own_session_hands_the_cleanup_to_tmux(
     assert len(handoff) == 1
     tail = shlex.join(
         [sys.executable, "-m", "wtx", "land", "feat/inside", "--cleanup-only", "--merge"]
+        + ["--client", CLIENT]
     )
     assert handoff[0].endswith(f"&& {tail}")
 
@@ -1345,7 +1375,9 @@ def test_land_merge_inside_its_own_session_hands_the_cleanup_to_tmux(
     assert git.worktree_path_for(wtx_repo, "feat/inside") is None
     assert not git.branch_exists(wtx_repo, "feat/inside")
     shown = [c for c in calls_of(git_calls, "tmux") if c.startswith("display-message")]
-    assert any("landed feat/inside into dev" in c for c in shown)
+    assert shown[-1].endswith(
+        "landed feat/inside into dev, worktree removed, branch deleted, nothing was pushed"
+    )
     assert_stayed_local(git_calls)
 
 

@@ -277,9 +277,15 @@ A `land` window opens in that session and runs `wtx land <branch>` from the
 main checkout, so you see every step. If the land stops (a rebase conflict, a
 failed check, a PR that is still open after 30 minutes), the window stays open
 with the reason, next to the agent. If it works, the session closes on its own
-and the status line says `landed <branch> into <base>`. Press `prefix+X l`
-again while a land runs and you go back to its window. It does not start a
-second one.
+and your tmux client moves to another session. There the status line says how
+it ended, for example `landed feat/x into dev, worktree removed, branch
+deleted`, and it stays until you press a key. A desktop notification says the
+same. If the worktree could not be removed, both say so and tell you to run
+`wtx done <branch>`. Press `prefix+X l` again while a land runs and you go
+back to its window. It does not start a second one.
+
+A plain `wtx land` ends with the same line, read from the repo after the clean
+up, not guessed.
 
 ### Local merge
 

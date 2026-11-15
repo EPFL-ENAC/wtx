@@ -447,6 +447,23 @@ a loop, and an agent that waits on a question has a reason to stop with work
 in progress. The marker goes on the next `start` or `running`, and on
 teardown.
 
+**The result of an in-session land must outlive the session.** The land
+window dies with the session, and the clean up job has no client and no
+output. A 5 second status message on no client in particular was easy to
+miss, so the human ran land again to see what happened. The land names the
+client that watches it (`#{client_name}`) and passes it to the job with
+`--client`. The job shows the result with `display-message -c <client> -d 0`
+(until a key), plus a desktop banner, `notify.announce`. The text comes from
+`land.outcome`, which looks at the repo: a "landed" next to a worktree still on
+disk is a lie.
+
+**`set-option -t =name` is no session to tmux.** `set-option` and
+`show-options` take a pane, and tmux 3.6 answers "no such session" to `=name`.
+Write `=name:`. `has-session`, `kill-session` and `switch-client` take a
+session and are fine with `=name`. The real tmux tests caught it once they
+stopped running against the fake tmux: their helper takes the real binary,
+found before `fake_bin` changes PATH.
+
 ## desktop notifications
 
 **A `default` action stops the notification from raising anything.** GNOME only

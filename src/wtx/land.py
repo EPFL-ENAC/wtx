@@ -153,10 +153,30 @@ def land(
             timeout_minutes=timeout_minutes,
         )
     if tmux.current_session() == session_name(ctx.repo_name, branch):
+        # The clean up is another process, and it says how the land ended.
+        # Here the worktree is still there, so "landed" would be a guess.
         _hand_off_cleanup(ctx, branch, keep_branch=keep_branch, merge=merge)
-    else:
-        cleanup(ctx, branch, keep_branch=keep_branch, remote=not merge)
-    say(f"landed {branch} into {base}" + (", locally, nothing was pushed" if merge else ""))
+        return
+    cleanup(ctx, branch, keep_branch=keep_branch, remote=not merge)
+    say(outcome(ctx, branch, merge=merge))
+
+
+def outcome(ctx: Ctx, branch: str, *, merge: bool) -> str:
+    """How a land ended, read from the repo after the clean up.
+
+    Built from facts, not assumed: a clean up can fail halfway (wt refuses,
+    a commit arrives late and the branch is kept), and a "landed" that hides
+    a worktree still on disk is how the human ended up running land twice.
+    """
+    base = ctx.cfg.repo.base_branch
+    pushed = ", nothing was pushed" if merge else ""
+    if is_dry_run():
+        return f"landed {branch} into {base}{pushed}"
+    if git.worktree_path_for(ctx.main, branch):
+        return f"{branch} is merged into {base}, but its worktree is still there. Run wtx done {branch}"
+    kept = git.branch_exists(ctx.main, f"refs/heads/{branch}")
+    left = "the branch is kept" if kept else "branch deleted"
+    return f"landed {branch} into {base}, worktree removed, {left}{pushed}"
 
 
 def _land_remote(
@@ -217,6 +237,11 @@ def _hand_off_cleanup(ctx: Ctx, branch: str, *, keep_branch: bool, merge: bool) 
         argv.append("--keep-branch")
     if merge:
         argv.append("--merge")
+    # The job has no client, and the session dies under this one. Name the
+    # client now, so the result reaches the screen the human looks at.
+    client = tmux.out(["display-message", "-p", "#{client_name}"]).strip()
+    if client:
+        argv += ["--client", client]
     say("merged. The tmux server removes the worktree, this session is about to close")
     tmux.cmd(["run-shell", "-b", f"cd {shlex.quote(str(ctx.main))} && {shlex.join(argv)}"])
 

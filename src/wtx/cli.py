@@ -551,19 +551,24 @@ def _land_in_window(args: argparse.Namespace) -> int:
 def _land_cleanup(args: argparse.Namespace) -> int:
     """The end of a land, handed to the tmux server by the land window.
 
-    Its output goes nowhere, so the result goes on the status line.
+    Its output goes nowhere and the land window is gone with the session. A
+    5 second message on no client in particular was easy to miss, and the
+    human ran land again to see if it had worked. So the result stays on the
+    status line of the client that watched the land until a key is pressed,
+    and a desktop banner says it too.
     """
     ctx = _load()
     branch = args.branch
-    remote = not land_mod.merges_locally(ctx.cfg, args.merge)
-    land_mod.cleanup(ctx, branch, keep_branch=args.keep_branch, remote=remote)
-    if git.worktree_path_for(ctx.main, branch):
-        message = (
-            f"wtx land: {branch} is merged, but its worktree is still there. Run wtx done {branch}"
-        )
-    else:
-        message = f"landed {branch} into {ctx.cfg.repo.base_branch}"
-    tmux.cmd(["display-message", "-d", "5000", message])
+    merge = land_mod.merges_locally(ctx.cfg, args.merge)
+    land_mod.cleanup(ctx, branch, keep_branch=args.keep_branch, remote=not merge)
+    message = land_mod.outcome(ctx, branch, merge=merge)
+    show = ["display-message", "-d", "0"]
+    if args.client:
+        show += ["-c", args.client]
+    # A client that went away in the meantime is no error for tmux, the
+    # message just shows nowhere. The banner below is for that case too.
+    tmux.cmd([*show, f"wtx: {message}"])
+    notify.announce("wtx land", message)
     return 0
 
 
@@ -1121,6 +1126,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--from-tmux", action="store_true", help=argparse.SUPPRESS)
     s.add_argument("--window", action="store_true", help=argparse.SUPPRESS)
     s.add_argument("--cleanup-only", action="store_true", help=argparse.SUPPRESS)
+    s.add_argument("--client", default="", help=argparse.SUPPRESS)
     s.set_defaults(func=cmd_land)
 
     s = sub.add_parser("open", help="print and open a dev server URL")

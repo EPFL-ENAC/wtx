@@ -98,3 +98,16 @@ def test_a_real_session_gets_its_panes_and_roles(wtx_repo: Path, fake_bin: Path,
 
     tmux_mod.kill_session(ctx.session)
     assert not tmux_mod.has_session(ctx.session)
+
+
+def test_a_real_tmux_takes_the_land_result_message(fake_bin: Path, real_tmux) -> None:
+    """The end of an in-session land: a message that stays until a key, on a
+    named client. A client that left in the meantime must not be an error, the
+    clean up job has nobody to tell."""
+    tmux("new-session", "-d", "-s", "wtx-land")
+    client = tmux("display-message", "-p", "#{client_name}")
+    assert client.returncode == 0
+
+    shown = tmux("display-message", "-d", "0", "-c", "/dev/pts/999", "wtx: landed")
+    assert shown.returncode == 0, shown.stderr
+    assert not shown.stderr

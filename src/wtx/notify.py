@@ -535,6 +535,23 @@ def _desktop_entry() -> str:
     return ""
 
 
+def announce(title: str, body: str) -> None:
+    """A one-shot banner about something with no session left to open: the end
+    of a land. No worker, no id and no click, the session is gone. -e keeps
+    it out of the list for ever.
+    """
+    if is_dry_run() or which("notify-send") is None:
+        return
+    args = ["notify-send", "-a", "wtx", "-e"]
+    entry = _desktop_entry()
+    if entry:
+        args += ["-h", f"string:desktop-entry:{entry}"]
+    with contextlib.suppress(OSError, subprocess.TimeoutExpired):
+        subprocess.run(  # noqa: S603
+            [*args, title, body], capture_output=True, check=False, timeout=10
+        )
+
+
 def _text(session: str, state: str, message: str) -> tuple[str, str]:
     icon = EMOJI.get(state, "")
     title = f"{icon} {session}".strip()

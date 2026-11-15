@@ -36,6 +36,13 @@ New:
 
 Fixed:
 
+- After `prefix+X l`, you saw no clear result: a 5 second message, often
+  missed. Now the land result stays on the status line until you press a key,
+  on the client that was in the session, and a desktop notification says it
+  too. The text says what really happened: worktree removed or not, branch
+  deleted or kept. A plain `wtx land` ends with the same line.
+- The session picker never coloured a session that waits on you. wtx set its
+  state option with `set-option -t =name`, which tmux refuses.
 - Agents said the work was ready to land, but did not commit it, so
   `wtx land` refused the worktree. Now `.claude/rules/wtx.md` (written in every
   branch worktree, also with no servers), the handoff prompt and the CLAUDE.md
