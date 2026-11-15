@@ -1533,6 +1533,101 @@ def test_a_settled_session_drops_its_notification(
     assert not notify.id_file(ctx.session).exists()
 
 
+def _stop(path: Path, capsys) -> str:
+    """What the Stop hook prints, the way Claude Code reads it."""
+    from wtx import notify
+
+    capsys.readouterr()
+    assert notify.handle("stop", cwd=path) == 0
+    return capsys.readouterr().out.strip()
+
+
+def test_a_stop_with_uncommitted_work_sends_the_agent_back_once(
+    wtx_repo: Path, fake_bin: Path, quiet_notify, capsys
+) -> None:
+    """Agents said "ready to land" with nothing committed, and land refuses a
+    dirty worktree. Once per human turn, never in a loop."""
+    from wtx import notify
+
+    path = make_worktree(wtx_repo, "feat/commit")
+    setup_mod.run_setup(context.load(root=path), start_tmux=True)
+    ctx = context.load(root=path)
+    quiet_notify(ctx.session)
+    (path / "work.txt").write_text("done\n")
+
+    out = _stop(path, capsys)
+    assert json.loads(out) == {"decision": "block", "reason": notify.NUDGE_REASON}
+    assert notify.read_state(ctx.session) == {}, "the agent is not waiting on anyone"
+
+    assert _stop(path, capsys) == ""
+    assert notify.read_state(ctx.session)["state"] == "stop"
+
+    notify.handle("running", cwd=path)
+    assert json.loads(_stop(path, capsys))["decision"] == "block"
+
+
+def test_a_stop_hook_already_active_is_let_through(
+    wtx_repo: Path, fake_bin: Path, quiet_notify, monkeypatch, capsys
+) -> None:
+    from wtx import notify
+
+    path = make_worktree(wtx_repo, "feat/active")
+    setup_mod.run_setup(context.load(root=path), start_tmux=True)
+    ctx = context.load(root=path)
+    quiet_notify(ctx.session)
+    monkeypatch.setattr(notify, "payload_from_stdin", lambda: {"stop_hook_active": True})
+    (path / "work.txt").write_text("done\n")
+
+    assert _stop(path, capsys) == ""
+
+
+def test_a_stop_with_nothing_to_commit_is_let_through(
+    wtx_repo: Path, fake_bin: Path, quiet_notify, capsys
+) -> None:
+    """A fresh setup leaves only ignored files. The sandbox stubs (empty
+    untracked files) are not work either."""
+    from wtx import notify
+
+    path = make_worktree(wtx_repo, "feat/clean")
+    setup_mod.run_setup(context.load(root=path), start_tmux=True)
+    ctx = context.load(root=path)
+    quiet_notify(ctx.session)
+    (path / ".bashrc").write_text("")
+
+    assert _stop(path, capsys) == ""
+    assert notify.read_state(ctx.session)["state"] == "stop"
+
+
+def test_a_plan_or_the_main_checkout_is_never_sent_back(
+    wtx_repo: Path, fake_bin: Path, quiet_notify, capsys
+) -> None:
+    """A plan cannot commit, and the main checkout holds the base branch."""
+    from wtx import notify
+
+    path = make_worktree(wtx_repo, "feat/plan")
+    setup_mod.run_setup(context.load(root=path), start_tmux=True)
+    ctx = context.load(root=path)
+    quiet_notify(ctx.session)
+    (path / "work.txt").write_text("draft\n")
+    notify.remember_phase(ctx.session, "plan")
+    assert _stop(path, capsys) == ""
+
+    main = context.load(root=wtx_repo)
+    quiet_notify(main.session)
+    (wtx_repo / "scratch.txt").write_text("x\n")
+    assert _stop(wtx_repo, capsys) == ""
+
+
+def test_teardown_forgets_the_nudge(wtx_repo: Path, fake_bin: Path) -> None:
+    from wtx import notify, teardown
+
+    path = make_worktree(wtx_repo, "feat/nudged")
+    ctx = context.load(root=path)
+    notify.nudge_file(ctx.session).write_text("1")
+    teardown.run_teardown(ctx)
+    assert not notify.nudge_file(ctx.session).exists()
+
+
 def test_the_worker_records_the_banner_it_raised_without_gdbus(
     wtx_repo: Path, fake_bin: Path, monkeypatch
 ) -> None:

@@ -101,7 +101,8 @@ Every branch has its own git worktree, tmux session and agent. The session is
 `wtx/<branch>` and its panes are `agent` and `shell`. There are no dev servers
 and no ports here.
 
-- Work on this branch only. Never push `main`. When the work is ready, say so
-  and a human runs `wtx land <branch>` from the main checkout.
+- Work on this branch only. Never push `main`. When the work is ready, commit
+  it and say so. A human runs `wtx land <branch>` from the main checkout, and
+  it refuses uncommitted changes.
 - A pre-push hook enforces this. If it refuses a push, that is the design, not
   a bug to work around.

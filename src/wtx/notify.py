@@ -218,6 +218,57 @@ def forget_phase(session: str) -> None:
         phase_file(session).unlink(missing_ok=True)
 
 
+def nudge_file(session: str) -> Path:
+    """Marks a session already sent back once to commit. Not *.json either."""
+    return state_dir() / f"{safe_name(session)}.nudged"
+
+
+def forget_nudge(session: str) -> None:
+    with contextlib.suppress(OSError):
+        nudge_file(session).unlink(missing_ok=True)
+
+
+NUDGE_REASON = (
+    "wtx: this worktree has uncommitted changes, and `wtx land` refuses them. "
+    "If the work is finished, commit it on this branch now, then say it is ready "
+    "to land. If it is not finished, or you are waiting on the human, say so in "
+    "one line and stop."
+)
+
+
+def commit_nudge(where: Path, session: str, payload: dict) -> str:
+    """What the Stop hook prints to send the agent back to commit, or "".
+
+    Agents said "ready to land" with nothing committed, and land refuses a
+    dirty worktree. Once per human turn and no more: the marker and
+    stop_hook_active both stop a loop, and an agent that has a reason not to
+    commit says so and is let through.
+    """
+    if not session or payload.get("stop_hook_active"):
+        return ""
+    if phase(session) == "plan":
+        return ""  # a plan touches nothing, and plan mode cannot commit
+    marker = nudge_file(session)
+    if marker.exists():
+        return ""
+    from . import config as config_mod
+    from . import context
+
+    try:
+        ctx = context.load(cwd=where)
+    except (context.ContextError, config_mod.ConfigError):
+        return ""
+    if not ctx.is_worktree or ctx.session != session:
+        return ""
+    if not ctx.branch or ctx.branch in ctx.cfg.repo.protected_branches:
+        return ""
+    if git.is_clean(ctx.root):
+        return ""
+    with contextlib.suppress(OSError):
+        marker.write_text(str(int(time.time())))
+    return json.dumps({"decision": "block", "reason": NUDGE_REASON})
+
+
 def clear_state(session: str) -> None:
     with contextlib.suppress(OSError):
         state_file(session).unlink(missing_ok=True)
@@ -324,6 +375,8 @@ def handle(state: str, *, cwd: Path | None = None) -> int:
     if state in ("start", "running"):
         if session:
             settle(session)
+            # A new turn: the agent may be sent back to commit once more.
+            forget_nudge(session)
         return 0
 
     if session and state in ("stop", "idle"):
@@ -333,6 +386,13 @@ def handle(state: str, *, cwd: Path | None = None) -> int:
 
         if orchestrate.drain(session):
             settle(session)
+            return 0
+
+    if state == "stop":
+        nudge = commit_nudge(where, session, payload)
+        if nudge:
+            # The agent goes on working: no state, no banner.
+            print(nudge)
             return 0
 
     if session:

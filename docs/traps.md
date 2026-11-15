@@ -437,6 +437,16 @@ Then `wt remove` runs `git worktree remove` without `--force`, which refuses
 any untracked file. So `wt.remove()` deletes the empty untracked files first.
 It never passes `--force` for that: real work can arrive after the check.
 
+**An agent that says "ready" has often not committed.** Nothing told it to,
+and `wtx land` refuses a dirty worktree. Every branch worktree gets the rule in
+`.claude/rules/wtx.md`, also in a repo with no servers, where the file used to
+be skipped. The handoff prompt says it too. And the `stop` hook sends the agent
+back one time when the worktree is dirty. One time per human turn, with a
+marker next to the state file plus `stop_hook_active`: a block on every stop is
+a loop, and an agent that waits on a question has a reason to stop with work
+in progress. The marker goes on the next `start` or `running`, and on
+teardown.
+
 ## desktop notifications
 
 **A `default` action stops the notification from raising anything.** GNOME only

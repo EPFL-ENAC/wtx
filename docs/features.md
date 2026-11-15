@@ -129,7 +129,8 @@ picks the tool and `wtx go --llm` the model.
 With Claude Code, setup writes `.claude/settings.local.json` (model, subagent
 model, effort, compact window, disabled MCP servers, permissions, sandbox) and
 `.claude/rules/wtx.md`, which Claude loads every session: the ports, the log
-file of each server pane, and how to use `wtx curl`. With
+file of each server pane, how to use `wtx curl`, and, in a branch worktree, to
+commit the work before it says the work is ready to land. With
 `explore_agent_model` it also writes `.claude/agents/Explore.md`. With
 opencode, setup writes `opencode.json`.
 
@@ -224,6 +225,13 @@ Outside tmux, a desktop notification tells you which session needs you. A click
 brings the terminal to the front, on that session. `WTX_NOTIFY_CLICK=0` turns
 the click off. The banner goes away on its own when the agent starts working
 again.
+
+When a Claude agent stops in a branch worktree with uncommitted changes, the
+`stop` hook sends it back one time: commit the work, or say in one line why
+not. `wtx land` refuses uncommitted changes, so an agent that says "ready"
+without a commit is not ready. It happens once per prompt you send, never in a
+loop, and never in the plan phase or in the main checkout. opencode has no
+hooks, it only gets the written rule.
 
 ## Monitor
 

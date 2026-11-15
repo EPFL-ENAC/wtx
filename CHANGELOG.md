@@ -36,6 +36,12 @@ New:
 
 Fixed:
 
+- Agents said the work was ready to land, but did not commit it, so
+  `wtx land` refused the worktree. Now `.claude/rules/wtx.md` (written in every
+  branch worktree, also with no servers), the handoff prompt and the CLAUDE.md
+  section of `wtx init` say to commit first. And when a Claude agent stops with
+  uncommitted changes, the `stop` hook sends it back one time to commit or say
+  why not.
 - `wtx land` and `wtx done` no longer refuse a checkout because of the empty
   files the Claude Code sandbox leaves (`.bashrc`, `.mcp.json`,
   `.claude/.claude/...`). Untracked files of 0 bytes don't count as changes,

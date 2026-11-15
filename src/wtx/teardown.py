@@ -47,6 +47,7 @@ def close_session(session: str) -> None:
     notify.settle(session)
     notify.forget_conversation(session)
     notify.forget_phase(session)
+    notify.forget_nudge(session)
     orchestrate.clear_record(session)
     review.clear(session)
 
