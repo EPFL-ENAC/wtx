@@ -34,6 +34,25 @@ class LandError(Exception):
     pass
 
 
+# The end of every task: the agent must be free to refuse, and never to land.
+TASK_END = (
+    " If you cannot do it safely, say why in one line and stop. Do not run wtx land: "
+    "wtx tries the land again when you stop."
+)
+
+
+class Fixable(LandError):
+    """A land stopped on something the branch's agent can fix.
+
+    `wtx land --auto` hands `task` to the agent. A plain land shows the
+    message, like any LandError.
+    """
+
+    def __init__(self, message: str, task: str) -> None:
+        super().__init__(message)
+        self.task = f"wtx auto-land: {task}{TASK_END}"
+
+
 def merges_locally(cfg: WtxConfig, asked: bool) -> bool:
     """True when this land must stay off the remote, by the flag or the rule.
 
@@ -66,7 +85,12 @@ def _checks(ctx: Ctx, path: Path) -> None:
         try:
             run_shell(cmd, cwd=path)
         except CommandError as exc:
-            raise LandError(f"check failed: {cmd}") from exc
+            raise Fixable(
+                f"check failed: {cmd}",
+                f"the check `{cmd}` fails in this worktree, so the branch cannot land. "
+                "Run it, fix what it reports, run it again, and commit the fix. If the "
+                "fix would change what this branch is for, ask instead.",
+            ) from exc
 
 
 def _warn_on_review(ctx: Ctx, branch: str, path: Path) -> None:
@@ -136,7 +160,12 @@ def land(
     if path is None:
         raise LandError(f"no worktree for {branch}")
     if not git.is_clean(path):
-        raise LandError(f"{path} has uncommitted changes, commit or stash them first")
+        raise Fixable(
+            f"{path} has uncommitted changes, commit or stash them first",
+            f"this worktree has uncommitted changes, and land refuses them. Commit the "
+            f"work on {branch}. Leave out what must not be committed (scratch files, "
+            "secrets) and say what you left.",
+        )
     _warn_on_review(ctx, branch, path)
 
     if merge:
@@ -199,9 +228,13 @@ def _land_remote(
         run(["git", "rebase", f"origin/{base}"], cwd=path)
     except CommandError as exc:
         run(["git", "rebase", "--abort"], cwd=path, check=False, quiet=True)
-        raise LandError(
+        raise Fixable(
             f"rebase onto origin/{base} has conflicts. Resolve them in {path} "
-            f"(git rebase origin/{base}), then run wtx land again"
+            f"(git rebase origin/{base}), then run wtx land again",
+            f"{branch} does not rebase cleanly onto origin/{base}. In this worktree, "
+            f"run `git rebase origin/{base}`, resolve each conflict so both sides keep "
+            "what they meant, and finish the rebase. Then run the lint and tests of the "
+            "repo. If a conflict is not clear, run `git rebase --abort`.",
         ) from exc
     # Before the push: a branch that fails its checks must not reach origin,
     # even force-pushed to its own name.
@@ -246,8 +279,16 @@ def _hand_off_cleanup(ctx: Ctx, branch: str, *, keep_branch: bool, merge: bool) 
     tmux.cmd(["run-shell", "-b", f"cd {shlex.quote(str(ctx.main))} && {shlex.join(argv)}"])
 
 
-def open_window(session: str, main: Path, branch: str, *, merge: bool = False) -> None:
-    """The `land` window, for prefix+X l and prefix+X m.
+def open_window(
+    session: str,
+    main: Path,
+    branch: str,
+    *,
+    merge: bool = False,
+    auto: bool = False,
+    resume: bool = False,
+) -> None:
+    """The `land` window, for prefix+X l, m and a.
 
     It sits in the branch's own session, so a rebase conflict or a failed
     check shows next to the agent that can fix it. It runs from the main
@@ -263,6 +304,11 @@ def open_window(session: str, main: Path, branch: str, *, merge: bool = False) -
     window = [sys.executable, "-m", "wtx", "land", branch, "--window"]
     if merge:
         window.append("--merge")
+    if auto:
+        window.append("--auto")
+    if resume:
+        # From the agent's Stop hook, see autoland.resume.
+        window.append("--resume")
     tmux.cmd(
         [
             "new-window",
@@ -382,7 +428,11 @@ def _land_merge(ctx: Ctx, branch: str, base: str, path: Path, *, skip_checks: bo
         run(["git", "merge", "--no-ff", "--no-edit", branch], cwd=ctx.main)
     except CommandError as exc:
         run(["git", "merge", "--abort"], cwd=ctx.main, check=False, quiet=True)
-        raise LandError(
+        raise Fixable(
             f"could not merge {branch} into {base}, nothing was merged. If it is a "
-            f"conflict, fix it in {path} (git merge {base}), commit, then run wtx land again"
+            f"conflict, fix it in {path} (git merge {base}), commit, then run wtx land again",
+            f"{branch} does not merge cleanly into {base}. In this worktree, run "
+            f"`git merge {base}`, resolve each conflict so both sides keep what they "
+            "meant, and commit the merge. Then run the lint and tests of the repo. If a "
+            "conflict is not clear, run `git merge --abort`.",
         ) from exc

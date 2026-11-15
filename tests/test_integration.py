@@ -813,6 +813,10 @@ def test_the_session_menu_has_land_and_review(fake_bin: Path) -> None:
         "--path '#{pane_current_path}' --session '#{session_name}' --from-tmux --merge\""
     ) in menu[0]
     assert (
+        'auto land: land, the agent fixes what stops it a run-shell -b "wtx land '
+        "--path '#{pane_current_path}' --session '#{session_name}' --from-tmux --auto\""
+    ) in menu[0]
+    assert (
         'review: open the branch review in hunk r run-shell -b "wtx review '
         "--path '#{pane_current_path}' --from-tmux\""
     ) in menu[0]
@@ -1651,13 +1655,17 @@ def test_a_plan_or_the_main_checkout_is_never_sent_back(
 
 
 def test_teardown_forgets_the_nudge(wtx_repo: Path, fake_bin: Path) -> None:
-    from wtx import notify, teardown
+    from wtx import autoland, notify, teardown
 
     path = make_worktree(wtx_repo, "feat/nudged")
     ctx = context.load(root=path)
     notify.nudge_file(ctx.session).write_text("1")
+    notify.mark_busy(ctx.session)
+    autoland.write(ctx.session, {"branch": "feat/nudged", "main": str(wtx_repo)})
     teardown.run_teardown(ctx)
     assert not notify.nudge_file(ctx.session).exists()
+    assert not notify.is_busy(ctx.session)
+    assert not autoland.record_file(ctx.session).exists()
 
 
 def test_the_worker_records_the_banner_it_raised_without_gdbus(
@@ -3095,3 +3103,236 @@ def test_teardown_drops_the_review(wtx_repo: Path, fake_bin: Path) -> None:
     teardown.run_teardown(ctx)
     assert not review.sidecar_file(ctx.session).exists()
     assert not review.meta_file(ctx.session).exists()
+
+
+# -- auto-land ------------------------------------------------------------------
+
+
+def _clash(repo: Path, branch: str, *, conversation: str = "conv-1") -> tuple[Path, str]:
+    """A branch that does not merge into dev, with a session and an agent."""
+    from wtx import notify
+
+    path = make_worktree(repo, branch, "dev")
+    commit_file(path, "same.txt", "branch\n")
+    commit_file(repo, "same.txt", "base\n")
+    setup_mod.run_setup(context.load(root=path), start_tmux=True)
+    session = context.load(root=path).session
+    if conversation:
+        notify.remember_conversation(session, conversation)
+    return path, session
+
+
+def _sent(fake_bin: Path) -> list[str]:
+    """The tasks sent to the agent. Setup sends keys to its panes too."""
+    return [c for c in calls_of(fake_bin, "tmux") if c.startswith("send-keys") and " -r " in c]
+
+
+def test_auto_land_hands_a_conflict_to_the_agent(
+    local_repo: Path, fake_bin: Path, monkeypatch, capsys
+) -> None:
+    """The agent of the branch gets the conflict, on its own conversation."""
+    from wtx import autoland
+
+    path, session = _clash(local_repo, "feat/clash")
+    before = git_out(["rev-parse", "dev"], local_repo)
+    monkeypatch.chdir(local_repo)
+
+    assert run(["land", "feat/clash", "--auto", "--skip-checks"]) == 0
+    assert_nothing_landed(local_repo, "feat/clash", before)
+    sent = _sent(fake_bin)
+    assert len(sent) == 1
+    assert "claude -r conv-1" in sent[0]
+    assert "git merge dev" in sent[0]
+    assert "Do not run wtx land" in sent[0]
+
+    record = autoland.read(session)
+    assert record["tries"] == 1
+    assert record["skip_checks"] is True
+    assert record["head"] == git_out(["rev-parse", "HEAD"], path)
+    assert "the agent is on it" in capsys.readouterr().err.lower()
+
+
+def test_auto_land_hands_uncommitted_work_to_the_agent(
+    local_repo: Path, fake_bin: Path, monkeypatch
+) -> None:
+    path = make_worktree(local_repo, "feat/dirty", "dev")
+    commit(path)
+    setup_mod.run_setup(context.load(root=path), start_tmux=True)
+    from wtx import notify
+
+    notify.remember_conversation(context.load(root=path).session, "conv-2")
+    (path / "notes.txt").write_text("not committed\n")
+    monkeypatch.chdir(local_repo)
+
+    assert run(["land", "feat/dirty", "--auto"]) == 0
+    sent = _sent(fake_bin)
+    assert len(sent) == 1 and "Commit the work on feat/dirty" in sent[0]
+
+
+def test_auto_land_lands_once_the_agent_fixed_it(
+    local_repo: Path, fake_bin: Path, monkeypatch
+) -> None:
+    """The whole loop: conflict, the agent merges and commits, the try after
+    the stop lands."""
+    from wtx import autoland
+
+    path, session = _clash(local_repo, "feat/fixed")
+    monkeypatch.chdir(local_repo)
+    assert run(["land", "feat/fixed", "--auto", "--skip-checks"]) == 0
+
+    # What the agent does with its task.
+    subprocess.run(["git", "merge", "dev"], cwd=path, capture_output=True)
+    (path / "same.txt").write_text("both\n")
+    subprocess.run(["git", "commit", "-qam", "merge dev"], cwd=path, check=True)
+
+    assert run(["land", "feat/fixed", "--auto", "--resume"]) == 0
+    assert (local_repo / "same.txt").read_text() == "both\n"
+    assert git.worktree_path_for(local_repo, "feat/fixed") is None
+    assert not autoland.record_file(session).exists()
+
+
+def test_auto_land_gives_up_when_the_agent_changed_nothing(
+    local_repo: Path, fake_bin: Path, monkeypatch, capsys
+) -> None:
+    """The agent said it could not, or did nothing: no loop, the human takes over."""
+    from wtx import autoland
+
+    _, session = _clash(local_repo, "feat/stuck")
+    monkeypatch.chdir(local_repo)
+    assert run(["land", "feat/stuck", "--auto", "--skip-checks"]) == 0
+    capsys.readouterr()
+
+    assert run(["land", "feat/stuck", "--auto", "--resume"]) == 1
+    assert "changed nothing" in capsys.readouterr().err
+    assert len(_sent(fake_bin)) == 1, "the agent got no second task"
+    assert not autoland.record_file(session).exists()
+    banner = calls_of(fake_bin, "notify-send")
+    assert len(banner) == 1 and "wtx auto-land" in banner[0]
+
+
+def test_auto_land_gives_up_after_its_tries(
+    local_repo: Path, fake_bin: Path, monkeypatch, capsys
+) -> None:
+    from wtx import autoland
+
+    _, session = _clash(local_repo, "feat/again")
+    autoland.write(
+        session,
+        {
+            "branch": "feat/again",
+            "main": str(local_repo),
+            "skip_checks": True,
+            "tries": autoland.MAX_TRIES,
+            "head": "an older head",
+        },
+    )
+    monkeypatch.chdir(local_repo)
+
+    assert run(["land", "feat/again", "--auto", "--resume"]) == 1
+    assert "3 tries used" in capsys.readouterr().err
+    assert not _sent(fake_bin)
+    assert not autoland.record_file(session).exists()
+
+
+def test_auto_land_stops_on_what_the_agent_cannot_fix(
+    local_repo: Path, fake_bin: Path, monkeypatch, capsys
+) -> None:
+    """A dirty main checkout is the human's, not the agent's."""
+    from wtx import autoland
+
+    path = make_worktree(local_repo, "feat/main-dirty", "dev")
+    commit(path)
+    setup_mod.run_setup(context.load(root=path), start_tmux=True)
+    session = context.load(root=path).session
+    autoland.write(session, {"branch": "feat/main-dirty", "main": str(local_repo), "tries": 1})
+    (local_repo / "wtx.toml").write_text((local_repo / "wtx.toml").read_text() + "\n")
+    monkeypatch.chdir(local_repo)
+
+    assert run(["land", "feat/main-dirty", "--auto", "--resume"]) == 1
+    assert "main checkout" in capsys.readouterr().err
+    assert not _sent(fake_bin)
+    assert not autoland.record_file(session).exists()
+
+
+def test_auto_land_with_no_conversation_gives_up(
+    local_repo: Path, fake_bin: Path, monkeypatch, capsys
+) -> None:
+    from wtx import autoland
+
+    _, session = _clash(local_repo, "feat/fresh", conversation="")
+    monkeypatch.chdir(local_repo)
+
+    assert run(["land", "feat/fresh", "--auto", "--skip-checks"]) == 1
+    assert "no conversation" in capsys.readouterr().err
+    assert not _sent(fake_bin)
+    assert not autoland.record_file(session).exists()
+
+
+def test_a_working_agent_only_arms_the_auto_land(
+    local_repo: Path, fake_bin: Path, monkeypatch, quiet_notify, capsys
+) -> None:
+    """A rebase under an agent at work breaks its work. The land waits for
+    its stop, and the stop opens the land window again."""
+    from wtx import autoland, notify
+
+    path, session = _clash(local_repo, "feat/busy")
+    quiet_notify(session)
+    notify.handle("running", cwd=path)
+    before = git_out(["rev-parse", "dev"], local_repo)
+    monkeypatch.chdir(local_repo)
+
+    assert run(["land", "feat/busy", "--auto", "--skip-checks"]) == 0
+    assert "waits for the agent to stop" in capsys.readouterr().err
+    assert_nothing_landed(local_repo, "feat/busy", before)
+    assert not _sent(fake_bin)
+    assert autoland.read(session)["tries"] == 0
+
+    assert _stop(path, capsys) == ""
+    window = [c for c in calls_of(fake_bin, "tmux") if c.startswith("new-window")]
+    assert len(window) == 1
+    assert "land feat/busy --window --auto --resume" in window[0]
+    assert notify.read_state(session) == {}, "the session does not wait on the human"
+    assert not notify.is_busy(session)
+
+
+def test_stop_auto_turns_a_waiting_auto_land_off(
+    local_repo: Path, fake_bin: Path, monkeypatch, capsys
+) -> None:
+    from wtx import autoland
+
+    _, session = _clash(local_repo, "feat/off")
+    autoland.write(session, {"branch": "feat/off", "main": str(local_repo)})
+    monkeypatch.chdir(local_repo)
+
+    assert run(["land", "feat/off", "--stop-auto"]) == 0
+    assert not autoland.record_file(session).exists()
+    # The window the stop opened before that finds nothing to do.
+    assert run(["land", "feat/off", "--auto", "--resume"]) == 0
+    assert "is off" in capsys.readouterr().err
+    assert git.worktree_path_for(local_repo, "feat/off") is not None
+
+
+def test_the_busy_mark_follows_the_turns_of_the_agent(
+    wtx_repo: Path, fake_bin: Path, quiet_notify, monkeypatch
+) -> None:
+    """auto-land waits on it, so a stale mark would make it wait for ever."""
+    from wtx import notify
+
+    path = make_worktree(wtx_repo, "feat/turns")
+    session = context.load(root=path).session
+    quiet_notify(session)
+
+    notify.handle("running", cwd=path)
+    assert notify.is_busy(session)
+    # A compaction starts a session in the middle of the turn.
+    monkeypatch.setattr(notify, "payload_from_stdin", lambda: {"source": "compact"})
+    notify.handle("start", cwd=path)
+    assert notify.is_busy(session)
+    # A turn cut short with Esc fires no stop, only the idle prompt later.
+    monkeypatch.setattr(notify, "payload_from_stdin", lambda: {})
+    notify.handle("idle", cwd=path)
+    assert not notify.is_busy(session)
+
+    notify.handle("running", cwd=path)
+    notify.handle("start", cwd=path)
+    assert not notify.is_busy(session), "a new session is not in a turn"

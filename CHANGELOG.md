@@ -4,6 +4,11 @@
 
 New:
 
+- Auto-land: `wtx land <branch> --auto`, or `prefix+X a`. When the land stops
+  on uncommitted work, a conflict or a failed check, the agent of the branch
+  gets the problem on its own conversation, and the land runs again when it
+  stops. It waits while the agent works, and gives up after 3 tries or when the
+  agent changed nothing. `--stop-auto` turns it off.
 - `[agent.orchestration]`: plan on one model, implement on another. A brief
   starts the agent on `plan_model` in plan mode; accepting the plan carries the
   same conversation on to `build_model` with `claude -r`, at the effort the

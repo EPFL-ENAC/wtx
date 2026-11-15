@@ -45,8 +45,8 @@ file.
 `prefix+X` opens a small menu on the session you are in: open the review
 (`r`, same as `prefix+r`), kill the session,
 close the worktree and keep the branch, close it and discard uncommitted
-changes, land the branch (`l`), or merge it locally with no push (`m`, see
-[Landing](#landing)). `prefix+r` opens the review of the branch in hunk, see
+changes, land the branch (`l`), merge it locally with no push (`m`), or
+auto-land it (`a`, see [Landing](#landing)). `prefix+r` opens the review of the branch in hunk, see
 [Review](#review).
 
 ## Ports
@@ -287,6 +287,32 @@ back to its window. It does not start a second one.
 A plain `wtx land` ends with the same line, read from the repo after the clean
 up, not guessed.
 
+### Auto-land
+
+`wtx land <branch> --auto`, or `prefix+X` then `a` in the branch session, tries
+to land. When the land stops on something the agent of the branch can fix, it
+gives the agent the problem, and tries again when the agent stops:
+
+| the land stops on | the agent is asked to |
+|---|---|
+| uncommitted changes in the worktree | commit the work |
+| a rebase conflict | run `git rebase origin/<base>`, resolve, run the lint and tests |
+| a merge conflict (`--merge`) | run `git merge <base>`, resolve, commit |
+| a failed check | fix what the check reports, commit |
+
+The task goes to the agent's own conversation (`claude -r`), so it keeps
+everything it knew. If the agent is in the middle of a turn, nothing runs: the
+auto-land waits for its stop, because a rebase under an agent at work breaks
+that work. `--merge`, `--local`, `--skip-checks` and `--keep-branch` go along,
+and every try uses the flags of the first one.
+
+It stops, and says why in the `land` window and on the desktop, after 3 tasks,
+when the agent changed nothing since the last try (it could not, or said
+why), or on a stop the agent cannot fix (a dirty main checkout, a protected
+branch, a PR still open). The agent never lands itself, and never decides to.
+`wtx land <branch> --stop-auto` turns a waiting auto-land off. It needs Claude
+Code: opencode cannot take a task from wtx.
+
 ### Local merge
 
 Some repos have no remote, or must never push. With `land = "merge"` under
@@ -456,7 +482,7 @@ You do not run these yourself. They are listed so nothing is a mystery.
 | `wtx go <branch> [base]` | branch, worktree, session, agent. Or `all`. |
 | `wtx all` | bring every worktree's session back, detached |
 | `wtx done [branch]` | close a worktree, keep the branch |
-| `wtx land [branch]` | rebase, pull request, merge, clean up. `--merge`: local merge, nothing pushed |
+| `wtx land [branch]` | rebase, pull request, merge, clean up. `--merge`: local merge, nothing pushed. `--auto`: the agent fixes what stops the land |
 | `wtx review [branch]` | the agent's notes beside the diff, in hunk. `--notes` sends yours back |
 | `wtx open [family] [branch]` | print and open a dev server URL |
 | `wtx curl [family] [path] [curl flags]` | curl one of this worktree's servers, without knowing its port |

@@ -457,6 +457,18 @@ client that watches it (`#{client_name}`) and passes it to the job with
 `land.outcome`, which looks at the repo: a "landed" next to a worktree still on
 disk is a lie.
 
+**Auto-land must not run under a working agent, nor loop.** A rebase or a
+merge in the worktree while the agent edits it breaks the agent's work. So
+`running` writes a `.busy` marker next to the state file, and `stop`, `idle`
+and a new session (not a compaction) remove it. While it is there, auto-land
+only writes its record, and the agent's `stop` hook opens the land window
+again. The hook never runs the land itself: the try may restart the agent pane
+the hook runs in. The window waits one second first. It gives up when HEAD did
+not move since the last try (the agent changed nothing), after 3 tasks, or
+when no conversation id is known. Only a human arms it: the record is in
+`$XDG_RUNTIME_DIR/wtx`, which the sandbox cannot write. Each task tells the
+agent not to run `wtx land`.
+
 **`set-option -t =name` is no session to tmux.** `set-option` and
 `show-options` take a pane, and tmux 3.6 answers "no such session" to `=name`.
 Write `=name:`. `has-session`, `kill-session` and `switch-client` take a

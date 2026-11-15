@@ -228,6 +228,33 @@ def forget_nudge(session: str) -> None:
         nudge_file(session).unlink(missing_ok=True)
 
 
+def busy_file(session: str) -> Path:
+    """Marks an agent in the middle of a turn. Not *.json, the monitor reads those.
+
+    No state file is not enough to tell: `start` clears the state too, and a
+    fresh agent waiting for its first prompt has none either.
+    """
+    return state_dir() / f"{safe_name(session)}.busy"
+
+
+def mark_busy(session: str) -> None:
+    with contextlib.suppress(OSError):
+        busy_file(session).write_text(str(int(time.time())))
+
+
+def forget_busy(session: str) -> None:
+    with contextlib.suppress(OSError):
+        busy_file(session).unlink(missing_ok=True)
+
+
+def is_busy(session: str) -> bool:
+    """True from a prompt to the stop that ends its turn. auto-land waits for it."""
+    try:
+        return busy_file(session).exists()
+    except OSError:
+        return False
+
+
 NUDGE_REASON = (
     "wtx: this worktree has uncommitted changes, and `wtx land` refuses them. "
     "If the work is finished, commit it on this branch now, then say it is ready "
@@ -377,7 +404,16 @@ def handle(state: str, *, cwd: Path | None = None) -> int:
             settle(session)
             # A new turn: the agent may be sent back to commit once more.
             forget_nudge(session)
+            if state == "running":
+                mark_busy(session)
+            elif payload.get("source") != "compact":
+                # A compaction starts a session in the middle of a turn.
+                forget_busy(session)
         return 0
+
+    if session and state == "idle":
+        # It waits on the human. A turn cut short with Esc fires no stop.
+        forget_busy(session)
 
     if session and state in ("stop", "idle"):
         # An accepted plan waiting for its implementation model: the session is
@@ -394,6 +430,14 @@ def handle(state: str, *, cwd: Path | None = None) -> int:
             # The agent goes on working: no state, no banner.
             print(nudge)
             return 0
+        if session:
+            forget_busy(session)
+            from . import autoland
+
+            if autoland.resume(session):
+                # The land runs again: the session does not wait on the human.
+                settle(session)
+                return 0
 
     if session:
         write_state(session, state, message)
