@@ -437,6 +437,45 @@ Then `wt remove` runs `git worktree remove` without `--force`, which refuses
 any untracked file. So `wt.remove()` deletes the empty untracked files first.
 It never passes `--force` for that: real work can arrive after the check.
 
+**An agent that says "ready" has often not committed.** Nothing told it to,
+and `wtx land` refuses a dirty worktree. Every branch worktree gets the rule in
+`.claude/rules/wtx.md`, also in a repo with no servers, where the file used to
+be skipped. The handoff prompt says it too. And the `stop` hook sends the agent
+back one time when the worktree is dirty. One time per human turn, with a
+marker next to the state file plus `stop_hook_active`: a block on every stop is
+a loop, and an agent that waits on a question has a reason to stop with work
+in progress. The marker goes on the next `start` or `running`, and on
+teardown.
+
+**The result of an in-session land must outlive the session.** The land
+window dies with the session, and the clean up job has no client and no
+output. A 5 second status message on no client in particular was easy to
+miss, so the human ran land again to see what happened. The land names the
+client that watches it (`#{client_name}`) and passes it to the job with
+`--client`. The job shows the result with `display-message -c <client> -d 0`
+(until a key), plus a desktop banner, `notify.announce`. The text comes from
+`land.outcome`, which looks at the repo: a "landed" next to a worktree still on
+disk is a lie.
+
+**Auto-land must not run under a working agent, nor loop.** A rebase or a
+merge in the worktree while the agent edits it breaks the agent's work. So
+`running` writes a `.busy` marker next to the state file, and `stop`, `idle`
+and a new session (not a compaction) remove it. While it is there, auto-land
+only writes its record, and the agent's `stop` hook opens the land window
+again. The hook never runs the land itself: the try may restart the agent pane
+the hook runs in. The window waits one second first. It gives up when HEAD did
+not move since the last try (the agent changed nothing), after 3 tasks, or
+when no conversation id is known. Only a human arms it: the record is in
+`$XDG_RUNTIME_DIR/wtx`, which the sandbox cannot write. Each task tells the
+agent not to run `wtx land`.
+
+**`set-option -t =name` is no session to tmux.** `set-option` and
+`show-options` take a pane, and tmux 3.6 answers "no such session" to `=name`.
+Write `=name:`. `has-session`, `kill-session` and `switch-client` take a
+session and are fine with `=name`. The real tmux tests caught it once they
+stopped running against the fake tmux: their helper takes the real binary,
+found before `fake_bin` changes PATH.
+
 ## desktop notifications
 
 **A `default` action stops the notification from raising anything.** GNOME only

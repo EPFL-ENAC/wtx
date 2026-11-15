@@ -1145,12 +1145,33 @@ def test_the_worktree_note_says_to_read_the_page_and_click_by_ref(tmp_path) -> N
     assert "click through the page" not in text
 
 
-def test_a_repo_with_no_servers_gets_no_note(tmp_path) -> None:
-    """Nothing to say is better than a section saying nothing."""
+def test_a_worktree_with_no_servers_is_still_told_to_commit(tmp_path) -> None:
+    """Agents said "ready to land" with nothing committed, and land refuses a
+    dirty worktree. wtx itself has no servers, and its agents did it too."""
     from wtx.agents.claude import worktree_rules
 
     ctx = replace(_rctx(parse({"repo": {"name": "app"}})), root=tmp_path)
+    text = worktree_rules(ctx)
+    assert "## Finishing" in text
+    assert "commit it on `feat/x`" in text
+    assert "## Testing the app" not in text
+
+
+def test_the_main_checkout_with_no_servers_gets_no_note(tmp_path) -> None:
+    """Nothing lands from the main checkout, and nothing to say is better than
+    a section saying nothing."""
+    from wtx.agents.claude import worktree_rules
+
+    rctx = _rctx(parse({"repo": {"name": "app"}}))
+    ctx = replace(rctx, root=tmp_path, main=tmp_path, branch="dev")
     assert worktree_rules(ctx) == ""
+
+
+def test_every_text_that_says_ready_also_says_commit() -> None:
+    from wtx import init as init_mod
+
+    assert "commit the work" in orchestrate.HANDOFF_PROMPT
+    assert "commit it and say so" in init_mod.CLAUDE_SECTION
 
 
 # -- the session picker ------------------------------------------------------

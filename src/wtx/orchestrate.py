@@ -77,7 +77,8 @@ work, not for the writing.
 HANDOFF_PROMPT = (
     "The plan is accepted. Implement it, working through it in order. "
     "If a step turns out to be wrong, say so and stop rather than quietly "
-    "doing something else."
+    "doing something else. When it is done, commit the work on this branch, "
+    "then say it is ready to land."
 )
 
 

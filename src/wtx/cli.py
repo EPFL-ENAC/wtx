@@ -7,12 +7,14 @@ import contextlib
 import json
 import os
 import sys
+import time
 import tomllib
 import traceback
 from pathlib import Path
 
 from . import (
     __version__,
+    autoland,
     context,
     doctor,
     envfile,
@@ -472,12 +474,18 @@ def _done(args: argparse.Namespace, main: Path, repo: str, branch: str, target: 
 
 
 def cmd_land(args: argparse.Namespace) -> int:
+    if args.stop_auto:
+        ctx = _load()
+        autoland.stop(ctx, args.branch or git.current_branch(Path.cwd()))
+        return 0
     if args.from_tmux:
         return _land_from_tmux(args)
     if args.cleanup_only:
         return _land_cleanup(args)
     if args.window:
         return _land_in_window(args)
+    if args.auto:
+        return _auto_land(args)
     return _land(args)
 
 
@@ -495,6 +503,32 @@ def _land(args: argparse.Namespace) -> int:
         )
     except land_mod.LandError as exc:
         raise UserError(str(exc)) from exc
+    return 0
+
+
+def _auto_land(args: argparse.Namespace) -> int:
+    """One try of an auto-land. See autoland.py for the loop."""
+    ctx = _load()
+    branch = args.branch or git.current_branch(Path.cwd())
+    flags = {
+        "local": args.local,
+        "merge": args.merge,
+        "skip_checks": args.skip_checks,
+        "keep_branch": args.keep_branch,
+    }
+    try:
+        note = autoland.run(ctx, branch, flags, resume=args.resume)
+    except autoland.GiveUp as exc:
+        autoland.announce(branch, str(exc))
+        raise UserError(f"auto-land stopped: {exc}") from exc
+    except land_mod.LandError as exc:
+        autoland.announce(branch, str(exc))
+        raise UserError(str(exc)) from exc
+    if note:
+        say(note)
+        if args.window:
+            # The window closes now, and takes its output with it.
+            tmux.cmd(["display-message", "-d", "8000", f"wtx: {note}"])
     return 0
 
 
@@ -527,7 +561,7 @@ def _land_from_tmux(args: argparse.Namespace) -> int:
     except UserError as exc:
         tmux.cmd(["display-message", "-d", "5000", f"wtx land: {exc}"])
         return 1
-    land_mod.open_window(session, main, branch, merge=args.merge)
+    land_mod.open_window(session, main, branch, merge=args.merge, auto=args.auto)
     return 0
 
 
@@ -537,8 +571,12 @@ def _land_in_window(args: argparse.Namespace) -> int:
     When the land works, the session closes on its own. When it stops, the
     window waits, or it would close and take the reason with it.
     """
+    if args.resume:
+        # The agent's Stop hook opened this window. Let the hook end before a
+        # try restarts the agent pane it runs in.
+        time.sleep(1)
     try:
-        code = _guarded(_land, args)
+        code = _guarded(_auto_land if args.auto else _land, args)
     except Exception:
         traceback.print_exc()
         code = 1
@@ -551,19 +589,24 @@ def _land_in_window(args: argparse.Namespace) -> int:
 def _land_cleanup(args: argparse.Namespace) -> int:
     """The end of a land, handed to the tmux server by the land window.
 
-    Its output goes nowhere, so the result goes on the status line.
+    Its output goes nowhere and the land window is gone with the session. A
+    5 second message on no client in particular was easy to miss, and the
+    human ran land again to see if it had worked. So the result stays on the
+    status line of the client that watched the land until a key is pressed,
+    and a desktop banner says it too.
     """
     ctx = _load()
     branch = args.branch
-    remote = not land_mod.merges_locally(ctx.cfg, args.merge)
-    land_mod.cleanup(ctx, branch, keep_branch=args.keep_branch, remote=remote)
-    if git.worktree_path_for(ctx.main, branch):
-        message = (
-            f"wtx land: {branch} is merged, but its worktree is still there. Run wtx done {branch}"
-        )
-    else:
-        message = f"landed {branch} into {ctx.cfg.repo.base_branch}"
-    tmux.cmd(["display-message", "-d", "5000", message])
+    merge = land_mod.merges_locally(ctx.cfg, args.merge)
+    land_mod.cleanup(ctx, branch, keep_branch=args.keep_branch, remote=not merge)
+    message = land_mod.outcome(ctx, branch, merge=merge)
+    show = ["display-message", "-d", "0"]
+    if args.client:
+        show += ["-c", args.client]
+    # A client that went away in the meantime is no error for tmux, the
+    # message just shows nowhere. The banner below is for that case too.
+    tmux.cmd([*show, f"wtx: {message}"])
+    notify.announce("wtx land", message)
     return 0
 
 
@@ -1113,6 +1156,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     s.add_argument("--skip-checks", action="store_true")
     s.add_argument("--keep-branch", action="store_true")
+    s.add_argument(
+        "--auto",
+        action="store_true",
+        help="when the land stops on a conflict, a failed check or uncommitted work, "
+        "the agent fixes it and the land runs again when it stops",
+    )
+    s.add_argument("--stop-auto", action="store_true", help="turn a waiting auto-land off")
     # prefix+X l and m pass the pane's folder and session, like done. The
     # window they open runs --window, and the land there hands --cleanup-only
     # to the tmux server. See _land_from_tmux.
@@ -1121,6 +1171,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--from-tmux", action="store_true", help=argparse.SUPPRESS)
     s.add_argument("--window", action="store_true", help=argparse.SUPPRESS)
     s.add_argument("--cleanup-only", action="store_true", help=argparse.SUPPRESS)
+    s.add_argument("--client", default="", help=argparse.SUPPRESS)
+    s.add_argument("--resume", action="store_true", help=argparse.SUPPRESS)
     s.set_defaults(func=cmd_land)
 
     s = sub.add_parser("open", help="print and open a dev server URL")

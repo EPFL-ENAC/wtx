@@ -45,8 +45,8 @@ file.
 `prefix+X` opens a small menu on the session you are in: open the review
 (`r`, same as `prefix+r`), kill the session,
 close the worktree and keep the branch, close it and discard uncommitted
-changes, land the branch (`l`), or merge it locally with no push (`m`, see
-[Landing](#landing)). `prefix+r` opens the review of the branch in hunk, see
+changes, land the branch (`l`), merge it locally with no push (`m`), or
+auto-land it (`a`, see [Landing](#landing)). `prefix+r` opens the review of the branch in hunk, see
 [Review](#review).
 
 ## Ports
@@ -129,7 +129,8 @@ picks the tool and `wtx go --llm` the model.
 With Claude Code, setup writes `.claude/settings.local.json` (model, subagent
 model, effort, compact window, disabled MCP servers, permissions, sandbox) and
 `.claude/rules/wtx.md`, which Claude loads every session: the ports, the log
-file of each server pane, and how to use `wtx curl`. With
+file of each server pane, how to use `wtx curl`, and, in a branch worktree, to
+commit the work before it says the work is ready to land. With
 `explore_agent_model` it also writes `.claude/agents/Explore.md`. With
 opencode, setup writes `opencode.json`.
 
@@ -225,6 +226,13 @@ brings the terminal to the front, on that session. `WTX_NOTIFY_CLICK=0` turns
 the click off. The banner goes away on its own when the agent starts working
 again.
 
+When a Claude agent stops in a branch worktree with uncommitted changes, the
+`stop` hook sends it back one time: commit the work, or say in one line why
+not. `wtx land` refuses uncommitted changes, so an agent that says "ready"
+without a commit is not ready. It happens once per prompt you send, never in a
+loop, and never in the plan phase or in the main checkout. opencode has no
+hooks, it only gets the written rule.
+
 ## Monitor
 
 `wtx monitor` opens a board, in a tmux session of its own (`wtx-monitor`):
@@ -269,9 +277,41 @@ A `land` window opens in that session and runs `wtx land <branch>` from the
 main checkout, so you see every step. If the land stops (a rebase conflict, a
 failed check, a PR that is still open after 30 minutes), the window stays open
 with the reason, next to the agent. If it works, the session closes on its own
-and the status line says `landed <branch> into <base>`. Press `prefix+X l`
-again while a land runs and you go back to its window. It does not start a
-second one.
+and your tmux client moves to another session. There the status line says how
+it ended, for example `landed feat/x into dev, worktree removed, branch
+deleted`, and it stays until you press a key. A desktop notification says the
+same. If the worktree could not be removed, both say so and tell you to run
+`wtx done <branch>`. Press `prefix+X l` again while a land runs and you go
+back to its window. It does not start a second one.
+
+A plain `wtx land` ends with the same line, read from the repo after the clean
+up, not guessed.
+
+### Auto-land
+
+`wtx land <branch> --auto`, or `prefix+X` then `a` in the branch session, tries
+to land. When the land stops on something the agent of the branch can fix, it
+gives the agent the problem, and tries again when the agent stops:
+
+| the land stops on | the agent is asked to |
+|---|---|
+| uncommitted changes in the worktree | commit the work |
+| a rebase conflict | run `git rebase origin/<base>`, resolve, run the lint and tests |
+| a merge conflict (`--merge`) | run `git merge <base>`, resolve, commit |
+| a failed check | fix what the check reports, commit |
+
+The task goes to the agent's own conversation (`claude -r`), so it keeps
+everything it knew. If the agent is in the middle of a turn, nothing runs: the
+auto-land waits for its stop, because a rebase under an agent at work breaks
+that work. `--merge`, `--local`, `--skip-checks` and `--keep-branch` go along,
+and every try uses the flags of the first one.
+
+It stops, and says why in the `land` window and on the desktop, after 3 tasks,
+when the agent changed nothing since the last try (it could not, or said
+why), or on a stop the agent cannot fix (a dirty main checkout, a protected
+branch, a PR still open). The agent never lands itself, and never decides to.
+`wtx land <branch> --stop-auto` turns a waiting auto-land off. It needs Claude
+Code: opencode cannot take a task from wtx.
 
 ### Local merge
 
@@ -442,7 +482,7 @@ You do not run these yourself. They are listed so nothing is a mystery.
 | `wtx go <branch> [base]` | branch, worktree, session, agent. Or `all`. |
 | `wtx all` | bring every worktree's session back, detached |
 | `wtx done [branch]` | close a worktree, keep the branch |
-| `wtx land [branch]` | rebase, pull request, merge, clean up. `--merge`: local merge, nothing pushed |
+| `wtx land [branch]` | rebase, pull request, merge, clean up. `--merge`: local merge, nothing pushed. `--auto`: the agent fixes what stops the land |
 | `wtx review [branch]` | the agent's notes beside the diff, in hunk. `--notes` sends yours back |
 | `wtx open [family] [branch]` | print and open a dev server URL |
 | `wtx curl [family] [path] [curl flags]` | curl one of this worktree's servers, without knowing its port |
