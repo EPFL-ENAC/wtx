@@ -106,7 +106,7 @@ def list_sessions() -> list[str]:
 
 
 def set_session_option(session: str, key: str, value: str) -> None:
-    cmd(["set-option", "-t", f"={session}", key, value])
+    cmd(["set-option", "-t", f"={session}:", key, value])
 
 
 def kill_session(session: str) -> None:
