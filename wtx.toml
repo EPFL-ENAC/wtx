@@ -37,7 +37,7 @@ role = "shell"
 tool = "claude"
 llm = "opus"
 subagent_model = "sonnet"
-auto_compact_window = 200000
+auto_compact_window = 500000
 explore_agent_model = "haiku"
 
 # Plan on one model, implement on another. A brief starts on
