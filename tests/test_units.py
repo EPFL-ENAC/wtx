@@ -1755,3 +1755,49 @@ def test_a_tracked_file_made_empty_is_still_dirty(tmp_path: Path) -> None:
     (root / "tracked.txt").write_text("")
     assert not git.is_clean(root)
     assert git.empty_untracked(root) == []
+
+
+@pytest.mark.parametrize(
+    ("keys", "enter"),
+    [(b"\r", True), (b"\n", True), (b"xy\r", True), (b"q", False), (b"\x1b", False)],
+)
+def test_the_land_window_takes_one_key(keys: bytes, enter: bool, monkeypatch) -> None:
+    """On a real terminal: no Enter after the key, and a stray key is not a
+    yes. A key typed before the question is dropped. The terminal mode is
+    given back after."""
+    import pty
+    import signal
+    import sys
+    import termios
+    import threading
+    import time
+
+    from wtx import land
+
+    master, slave = pty.openpty()
+    before = termios.tcgetattr(slave)
+    os.write(master, b"\r")  # typed while the land ran
+    time.sleep(0.05)  # the kernel queues it before the question flushes it
+
+    def type_keys() -> None:
+        # Once the question is asked, that is once the terminal left line mode.
+        deadline = time.time() + 5
+        while termios.tcgetattr(slave)[3] & termios.ICANON and time.time() < deadline:
+            time.sleep(0.01)
+        os.write(master, keys)
+
+    with os.fdopen(slave, "r", closefd=False) as stdin:
+        monkeypatch.setattr(sys, "stdin", stdin)
+        typist = threading.Thread(target=type_keys)
+        typist.start()
+        old = signal.signal(signal.SIGALRM, lambda *a: pytest.fail("waited for a key"))
+        signal.alarm(5)
+        try:
+            assert land._wait_for_enter() is enter
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, old)
+            typist.join()
+        assert termios.tcgetattr(slave) == before
+    os.close(slave)
+    os.close(master)

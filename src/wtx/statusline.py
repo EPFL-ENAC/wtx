@@ -187,12 +187,12 @@ def _start(main: Path, branch: str) -> str:
 
 
 def _merged_by_a_merge(cwd: Path, head: str, ref: str) -> bool:
-    """HEAD is a second parent of a merge in ref. Both roads of wtx land
-    merge with --no-ff, so a landed branch always has one."""
-    for line in _git(["log", "--merges", "--format=%P", f"{head}..{ref}"], cwd):
-        if head in line.split()[1:]:
-            return True
-    return False
+    """HEAD is a second parent of a merge in ref, read like git.merge_commit_of
+    reads it. Through _git: this line must stay fast and never fail."""
+    from .git import MERGES_FORMAT, pick_merge
+
+    lines = _git(["log", "--merges", f"--format={MERGES_FORMAT}", f"{head}..{ref}"], cwd)
+    return bool(pick_merge(lines, head))
 
 
 def land_state(cwd: Path, main: Path, branch: str, head: str, base: str) -> tuple[str, int]:

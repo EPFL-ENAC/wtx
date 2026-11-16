@@ -32,12 +32,15 @@ from . import git, tmux
 from .context import session_name
 from .proc import is_dry_run, say, which
 
+# What an agent hook can report. "landed" is not one: only land.finish writes
+# it, when a branch landed and its window waits for Enter to close it.
 STATES = ("permission", "idle", "stop", "start", "running")
 
 EMOJI = {
     "permission": "\N{CLOSED LOCK WITH KEY}",
     "idle": "\N{SPEECH BALLOON}",
     "stop": "\N{WHITE HEAVY CHECK MARK}",
+    "landed": "\N{WHITE HEAVY CHECK MARK}",
 }
 
 # How a waiting session is painted: a tmux style for the picker, an SGR code
@@ -46,14 +49,17 @@ EMOJI = {
 TMUX_STYLE = {
     "permission": "fg=yellow,bold",
     "idle": "fg=cyan",
+    "landed": "fg=green,bold",
 }
 SGR = {
     "permission": "1;33",
     "idle": "36",
+    "landed": "1;32",
 }
 
 # What the user has to act on. running and start are just noise on a board.
-WAITING = ("permission", "idle")
+# A landed session waits too: Enter in its land window closes it.
+WAITING = ("permission", "idle", "landed")
 
 # Set on an agent wtx runs headless (wtx review). Its hooks still fire, and a
 # Stop from there must not say the session waits on the human.
