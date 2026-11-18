@@ -68,7 +68,11 @@ def worktree_rules(ctx: RenderContext) -> str:
         if port:
             ports.append((f.name, port))
     logs = [p.name for p in ctx.cfg.panes.by_role("server") if p.log]
-    if not ports and not logs:
+    # Agents used to say "ready to land" with nothing committed, and land
+    # refuses a dirty worktree. Every branch worktree gets this, even with no
+    # servers. The main checkout holds the base branch: nothing lands from it.
+    finishing = not is_main and ctx.branch not in ctx.cfg.repo.protected_branches
+    if not ports and not logs and not finishing:
         return ""
 
     out = [
@@ -123,6 +127,16 @@ def worktree_rules(ctx: RenderContext) -> str:
             "",
             f"Read them with `tail -n 50 .wt-logs/{logs[0]}.log`. Never `tail -f`,",
             "and never `grep` them without a line limit: they grow while you work.",
+        ]
+    if finishing:
+        out += [
+            "",
+            "## Finishing",
+            "",
+            f"When the work is done, commit it on `{ctx.branch}`, then say it is",
+            "ready to land. `wtx land` refuses a worktree with uncommitted changes,",
+            "so work that is not committed cannot land. A human runs `wtx land`,",
+            "not you.",
         ]
     return "\n".join(out) + "\n"
 

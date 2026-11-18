@@ -7,7 +7,7 @@ that is not pushed.
 
 from __future__ import annotations
 
-from . import envfile, notify, orchestrate, ports, repos, review, tmux
+from . import autoland, envfile, notify, orchestrate, ports, repos, review, tmux
 from .context import Ctx
 from .proc import run_shell, say, warn
 
@@ -46,7 +46,11 @@ def close_session(session: str) -> None:
     # sits in the desktop list for ever, and clicking it opens nothing.
     notify.settle(session)
     notify.forget_conversation(session)
+    notify.forget_phase(session)
+    notify.forget_nudge(session)
+    notify.forget_busy(session)
     orchestrate.clear_record(session)
+    autoland.clear(session)
     review.clear(session)
 
     if tmux.available() and tmux.has_session(session):

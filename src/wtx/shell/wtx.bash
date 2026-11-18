@@ -83,7 +83,7 @@ _wtx() {
   local cur prev words cword
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
-  local subs="init config go all done land open status curl setup teardown tmux brief review hook notify handoff tmux-status monitor doctor install-machine shell-init guard"
+  local subs="init config go all done land open status curl setup teardown tmux brief review hook notify handoff tmux-status statusline monitor doctor install-machine shell-init guard"
 
   if [ "$COMP_CWORD" -eq 1 ]; then
     mapfile -t COMPREPLY < <(compgen -W "$subs" -- "$cur")

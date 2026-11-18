@@ -82,5 +82,12 @@ def remove(cwd: Path, branch: str, *, force: bool = False) -> None:
     args = ["remove", branch]
     if force:
         args.append("--force")
+    else:
+        # wt runs `git worktree remove` without --force, which refuses any
+        # untracked file, sandbox stubs included. Delete only the stubs: a
+        # --force here would also drop work that arrived after the check.
+        path = git.worktree_path_for(cwd, branch)
+        if path:
+            git.remove_empty_untracked(path)
     # No warning here: every caller reports a failure in its own words.
     _run_json(args, cwd)

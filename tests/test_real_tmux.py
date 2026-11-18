@@ -24,11 +24,15 @@ from wtx.agents import base as agents
 pytestmark = pytest.mark.tmux
 
 SOCKET = "wtx-tests"
+# Found before fake_bin puts its fake tmux first on PATH. Looked up at call
+# time, "tmux" was the fake: the probe below never saw a server and every
+# test here was skipped, even with --run-tmux.
+REAL_TMUX = shutil.which("tmux") or "tmux"
 
 
 def tmux(*args: str) -> subprocess.CompletedProcess:
     return subprocess.run(
-        ["tmux", "-L", SOCKET, *args], capture_output=True, text=True, check=False
+        [REAL_TMUX, "-L", SOCKET, *args], capture_output=True, text=True, check=False
     )
 
 
@@ -40,7 +44,7 @@ def real_tmux(monkeypatch: pytest.MonkeyPatch, fake_bin: Path):
     that fixture sets, and relying on the test's argument order to get it was a
     trap waiting to spring.
     """
-    if shutil.which("tmux") is None:
+    if shutil.which(REAL_TMUX) is None:
         pytest.skip("no tmux")
     # "no server running" and "cannot reach the socket" look alike from the
     # outside, so prove a server can actually start before promising to test one.
@@ -56,7 +60,7 @@ def real_tmux(monkeypatch: pytest.MonkeyPatch, fake_bin: Path):
     bindir = Path(os.environ["WTX_TEST_CALLS"]).parent / "realbin"
     bindir.mkdir(exist_ok=True)
     wrapper = bindir / "tmux"
-    wrapper.write_text(f'#!/bin/sh\nexec {shutil.which("tmux")} -L {SOCKET} "$@"\n')
+    wrapper.write_text(f'#!/bin/sh\nexec {REAL_TMUX} -L {SOCKET} "$@"\n')
     wrapper.chmod(0o755)
     monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
     monkeypatch.delenv("TMUX", raising=False)
@@ -87,8 +91,23 @@ def test_a_real_session_gets_its_panes_and_roles(wtx_repo: Path, fake_bin: Path,
     assert tmux_mod.agent_pane_id(ctx.session)
 
     tmux_mod.set_session_option(ctx.session, tmux_mod.STATE_OPTION, "permission")
-    shown = tmux("show-options", "-v", "-t", f"={ctx.session}", tmux_mod.STATE_OPTION)
+    # set-option and show-options take a pane: "=name" alone is no session
+    # to them, "=name:" is.
+    shown = tmux("show-options", "-v", "-t", f"={ctx.session}:", tmux_mod.STATE_OPTION)
     assert shown.stdout.strip() == "permission"
 
     tmux_mod.kill_session(ctx.session)
     assert not tmux_mod.has_session(ctx.session)
+
+
+def test_a_real_tmux_takes_the_land_result_message(fake_bin: Path, real_tmux) -> None:
+    """The end of an in-session land: a message that stays until a key, on a
+    named client. A client that left in the meantime must not be an error, the
+    clean up job has nobody to tell."""
+    tmux("new-session", "-d", "-s", "wtx-land")
+    client = tmux("display-message", "-p", "#{client_name}")
+    assert client.returncode == 0
+
+    shown = tmux("display-message", "-d", "0", "-c", "/dev/pts/999", "wtx: landed")
+    assert shown.returncode == 0, shown.stderr
+    assert not shown.stderr

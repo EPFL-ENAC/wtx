@@ -17,7 +17,9 @@ only the first, because a branch can predate the fix.
 
 **A local ref makes a stale base.** `wt create x somebranch` resolves whatever
 that ref pointed at last time it was fetched. `wtx go` defaults to
-`origin/<base>` and fetches first.
+`origin/<base>` and fetches first. Except with `land = "merge"`: there the
+local base is the fresh one, because lands go there and are not pushed. So
+`wtx go` and `wtx review` use the local `<base>`, with no fetch.
 
 **A hook must be a list in `.wt.toml`.** `post_create = "wtx hook post-create"`
 parses fine and then never runs, so a repo looks set up and has no ports, no
@@ -424,6 +426,64 @@ hand-off passes `--merge` too, and the land and the job both ask
 **With no remote, `git branch -D` can delete the only copy.** A commit can
 arrive between the merge and the clean up job, and nothing on origin saves it.
 So a local clean up deletes the branch only if the base contains it.
+
+**The Claude Code sandbox leaves empty files in every checkout.** It mounts a
+read-only file on each path it protects (`.bashrc`, `.mcp.json`,
+`.claude/settings.json`, ...). When the path does not exist it creates an empty
+file and never deletes it. `git status` sees them, and land refused every
+checkout. So `git.is_clean()` ignores untracked files of 0 bytes, found by
+looking at the files, not by a list of names that changes with each version.
+Then `wt remove` runs `git worktree remove` without `--force`, which refuses
+any untracked file. So `wt.remove()` deletes the empty untracked files first.
+It never passes `--force` for that: real work can arrive after the check.
+
+**An agent that says "ready" has often not committed.** Nothing told it to,
+and `wtx land` refuses a dirty worktree. Every branch worktree gets the rule in
+`.claude/rules/wtx.md`, also in a repo with no servers, where the file used to
+be skipped. The handoff prompt says it too. And the `stop` hook sends the agent
+back one time when the worktree is dirty. One time per human turn, with a
+marker next to the state file plus `stop_hook_active`: a block on every stop is
+a loop, and an agent that waits on a question has a reason to stop with work
+in progress. The marker goes on the next `start` or `running`, and on
+teardown.
+
+**A land never closes the session on its own.** It did once: the clean up
+ran right after the merge, and the session died under the human. The result
+was a status message on some other session, easy to miss. When the clean up
+did not run (a PR merged later, a land window closed early), the session
+stayed with nothing in it to say the branch had landed. So `land.finish` shows
+a recap in the land window and waits for Enter. Until then the session is
+marked `landed` (the state file and `@wtx_state`), and a second land on it
+finds the merge commit and goes straight back to the recap. A plain `wtx land`
+in a terminal does not wait: the human runs it and reads its output.
+
+**The result of the clean up must outlive the session.** Enter hands the clean
+up to the tmux server, and the land window dies with the session. The land
+names the client that watches it (`#{client_name}`) and passes it to the job
+with `--client`. The job shows the result with `display-message -c <client> -d
+0` (until a key). It sends a desktop banner only if the worktree is still
+there, because then the human has to act. The text comes from
+`land.outcome`, which looks at the repo: a "landed" next to a worktree still on
+disk is a lie.
+
+**Auto-land must not run under a working agent, nor loop.** A rebase or a
+merge in the worktree while the agent edits it breaks the agent's work. So
+`running` writes a `.busy` marker next to the state file, and `stop`, `idle`
+and a new session (not a compaction) remove it. While it is there, auto-land
+only writes its record, and the agent's `stop` hook opens the land window
+again. The hook never runs the land itself: the try may restart the agent pane
+the hook runs in. The window waits one second first. It gives up when HEAD did
+not move since the last try (the agent changed nothing), after 3 tasks, or
+when no conversation id is known. Only a human arms it: the record is in
+`$XDG_RUNTIME_DIR/wtx`, which the sandbox cannot write. Each task tells the
+agent not to run `wtx land`.
+
+**`set-option -t =name` is no session to tmux.** `set-option` and
+`show-options` take a pane, and tmux 3.6 answers "no such session" to `=name`.
+Write `=name:`. `has-session`, `kill-session` and `switch-client` take a
+session and are fine with `=name`. The real tmux tests caught it once they
+stopped running against the fake tmux: their helper takes the real binary,
+found before `fake_bin` changes PATH.
 
 ## desktop notifications
 

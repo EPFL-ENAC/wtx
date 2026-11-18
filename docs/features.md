@@ -7,8 +7,9 @@ A short tour, one section per feature. Every key named here is in
 
 `wtx go <branch> [base]` makes the branch, its worktree, its tmux session and
 its agent, then attaches you to the session. The base is
-`origin/<base_branch>` unless you give one, and wtx fetches `origin` first. The
-worktree is created by `wt` under `<repo>/.claude/worktrees/<branch>`.
+`origin/<base_branch>` unless you give one, and wtx fetches `origin` first.
+With `land = "merge"` the default base is the local `<base_branch>`, with no
+fetch (see [Local merge](#local-merge)). The worktree is created by `wt` under `<repo>/.claude/worktrees/<branch>`.
 
 A protected branch is refused: it stays in the main checkout. Running
 `wtx go` again on a branch that already has a worktree is safe, setup just runs
@@ -44,8 +45,8 @@ file.
 `prefix+X` opens a small menu on the session you are in: open the review
 (`r`, same as `prefix+r`), kill the session,
 close the worktree and keep the branch, close it and discard uncommitted
-changes, land the branch (`l`), or merge it locally with no push (`m`, see
-[Landing](#landing)). `prefix+r` opens the review of the branch in hunk, see
+changes, land the branch (`l`), merge it locally with no push (`m`), or
+auto-land it (`a`, see [Landing](#landing)). `prefix+r` opens the review of the branch in hunk, see
 [Review](#review).
 
 ## Ports
@@ -128,7 +129,8 @@ picks the tool and `wtx go --llm` the model.
 With Claude Code, setup writes `.claude/settings.local.json` (model, subagent
 model, effort, compact window, disabled MCP servers, permissions, sandbox) and
 `.claude/rules/wtx.md`, which Claude loads every session: the ports, the log
-file of each server pane, and how to use `wtx curl`. With
+file of each server pane, how to use `wtx curl`, and, in a branch worktree, to
+commit the work before it says the work is ready to land. With
 `explore_agent_model` it also writes `.claude/agents/Explore.md`. With
 opencode, setup writes `opencode.json`.
 
@@ -233,6 +235,13 @@ brings the terminal to the front, on that session. `WTX_NOTIFY_CLICK=0` turns
 the click off. The banner goes away on its own when the agent starts working
 again.
 
+When a Claude agent stops in a branch worktree with uncommitted changes, the
+`stop` hook sends it back one time: commit the work, or say in one line why
+not. `wtx land` refuses uncommitted changes, so an agent that says "ready"
+without a commit is not ready. It happens once per prompt you send, never in a
+loop, and never in the plan phase or in the main checkout. opencode has no
+hooks, it only gets the written rule.
+
 ## Monitor
 
 `wtx monitor` opens a board, in a tmux session of its own (`wtx-monitor`):
@@ -276,10 +285,71 @@ You can also land from the branch session itself: press `prefix+X`, then `l`.
 A `land` window opens in that session and runs `wtx land <branch>` from the
 main checkout, so you see every step. If the land stops (a rebase conflict, a
 failed check, a PR that is still open after 30 minutes), the window stays open
-with the reason, next to the agent. If it works, the session closes on its own
-and the status line says `landed <branch> into <base>`. Press `prefix+X l`
-again while a land runs and you go back to its window. It does not start a
-second one.
+with the reason, next to the agent. Press `prefix+X l` again while a land runs
+and you go back to its window. It does not start a second one.
+
+If the land works, the window shows what landed and waits:
+
+```
+✓ landed feat/x into dev
+  pull request https://github.com/org/repo/pull/37
+  2 commits, 4 files changed, 120 insertions(+), 8 deletions(-)
+    913b62d feat(land): auto-land, the agent fixes what stops the land
+    7b3b654 fix(land): say clearly how an in-session land ended
+
+  Enter  remove the worktree and the branch, close this session
+  q      keep them, close this window
+```
+
+The commits and the size come from the merge commit. On the merge road the
+second line is `merged locally, nothing was pushed`. A desktop notification
+says the branch landed, because a PR land can take 30 minutes.
+
+- Enter removes the worktree, closes the session and deletes the branch, local
+  and remote (with `--keep-branch`, the branch stays). Your tmux client moves
+  to another session. There the status line says how it ended, for example
+  `landed feat/x into dev, worktree removed, branch deleted`, until you press
+  a key. If the worktree could not be removed, it says so and tells you to run
+  `wtx done <branch>`.
+- q or Esc keeps everything. The session stays marked `landed`: in green in
+  the picker (`prefix+s`), and in the waiting list of `wtx monitor`. Other keys
+  do nothing.
+
+Land a branch that is already in the base (a PR merged on GitHub, a land
+window you closed with q) and it skips the rebase, the checks and the merge.
+It goes straight to the same recap, so `prefix+X l` again is how you close a
+landed session. It looks for the merge commit of the branch in
+`origin/<base_branch>`, or in `<base_branch>` on the merge road.
+
+A plain `wtx land` in a terminal prints the same recap, then cleans up at
+once, with no key to press. Its last line is read from the repo after the
+clean up, not guessed.
+
+### Auto-land
+
+`wtx land <branch> --auto`, or `prefix+X` then `a` in the branch session, tries
+to land. When the land stops on something the agent of the branch can fix, it
+gives the agent the problem, and tries again when the agent stops:
+
+| the land stops on | the agent is asked to |
+|---|---|
+| uncommitted changes in the worktree | commit the work |
+| a rebase conflict | run `git rebase origin/<base>`, resolve, run the lint and tests |
+| a merge conflict (`--merge`) | run `git merge <base>`, resolve, commit |
+| a failed check | fix what the check reports, commit |
+
+The task goes to the agent's own conversation (`claude -r`), so it keeps
+everything it knew. If the agent is in the middle of a turn, nothing runs: the
+auto-land waits for its stop, because a rebase under an agent at work breaks
+that work. `--merge`, `--local`, `--skip-checks` and `--keep-branch` go along,
+and every try uses the flags of the first one.
+
+It stops, and says why in the `land` window and on the desktop, after 3 tasks,
+when the agent changed nothing since the last try (it could not, or said
+why), or on a stop the agent cannot fix (a dirty main checkout, a protected
+branch, a PR still open). The agent never lands itself, and never decides to.
+`wtx land <branch> --stop-auto` turns a waiting auto-land off. It needs Claude
+Code: opencode cannot take a task from wtx.
 
 ### Local merge
 
@@ -307,6 +377,14 @@ After the merge the worktree and the local branch go. The remote branch, if
 there is one, is not touched. With no remote the local branch can be the only
 copy, so it is deleted only if the base contains it. If not, land warns and
 keeps it.
+
+With the rule, the local base branch is also the default base for the rest.
+`wtx go` cuts a new worktree from the local `<base_branch>`, not from
+`origin/<base_branch>`, and does not fetch. `wtx review` diffs from it too. So
+a new worktree sees what was landed and not pushed yet, and a review does not
+show those commits as part of the branch. A base you give (`wtx go feat/x
+origin/dev`, `wtx review --base <ref>`) still wins. `wtx land --merge` on a
+repo without the rule does not change this: the default base stays origin.
 
 ### Keeping the plans
 
@@ -352,7 +430,7 @@ of the repo, like `wtx brief`, and refuses a protected branch.
    `<session>.review` (the hunk sidecar) and `<session>.review.meta` (the
    commit it was written for). Nothing is written in the checkout.
 3. It opens `hunk diff origin/<base_branch>...HEAD --agent-context <file>` in a
-   `review` window of the branch session. Outside tmux, hunk runs in the
+   `review` window (the local `<base_branch>` with `land = "merge"`) of the branch session. Outside tmux, hunk runs in the
    current terminal.
 
 The notes are reused while the branch does not move. `--force` asks again,
@@ -378,6 +456,39 @@ It runs on demand only, never on a hook: each run costs one agent turn.
 `wtx land` warns (and goes on) when a branch has no review or an old one, and
 `wtx status` shows it.
 
+## The Claude status line
+
+`wtx install-machine` also sets the Claude Code status line to
+`wtx statusline`. It shows, on one line:
+
+```
+Opus 5.5 high · 84k/500k 17% before compact · ⎇ feat/x · PR #29 · wtx build · 3 to land in dev
+```
+
+- the model and its effort (and `fast` in fast mode);
+- the context in use, against the size where Claude Code compacts. That size
+  comes from `autoCompactWindow`, read in the same settings files Claude Code
+  reads (a value per model wins). Green, then yellow at 60%, red at 85%;
+- the branch. It is a link to the branch on GitHub (or GitLab) once it is
+  pushed, and dim before. The open pull request is a link too;
+- in a wtx session, the phase: `plan` (the brief started in plan mode),
+  `build` (the plan is accepted, or the brief started in build mode), or
+  `review` (a `wtx review` matches the branch, or notes went back to the
+  agent);
+- in a wtx repo, whether the work is in the base branch: `3 to land in dev`
+  (dim) while commits are not in it, `✓ landed in dev` (green) once they all
+  are. A fresh branch with no commit shows neither. It reads local refs only,
+  so a merge done on GitHub shows after the next fetch. A squash merge done on
+  GitHub is not seen (its commit is a new one); `wtx land` never squashes.
+
+Links need a terminal that knows OSC 8 (GNOME Terminal, Ptyxis, kitty,
+WezTerm, iTerm2). In tmux, `install-machine` adds the `hyperlinks` terminal
+feature (tmux 3.4 or later). It also sets `FORCE_HYPERLINK=1` in the Claude
+settings, because inside tmux Claude Code thinks links do not work. Ctrl+click
+opens them.
+
+If you already have a status line, wtx keeps yours and says so.
+
 ## Machine setup
 
 `wtx install-machine` prints what it would change. `--apply` writes it, with a
@@ -394,7 +505,9 @@ backup of each file. It sets up:
 - `~/.config/wt/config.toml`: worktrees go under `.claude/worktrees/`.
 - `~/.claude/agents/Explore.md`: the search agent on haiku.
 - `~/.claude/settings.json`: the hooks that call `wtx notify` and
-  `wtx handoff`.
+  `wtx handoff`, and the status line (`wtx statusline`).
+- `~/.tmux.conf`, with tmux 3.4 or later: OSC 8 links go through, so the
+  branch in the status line can be clicked.
 - the skills `/wtx-init` and `/wtx-create` in `~/.claude/skills`.
 
 The hooks and the Explore agent are machine-wide. They also apply to Claude
@@ -424,6 +537,7 @@ You do not run these yourself. They are listed so nothing is a mystery.
 | `wtx notify <state>` | the agent hooks, to record the session state |
 | `wtx handoff` | the `ExitPlanMode` hook, to start the build |
 | `wtx tmux-status` | the tmux status line |
+| `wtx statusline` | the Claude Code status line |
 
 ## Every command
 
@@ -434,7 +548,7 @@ You do not run these yourself. They are listed so nothing is a mystery.
 | `wtx go <branch> [base]` | branch, worktree, session, agent. Or `all`. |
 | `wtx all` | bring every worktree's session back, detached |
 | `wtx done [branch]` | close a worktree, keep the branch |
-| `wtx land [branch]` | rebase, pull request, merge, clean up. `--merge`: local merge, nothing pushed |
+| `wtx land [branch]` | rebase, pull request, merge, clean up. `--merge`: local merge, nothing pushed. `--auto`: the agent fixes what stops the land |
 | `wtx review [branch]` | the agent's notes beside the diff, in hunk. `--notes` sends yours back |
 | `wtx open [family] [branch]` | print and open a dev server URL |
 | `wtx curl [family] [path] [curl flags]` | curl one of this worktree's servers, without knowing its port |
@@ -447,6 +561,7 @@ You do not run these yourself. They are listed so nothing is a mystery.
 | `wtx notify <state>` | called by the agent's hooks |
 | `wtx handoff` | called by the agent's `ExitPlanMode` hook |
 | `wtx tmux-status` | one line for tmux `status-right` |
+| `wtx statusline` | the Claude Code status line, reads its JSON on stdin |
 | `wtx monitor` | every session on one screen |
 | `wtx doctor` | check this machine |
 | `wtx install-machine` | the shell, tmux and agent hook setup |

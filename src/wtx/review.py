@@ -205,15 +205,19 @@ def head(path: Path) -> str:
 
 
 def diff_range(ctx: Ctx, base: str = "") -> str:
-    """What `wtx land` will merge: the branch since it left origin/<base>.
+    """What `wtx land` will merge: the branch since it left its base.
 
     Three dots, so commits that landed on the base since then do not show as
-    removed lines.
+    removed lines. Under land = "merge" the base is the local branch, with no
+    fetch: origin is behind it, and diffing from origin would show the lands
+    not pushed yet as part of this branch.
     """
     if base:
         return f"{base}...HEAD"
-    git.fetch(ctx.main)
     name = ctx.cfg.repo.base_branch
+    if ctx.cfg.repo.land == "merge":
+        return f"{name}...HEAD"
+    git.fetch(ctx.main)
     remote = f"origin/{name}"
     code, _, _ = capture_code(["git", "rev-parse", "--verify", "--quiet", remote], cwd=ctx.root)
     return f"{remote if code == 0 else name}...HEAD"

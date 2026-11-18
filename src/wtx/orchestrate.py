@@ -86,7 +86,8 @@ work, not for the writing.
 HANDOFF_PROMPT = (
     "The plan is accepted. Implement it, working through it in order. "
     "If a step turns out to be wrong, say so and stop rather than quietly "
-    "doing something else."
+    "doing something else. When it is done, commit the work on this branch, "
+    "then say it is ready to land."
 )
 
 
@@ -328,6 +329,9 @@ def capture(payload: dict, *, cwd: Path | None = None) -> str:
     except (context.ContextError, config_mod.ConfigError):
         trace("  no: not a wtx checkout")
         return ""  # not a wtx checkout, not ours to orchestrate
+    # The plan is accepted: from here the agent implements, here or after
+    # the handoff below. The status line shows it.
+    notify.remember_phase(ctx.session, "build")
     orch = ctx.cfg.agent.orchestration
     plan = plan_from(payload)
     save_plan(ctx, plan, model_from(payload) or (ctx.plan_model if orch.enabled else ctx.llm))

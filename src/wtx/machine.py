@@ -100,6 +100,19 @@ def clipboard_command() -> str | None:
     return None
 
 
+# OSC 8 links (the branch in the Claude status line) go through tmux only when
+# the outer terminal is said to support them. The feature came in tmux 3.4.
+HYPERLINKS_TMUX = (3, 4)
+HYPERLINKS_LINE = "set -as terminal-features ',*:hyperlinks'"
+
+# The Claude Code status line: model, context before compact, branch, phase.
+STATUS_LINE = {"type": "command", "command": "wtx statusline", "padding": 0}
+
+# Claude Code drops the links of the status line when it thinks the terminal
+# cannot show them, and inside tmux it thinks so.
+HYPERLINK_ENV = {"FORCE_HYPERLINK": "1"}
+
+
 def _sets_copy_command(text: str) -> bool:
     """The user already chose one. Theirs wins, wtx does not add a second."""
     return any("copy-command" in ln and not ln.strip().startswith("#") for ln in text.splitlines())
@@ -228,7 +241,7 @@ class Change:
         if self.kind == "create":
             return not self.path.exists()
         if self.kind == "merge-json":
-            return _merge_hooks(self.path, json.loads(self.body)["hooks"], write=False)
+            return _merge_settings(self.path, json.loads(self.body), write=False)
         if not self.path.is_file():
             return True
         return bool(self.missing_lines()) or bool(self.stale_lines())
@@ -297,6 +310,15 @@ def planned(agent_tool: str = "claude") -> list[Change]:
                 f"\n# wtx: copy a mouse selection to the clipboard\n{copy_line}\n",
             )
         )
+    version = tmux_version()
+    if version is not None and version >= HYPERLINKS_TMUX:
+        changes.append(
+            Change(
+                tmux_conf,
+                "links in a pane (the branch in the Claude status line) can be clicked",
+                f"\n# wtx: let OSC 8 links through\n{HYPERLINKS_LINE}\n",
+            )
+        )
     changes += [
         Change(
             home / ".config" / "git" / "ignore",
@@ -323,15 +345,51 @@ def planned(agent_tool: str = "claude") -> list[Change]:
             Change(
                 home / ".claude" / "settings.json",
                 "notify and handoff hooks: which session is waiting, and which "
-                "model implements an accepted plan",
-                json.dumps({"hooks": get_agent("claude").hook_fragment()}, indent=2),
+                "model implements an accepted plan. The status line: model, "
+                "context before compact, branch link, wtx phase",
+                json.dumps(
+                    {
+                        "hooks": get_agent("claude").hook_fragment(),
+                        "statusLine": STATUS_LINE,
+                        "env": HYPERLINK_ENV,
+                    },
+                    indent=2,
+                ),
                 kind="merge-json",
             )
         )
     return changes
 
 
-def _merge_hooks(path: Path, fragment: dict, *, write: bool = True) -> bool:
+def _is_wtx_status_line(value: object) -> bool:
+    return isinstance(value, dict) and str(value.get("command", "")).startswith("wtx ")
+
+
+def _merge_extras(data: dict, body: dict) -> bool:
+    """The status line and its env. Someone else's status line stays: it is
+    theirs, and `wtx install-machine` says so instead."""
+    changed = False
+    wanted = body.get("statusLine")
+    current = data.get("statusLine")
+    if wanted and current != wanted and (current is None or _is_wtx_status_line(current)):
+        data["statusLine"] = wanted
+        changed = True
+    env = data.setdefault("env", {}) if body.get("env") else {}
+    for key, value in (body.get("env") or {}).items():
+        if key not in env:
+            env[key] = value
+            changed = True
+    return changed
+
+
+def _merge_settings(path: Path, body: dict, *, write: bool = True) -> bool:
+    """Hooks, status line and env, in one read and one write."""
+    return _merge_hooks(path, body.get("hooks", {}), write=write, extras=body)
+
+
+def _merge_hooks(
+    path: Path, fragment: dict, *, write: bool = True, extras: dict | None = None
+) -> bool:
     """Add wtx's hooks to the user's settings without touching the rest.
 
     Returns whether anything changed. With write=False nothing is written, so
@@ -380,6 +438,8 @@ def _merge_hooks(path: Path, fragment: dict, *, write: bool = True) -> bool:
             ]
             current.append(entry)
             changed = True
+    if extras and _merge_extras(data, extras):
+        changed = True
     if not changed or not write:
         return changed
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -388,6 +448,14 @@ def _merge_hooks(path: Path, fragment: dict, *, write: bool = True) -> bool:
         backup.write_text(path.read_text())
     path.write_text(json.dumps(data, indent=2) + "\n")
     return True
+
+
+def _status_line_of(path: Path) -> dict | None:
+    try:
+        value = json.loads(path.read_text()).get("statusLine")
+    except (OSError, json.JSONDecodeError, AttributeError):
+        return None
+    return value if isinstance(value, dict) else None
 
 
 def show(agent_tool: str = "claude") -> str:
@@ -402,6 +470,13 @@ def show(agent_tool: str = "claude") -> str:
         for old in change.stale_lines():
             lines.append(f"    replaces (commented out, not deleted): {old.strip()}")
         lines.append(change.body.strip())
+        if change.kind == "merge-json":
+            theirs = _status_line_of(change.path)
+            if theirs and not _is_wtx_status_line(theirs):
+                lines.append(
+                    f"    keeps your own statusLine ({theirs.get('command', '?')}). "
+                    'Set it to "wtx statusline" to get the wtx one.'
+                )
         lines.append("")
     if agent_tool == "claude":
         for name in shipped_skills():
@@ -418,9 +493,8 @@ def apply(agent_tool: str = "claude") -> int:
     applied = 0
     for change in planned(agent_tool):
         if change.kind == "merge-json":
-            fragment = json.loads(change.body)["hooks"]
             try:
-                if _merge_hooks(change.path, fragment):
+                if _merge_settings(change.path, json.loads(change.body)):
                     say(f"updated {change.path}")
                     applied += 1
                 else:

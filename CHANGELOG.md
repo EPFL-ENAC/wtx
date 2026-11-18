@@ -4,6 +4,11 @@
 
 New:
 
+- Auto-land: `wtx land <branch> --auto`, or `prefix+X a`. When the land stops
+  on uncommitted work, a conflict or a failed check, the agent of the branch
+  gets the problem on its own conversation, and the land runs again when it
+  stops. It waits while the agent works, and gives up after 3 tries or when the
+  agent changed nothing. `--stop-auto` turns it off.
 - wtx keeps accepted plans. It appends every plan that you accept in a
   worktree to `PLAN.md` at the worktree root, with or without
   `[agent.orchestration]`. `wtx land` then publishes the brief
@@ -48,6 +53,30 @@ New:
 
 Fixed:
 
+- A landed session gave no sign that it had landed. The land killed it right
+  after the merge, or, when the clean up did not run, left it as it was. Now
+  the land window shows a recap (what landed into what, the PR, the commits,
+  the size) and waits. Enter removes the worktree and the branch and closes
+  the session. q keeps it, marked `landed` in green in the picker and on the
+  board. A land on a branch that is already in the base goes straight to the
+  recap. The green in the picker needs `wtx install-machine --apply` again.
+- After `prefix+X l`, you saw no clear result: a 5 second message, often
+  missed. Now the land result stays on the status line until you press a key,
+  on the client that was in the session, and a desktop notification says it
+  too. The text says what really happened: worktree removed or not, branch
+  deleted or kept. A plain `wtx land` ends with the same line.
+- The session picker never coloured a session that waits on you. wtx set its
+  state option with `set-option -t =name`, which tmux refuses.
+- Agents said the work was ready to land, but did not commit it, so
+  `wtx land` refused the worktree. Now `.claude/rules/wtx.md` (written in every
+  branch worktree, also with no servers), the handoff prompt and the CLAUDE.md
+  section of `wtx init` say to commit first. And when a Claude agent stops with
+  uncommitted changes, the `stop` hook sends it back one time to commit or say
+  why not.
+- `wtx land` and `wtx done` no longer refuse a checkout because of the empty
+  files the Claude Code sandbox leaves (`.bashrc`, `.mcp.json`,
+  `.claude/.claude/...`). Untracked files of 0 bytes don't count as changes,
+  and they are deleted before the worktree is removed.
 - The push guard could loop forever with lefthook: `lefthook install` moved
   the guard to `pre-push.old` and lefthook ran it again from there (one push
   left 33,000 processes). The hook now stops on re-entry, `wtx setup` removes

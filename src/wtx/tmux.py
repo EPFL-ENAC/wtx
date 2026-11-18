@@ -106,7 +106,7 @@ def list_sessions() -> list[str]:
 
 
 def set_session_option(session: str, key: str, value: str) -> None:
-    cmd(["set-option", "-t", f"={session}", key, value])
+    cmd(["set-option", "-t", f"={session}:", key, value])
 
 
 def kill_session(session: str) -> None:
@@ -135,8 +135,8 @@ def server_options() -> None:
     detach-on-destroy off: killing a session moves the client to the next one
     instead of dropping out of tmux.
 
-    prefix+X: a small menu on the current session, with review, done, land
-    and merge.
+    prefix+X: a small menu on the current session, with review, done, land,
+    merge and auto land.
     prefix+r: the review of the branch, in hunk. The bindings are server wide
     and the last run owns them, whatever repo it came from, so they bake in no
     path: wtx is on PATH and the branch comes from the pane's own directory.
@@ -179,6 +179,9 @@ def server_options() -> None:
             "merge: local merge, no push, then remove worktree and branch",
             "m",
             f'run-shell -b "{land} --merge"',
+            "auto land: land, the agent fixes what stops it",
+            "a",
+            f'run-shell -b "{land} --auto"',
         ]
     )
     # In place of tmux's own `r`, which redraws the screen.
@@ -305,8 +308,18 @@ def respawn_agent(ctx: Ctx, line: str, *, note: str = "") -> bool:
     return True
 
 
+def brief_phase(rctx: RenderContext) -> str:
+    """What a brief starts: a plan when it starts in plan mode, else a build."""
+    if rctx.phase == "build" or rctx.permission_mode != "plan":
+        return "build"
+    return "plan"
+
+
 def send_brief(ctx: Ctx, agent: Agent, rctx: RenderContext) -> bool:
     """Restart the agent pane on the checkout's PROMPT.md."""
+    from . import notify  # notify imports tmux
+
+    notify.remember_phase(ctx.session, brief_phase(rctx))
     return respawn_agent(
         ctx,
         agent.launch_cmd(rctx, brief=True),
@@ -407,6 +420,10 @@ def ensure_session(
     logs = ctx.logs_dir
     load = envfile.load_snippet(ctx.cfg.owned_env_keys)
     want_brief = brief and (ctx.root / PROMPT_FILE).is_file()
+    if want_brief:
+        from . import notify  # notify imports tmux
+
+        notify.remember_phase(ctx.session, brief_phase(rctx))
     for pane_id, pane in zip(ids, ordered, strict=False):
         line = pane_command(ctx, pane, agent, rctx, brief=want_brief and pane.role == "agent")
         cmd(["send-keys", "-t", pane_id, f"{load}; {line}", "C-m"])

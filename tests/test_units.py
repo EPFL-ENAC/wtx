@@ -16,7 +16,7 @@ from wtx import config, envfile, guard, orchestrate
 from wtx.agents.base import RenderContext
 from wtx.agents.claude import ClaudeAgent, protected_branch_rules
 from wtx.cli import UserError, _split_curl_args
-from wtx.config import parse, validate
+from wtx.config import default_base, parse, validate
 from wtx.context import session_name
 from wtx.ports import cksum
 from wtx.repos import parse_with
@@ -222,6 +222,13 @@ def test_the_plans_rule_defaults_to_pr_and_refuses_a_typo() -> None:
     assert any("[repo].plans 'isue'" in p for p in validate(parse({"repo": {"plans": "isue"}})))
     outside = {"repo": {"plans": "docs", "plans_dir": "../elsewhere"}}
     assert any("[repo].plans_dir" in p for p in validate(parse(outside)))
+
+
+def test_default_base_is_local_only_under_the_merge_rule() -> None:
+    pr = parse({"repo": {"base_branch": "dev", "protected_branches": ["dev"]}})
+    assert default_base(pr) == "origin/dev"
+    merge = parse({"repo": {"base_branch": "dev", "protected_branches": ["dev"], "land": "merge"}})
+    assert default_base(merge) == "dev"
 
 
 def test_validate_catches_a_base_branch_left_unprotected() -> None:
@@ -497,8 +504,40 @@ def test_install_machine_says_already_there_once_the_hooks_are_in(tmp_path) -> N
     before = change.path.read_text()
     assert change.needed()
     assert change.path.read_text() == before  # asking writes nothing
-    machine._merge_hooks(change.path, json.loads(change.body)["hooks"])
+    machine._merge_settings(change.path, json.loads(change.body))
     assert not change.needed()
+
+
+def test_install_machine_sets_the_status_line_and_keeps_a_users_own(tmp_path) -> None:
+    """The wtx status line goes in once. A status line the user wrote stays:
+    it is theirs, and show() says so."""
+    from wtx import machine
+
+    body = json.loads(machine.planned("claude")[-1].body)
+    settings = _settings(tmp_path, Stop=[("", "/x/persist.sh")])
+    assert machine._merge_settings(settings, body)
+    data = json.loads(settings.read_text())
+    assert data["statusLine"]["command"] == "wtx statusline"
+    assert data["env"]["FORCE_HYPERLINK"] == "1"
+    assert machine._merge_settings(settings, body) is False  # second run: nothing to do
+
+    data["statusLine"] = {"type": "command", "command": "~/my-line.sh"}
+    data["env"]["FORCE_HYPERLINK"] = "0"
+    settings.write_text(json.dumps(data))
+    assert machine._merge_settings(settings, body) is False
+    data = json.loads(settings.read_text())
+    assert data["statusLine"]["command"] == "~/my-line.sh"
+    assert data["env"]["FORCE_HYPERLINK"] == "0"
+
+
+def test_tmux_lets_links_through_from_3_4(tmp_path, monkeypatch) -> None:
+    from wtx import machine
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(machine, "tmux_version", lambda: (3, 4))
+    assert any(machine.HYPERLINKS_LINE in c.body for c in machine.planned("claude"))
+    monkeypatch.setattr(machine, "tmux_version", lambda: (3, 3))
+    assert not any(machine.HYPERLINKS_LINE in c.body for c in machine.planned("claude"))
 
 
 def test_install_machine_installs_every_shipped_skill(tmp_path) -> None:
@@ -1119,12 +1158,33 @@ def test_the_worktree_note_says_to_read_the_page_and_click_by_ref(tmp_path) -> N
     assert "click through the page" not in text
 
 
-def test_a_repo_with_no_servers_gets_no_note(tmp_path) -> None:
-    """Nothing to say is better than a section saying nothing."""
+def test_a_worktree_with_no_servers_is_still_told_to_commit(tmp_path) -> None:
+    """Agents said "ready to land" with nothing committed, and land refuses a
+    dirty worktree. wtx itself has no servers, and its agents did it too."""
     from wtx.agents.claude import worktree_rules
 
     ctx = replace(_rctx(parse({"repo": {"name": "app"}})), root=tmp_path)
+    text = worktree_rules(ctx)
+    assert "## Finishing" in text
+    assert "commit it on `feat/x`" in text
+    assert "## Testing the app" not in text
+
+
+def test_the_main_checkout_with_no_servers_gets_no_note(tmp_path) -> None:
+    """Nothing lands from the main checkout, and nothing to say is better than
+    a section saying nothing."""
+    from wtx.agents.claude import worktree_rules
+
+    rctx = _rctx(parse({"repo": {"name": "app"}}))
+    ctx = replace(rctx, root=tmp_path, main=tmp_path, branch="dev")
     assert worktree_rules(ctx) == ""
+
+
+def test_every_text_that_says_ready_also_says_commit() -> None:
+    from wtx import init as init_mod
+
+    assert "commit the work" in orchestrate.HANDOFF_PROMPT
+    assert "commit it and say so" in init_mod.CLAUDE_SECTION
 
 
 # -- the session picker ------------------------------------------------------
@@ -1659,3 +1719,98 @@ def test_a_headless_run_leaves_the_session_state_alone(tmp_path, monkeypatch) ->
     assert notify.all_states() == {}
     payload = {"cwd": str(tmp_path), "session_id": "c", "tool_input": {"plan": "p"}}
     assert orchestrate.capture(payload) == ""
+
+
+def _stub_repo(tmp_path: Path) -> Path:
+    root = tmp_path / "r"
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    (root / "tracked.txt").write_text("content\n")
+    subprocess.run(["git", "add", "-A"], cwd=root, check=True)
+    subprocess.run(
+        ["git", "-c", "user.email=t@example.org", "-c", "user.name=T", "commit", "-qm", "x"],
+        cwd=root,
+        check=True,
+    )
+    return root
+
+
+def _sandbox_stubs(root: Path) -> None:
+    """What the Claude Code sandbox leaves: empty files, some in a folder git
+    would fold into one status line."""
+    (root / ".bashrc").write_text("")
+    (root / ".mcp.json").write_text("")
+    (root / ".claude" / ".claude").mkdir(parents=True)
+    (root / ".claude" / ".claude" / "settings.json").write_text("")
+
+
+def test_empty_untracked_files_do_not_make_a_checkout_dirty(tmp_path: Path) -> None:
+    from wtx import git
+
+    root = _stub_repo(tmp_path)
+    _sandbox_stubs(root)
+    assert git.is_clean(root)
+    assert len(git.empty_untracked(root)) == 3
+
+
+def test_an_untracked_file_with_content_is_still_dirty(tmp_path: Path) -> None:
+    from wtx import git
+
+    root = _stub_repo(tmp_path)
+    _sandbox_stubs(root)
+    (root / "notes.txt").write_text("forgot to commit\n")
+    assert not git.is_clean(root)
+
+
+def test_a_tracked_file_made_empty_is_still_dirty(tmp_path: Path) -> None:
+    from wtx import git
+
+    root = _stub_repo(tmp_path)
+    (root / "tracked.txt").write_text("")
+    assert not git.is_clean(root)
+    assert git.empty_untracked(root) == []
+
+
+@pytest.mark.parametrize(
+    ("keys", "enter"),
+    [(b"\r", True), (b"\n", True), (b"xy\r", True), (b"q", False), (b"\x1b", False)],
+)
+def test_the_land_window_takes_one_key(keys: bytes, enter: bool, monkeypatch) -> None:
+    """On a real terminal: no Enter after the key, and a stray key is not a
+    yes. A key typed before the question is dropped. The terminal mode is
+    given back after."""
+    import pty
+    import signal
+    import sys
+    import termios
+    import threading
+    import time
+
+    from wtx import land
+
+    master, slave = pty.openpty()
+    before = termios.tcgetattr(slave)
+    os.write(master, b"\r")  # typed while the land ran
+    time.sleep(0.05)  # the kernel queues it before the question flushes it
+
+    def type_keys() -> None:
+        # Once the question is asked, that is once the terminal left line mode.
+        deadline = time.time() + 5
+        while termios.tcgetattr(slave)[3] & termios.ICANON and time.time() < deadline:
+            time.sleep(0.01)
+        os.write(master, keys)
+
+    with os.fdopen(slave, "r", closefd=False) as stdin:
+        monkeypatch.setattr(sys, "stdin", stdin)
+        typist = threading.Thread(target=type_keys)
+        typist.start()
+        old = signal.signal(signal.SIGALRM, lambda *a: pytest.fail("waited for a key"))
+        signal.alarm(5)
+        try:
+            assert land._wait_for_enter() is enter
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, old)
+            typist.join()
+        assert termios.tcgetattr(slave) == before
+    os.close(slave)
+    os.close(master)

@@ -29,7 +29,7 @@ two identical.
 | `lab` | none | Fills `{lab}` in an external repo path. |
 | `base_branch` | `main` | What a worktree is cut from, and what `wtx land` lands into. Must be in `protected_branches`. |
 | `protected_branches` | `[base_branch]` | Branches a worktree may never push. The one source for the push guard, the agent's deny rules and the shell completion. |
-| `land` | `pr` | How `wtx land` lands. `pr` goes through origin. `merge` is one `git merge --no-ff` into the local base branch: no fetch, no rebase, no push. Use it for a repo with no remote, or one that must never push. |
+| `land` | `pr` | How `wtx land` lands. `pr` goes through origin. `merge` is one `git merge --no-ff` into the local base branch: no fetch, no rebase, no push. Use it for a repo with no remote, or one that must never push. With `merge`, `wtx go` and `wtx review` also start from the local base branch, not from `origin/<base_branch>`, and do not fetch. |
 | `plans` | `pr` | Where `wtx land` publishes the brief and the accepted plans before it removes the worktree. `pr`: one comment on the pull request. `issue`: one comment on each issue the pull request closes (the pull request if none). `docs`: a file in `plans_dir`, committed on the branch. `off`: nothing. |
 | `plans_dir` | `docs/plans` | The folder `plans = "docs"` writes to, relative to the repo root. |
 

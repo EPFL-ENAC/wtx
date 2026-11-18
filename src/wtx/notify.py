@@ -32,12 +32,15 @@ from . import git, tmux
 from .context import session_name
 from .proc import is_dry_run, say, which
 
+# What an agent hook can report. "landed" is not one: only land.finish writes
+# it, when a branch landed and its window waits for Enter to close it.
 STATES = ("permission", "idle", "stop", "start", "running")
 
 EMOJI = {
     "permission": "\N{CLOSED LOCK WITH KEY}",
     "idle": "\N{SPEECH BALLOON}",
     "stop": "\N{WHITE HEAVY CHECK MARK}",
+    "landed": "\N{WHITE HEAVY CHECK MARK}",
 }
 
 # How a waiting session is painted: a tmux style for the picker, an SGR code
@@ -46,14 +49,17 @@ EMOJI = {
 TMUX_STYLE = {
     "permission": "fg=yellow,bold",
     "idle": "fg=cyan",
+    "landed": "fg=green,bold",
 }
 SGR = {
     "permission": "1;33",
     "idle": "36",
+    "landed": "1;32",
 }
 
 # What the user has to act on. running and start are just noise on a board.
-WAITING = ("permission", "idle")
+# A landed session waits too: Enter in its land window closes it.
+WAITING = ("permission", "idle", "landed")
 
 # Set on an agent wtx runs headless (wtx review). Its hooks still fire, and a
 # Stop from there must not say the session waits on the human.
@@ -185,6 +191,117 @@ def forget_conversation(session: str) -> None:
         conversation_file(session).unlink(missing_ok=True)
 
 
+PHASES = ("plan", "build")
+
+
+def phase_file(session: str) -> Path:
+    """Beside the state file, but not *.json: the monitor reads those."""
+    return state_dir() / f"{safe_name(session)}.phase"
+
+
+def remember_phase(session: str, phase: str) -> None:
+    """plan or build, for the agent's status line. See statusline.py.
+
+    The agent pane cannot say it: a resumed conversation does not know it was
+    briefed, and plan mode is not in what Claude Code gives the status line.
+    """
+    if phase not in PHASES or is_dry_run():
+        return
+    with contextlib.suppress(OSError):
+        phase_file(session).write_text(phase)
+
+
+def phase(session: str) -> str:
+    try:
+        value = phase_file(session).read_text().strip()
+    except OSError:
+        return ""
+    return value if value in PHASES else ""
+
+
+def forget_phase(session: str) -> None:
+    with contextlib.suppress(OSError):
+        phase_file(session).unlink(missing_ok=True)
+
+
+def nudge_file(session: str) -> Path:
+    """Marks a session already sent back once to commit. Not *.json either."""
+    return state_dir() / f"{safe_name(session)}.nudged"
+
+
+def forget_nudge(session: str) -> None:
+    with contextlib.suppress(OSError):
+        nudge_file(session).unlink(missing_ok=True)
+
+
+def busy_file(session: str) -> Path:
+    """Marks an agent in the middle of a turn. Not *.json, the monitor reads those.
+
+    No state file is not enough to tell: `start` clears the state too, and a
+    fresh agent waiting for its first prompt has none either.
+    """
+    return state_dir() / f"{safe_name(session)}.busy"
+
+
+def mark_busy(session: str) -> None:
+    with contextlib.suppress(OSError):
+        busy_file(session).write_text(str(int(time.time())))
+
+
+def forget_busy(session: str) -> None:
+    with contextlib.suppress(OSError):
+        busy_file(session).unlink(missing_ok=True)
+
+
+def is_busy(session: str) -> bool:
+    """True from a prompt to the stop that ends its turn. auto-land waits for it."""
+    try:
+        return busy_file(session).exists()
+    except OSError:
+        return False
+
+
+NUDGE_REASON = (
+    "wtx: this worktree has uncommitted changes, and `wtx land` refuses them. "
+    "If the work is finished, commit it on this branch now, then say it is ready "
+    "to land. If it is not finished, or you are waiting on the human, say so in "
+    "one line and stop."
+)
+
+
+def commit_nudge(where: Path, session: str, payload: dict) -> str:
+    """What the Stop hook prints to send the agent back to commit, or "".
+
+    Agents said "ready to land" with nothing committed, and land refuses a
+    dirty worktree. Once per human turn and no more: the marker and
+    stop_hook_active both stop a loop, and an agent that has a reason not to
+    commit says so and is let through.
+    """
+    if not session or payload.get("stop_hook_active"):
+        return ""
+    if phase(session) == "plan":
+        return ""  # a plan touches nothing, and plan mode cannot commit
+    marker = nudge_file(session)
+    if marker.exists():
+        return ""
+    from . import config as config_mod
+    from . import context
+
+    try:
+        ctx = context.load(cwd=where)
+    except (context.ContextError, config_mod.ConfigError):
+        return ""
+    if not ctx.is_worktree or ctx.session != session:
+        return ""
+    if not ctx.branch or ctx.branch in ctx.cfg.repo.protected_branches:
+        return ""
+    if git.is_clean(ctx.root):
+        return ""
+    with contextlib.suppress(OSError):
+        marker.write_text(str(int(time.time())))
+    return json.dumps({"decision": "block", "reason": NUDGE_REASON})
+
+
 def clear_state(session: str) -> None:
     with contextlib.suppress(OSError):
         state_file(session).unlink(missing_ok=True)
@@ -291,7 +408,18 @@ def handle(state: str, *, cwd: Path | None = None) -> int:
     if state in ("start", "running"):
         if session:
             settle(session)
+            # A new turn: the agent may be sent back to commit once more.
+            forget_nudge(session)
+            if state == "running":
+                mark_busy(session)
+            elif payload.get("source") != "compact":
+                # A compaction starts a session in the middle of a turn.
+                forget_busy(session)
         return 0
+
+    if session and state == "idle":
+        # It waits on the human. A turn cut short with Esc fires no stop.
+        forget_busy(session)
 
     if session and state in ("stop", "idle"):
         # An accepted plan waiting for its implementation model: the session is
@@ -301,6 +429,21 @@ def handle(state: str, *, cwd: Path | None = None) -> int:
         if orchestrate.drain(session):
             settle(session)
             return 0
+
+    if state == "stop":
+        nudge = commit_nudge(where, session, payload)
+        if nudge:
+            # The agent goes on working: no state, no banner.
+            print(nudge)
+            return 0
+        if session:
+            forget_busy(session)
+            from . import autoland
+
+            if autoland.resume(session):
+                # The land runs again: the session does not wait on the human.
+                settle(session)
+                return 0
 
     if session:
         write_state(session, state, message)
@@ -440,6 +583,23 @@ def _desktop_entry() -> str:
         if entry and which(name):
             return entry
     return ""
+
+
+def announce(title: str, body: str) -> None:
+    """A one-shot banner about something with no session left to open: the end
+    of a land. No worker, no id and no click, the session is gone. -e keeps
+    it out of the list for ever.
+    """
+    if is_dry_run() or which("notify-send") is None:
+        return
+    args = ["notify-send", "-a", "wtx", "-e"]
+    entry = _desktop_entry()
+    if entry:
+        args += ["-h", f"string:desktop-entry:{entry}"]
+    with contextlib.suppress(OSError, subprocess.TimeoutExpired):
+        subprocess.run(  # noqa: S603
+            [*args, title, body], capture_output=True, check=False, timeout=10
+        )
 
 
 def _text(session: str, state: str, message: str) -> tuple[str, str]:
