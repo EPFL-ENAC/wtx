@@ -1,4 +1,4 @@
-"""End to end against a real temp git repo, with faked wt, tmux and agents."""
+"""End to end against a real temp git repo, with faked workmux, tmux and agents."""
 
 from __future__ import annotations
 
@@ -31,8 +31,8 @@ def git_out(args: list[str], cwd: Path) -> str:
 
 
 def make_worktree(repo: Path, branch: str, base: str = "origin/dev") -> Path:
-    """A worktree in the layout wt would make, without needing wt installed."""
-    path = repo / ".claude" / "worktrees" / branch.replace("/", "-")
+    """A worktree in the layout workmux makes, without needing workmux."""
+    path = repo / ".claude" / "worktrees" / context.handle(branch)
     path.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(
         ["git", "worktree", "add", "-q", "-b", branch, str(path), base],
@@ -627,6 +627,123 @@ def test_the_session_name_has_no_dots(wtx_repo: Path, fake_bin: Path) -> None:
     path = make_worktree(wtx_repo, "release/1.2")
     ctx = context.load(root=path)
     assert ctx.session.endswith("/release-1-2")
+
+
+# -- workmux ------------------------------------------------------------------
+
+
+def _workmux_config(main: Path) -> dict:
+    from wtx import workmux
+
+    text = workmux.config_path(main).read_text()
+    assert text.startswith(workmux.MARKER)
+    return json.loads("\n".join(x for x in text.splitlines() if not x.startswith("#")))
+
+
+def test_the_workmux_config_comes_from_wtx_toml(wtx_repo: Path) -> None:
+    from wtx import workmux
+
+    cfg = config_mod.load(wtx_repo / "wtx.toml")
+    workmux.write_config(wtx_repo, cfg, "my.app")
+    data = _workmux_config(wtx_repo)
+    assert data["worktree_dir"] == ".claude/worktrees"
+    assert data["mode"] == "session"
+    assert data["window_prefix"] == "my-app/"
+    assert data["main_branch"] == "dev"
+    assert data["post_create"] == ["wtx hook post-create"]
+    assert data["pre_remove"] == ["wtx hook pre-remove"]
+    [window] = data["windows"]
+    assert window["name"] == "dev"
+    panes = window["panes"]
+    names = [p.name for p in cfg.panes.panes if p.role == "agent"]
+    names += [p.name for p in cfg.panes.panes if p.role != "agent"]
+    assert [p["command"] for p in panes] == [f'eval "$(wtx pane {n})"' for n in names]
+    assert panes[0] == {"command": panes[0]["command"], "focus": True}
+    assert panes[1]["split"] == "horizontal" and panes[1]["percentage"] == 50
+    assert all(p["split"] == "vertical" for p in panes[2:])
+
+
+def test_wtx_never_overwrites_a_workmux_config_it_did_not_write(wtx_repo: Path) -> None:
+    from wtx import workmux
+
+    cfg = config_mod.load(wtx_repo / "wtx.toml")
+    workmux.config_path(wtx_repo).write_text("window_prefix: mine-\n")
+    with pytest.raises(workmux.WorkmuxError, match="not written by wtx"):
+        workmux.write_config(wtx_repo, cfg, "app")
+    assert workmux.config_path(wtx_repo).read_text() == "window_prefix: mine-\n"
+
+
+def test_a_new_worktree_is_named_by_its_handle(wtx_repo: Path, fake_bin: Path) -> None:
+    from wtx import workmux
+
+    cfg = config_mod.load(wtx_repo / "wtx.toml")
+    workmux.write_config(wtx_repo, cfg, "app")
+    path, existed = workmux.ensure(wtx_repo, "feat/Add_X", "origin/dev")
+    assert not existed
+    assert path == wtx_repo / ".claude" / "worktrees" / "feat-add-x"
+    [call] = calls_of(fake_bin, "workmux")
+    assert "--headless" in call and "--name feat-add-x" in call
+    assert "--base origin/dev" in call
+    assert workmux.ensure(wtx_repo, "feat/Add_X", "origin/dev") == (path, True)
+    assert len(calls_of(fake_bin, "workmux")) == 1
+
+
+def test_a_branch_only_on_origin_keeps_its_work(wtx_repo: Path, fake_bin: Path) -> None:
+    """workmux cuts a new branch from the base when only origin has the
+    branch. The local branch is made first, so the pushed work is there."""
+    from wtx import workmux
+
+    git_out(["switch", "-q", "-c", "feat/pushed"], wtx_repo)
+    commit(wtx_repo, "pushed work")
+    git_out(["push", "-q", "origin", "feat/pushed"], wtx_repo)
+    pushed = git_out(["rev-parse", "HEAD"], wtx_repo)
+    git_out(["switch", "-q", "dev"], wtx_repo)
+    git_out(["branch", "-D", "feat/pushed"], wtx_repo)
+    workmux.write_config(wtx_repo, config_mod.load(wtx_repo / "wtx.toml"), "app")
+
+    path, _ = workmux.ensure(wtx_repo, "feat/pushed", "origin/dev")
+    assert path is not None
+    assert git_out(["rev-parse", "HEAD"], path) == pushed
+    [call] = calls_of(fake_bin, "workmux")
+    assert "--base" not in call
+
+
+def test_workmux_remove_keeps_the_branch_and_runs_from_main(wtx_repo: Path, fake_bin: Path) -> None:
+    """remove has no --config: it reads the file it finds from its cwd. From
+    the main checkout that is the one wtx wrote, never a branch's own."""
+    from wtx import workmux
+
+    workmux.write_config(wtx_repo, config_mod.load(wtx_repo / "wtx.toml"), "app")
+    path = make_worktree(wtx_repo, "feat/gone")
+    (path / ".workmux.yaml").write_text('{"window_prefix": "evil-"}\n')
+    fake_sessions("app/feat-gone")
+    workmux.remove(wtx_repo, "feat/gone", force=True)
+    [call] = calls_of(fake_bin, "workmux")
+    assert call.startswith("remove --keep-branch --force")
+    assert not path.exists()
+    assert git.branch_exists(wtx_repo, "feat/gone")
+    assert Path(os.environ["WTX_TEST_SESSIONS"]).read_text() == ""
+
+
+def test_an_old_wt_folder_keeps_the_session_name_wtx_computes(
+    wtx_repo: Path, fake_bin: Path
+) -> None:
+    from wtx import workmux
+
+    workmux.write_config(wtx_repo, config_mod.load(wtx_repo / "wtx.toml"), "app")
+    path = wtx_repo / ".claude" / "worktrees" / "feat-Old_One"
+    subprocess.run(
+        ["git", "worktree", "add", "-q", "-b", "feat/Old_One", str(path)],
+        cwd=wtx_repo,
+        check=True,
+        capture_output=True,
+    )
+    workmux.open_session(wtx_repo, path, "feat/Old_One")
+    [call] = calls_of(fake_bin, "workmux")
+    assert "--target-name feat-old-one" in call and call.endswith(" feat-Old_One")
+    assert Path(os.environ["WTX_TEST_SESSIONS"]).read_text() == (
+        context.session_name("app", "feat/Old_One") + "\n"
+    )
 
 
 # -- cli ----------------------------------------------------------------------
