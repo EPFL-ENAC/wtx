@@ -1935,6 +1935,57 @@ def test_doctor_runs_and_reports(wtx_repo: Path, fake_bin: Path, monkeypatch, ca
     names = {c.name for c in report.checks}
     assert "push guard installed" in names
     assert "config is valid" in names
+    assert "workmux" in names and "wt" not in names
+    [workmux_check] = [c for c in report.checks if c.name == "workmux"]
+    assert workmux_check.hard
+    assert "--locked" in workmux_check.fix
+
+
+def test_doctor_sees_what_goes_around_wtx(wtx_repo: Path, fake_bin: Path) -> None:
+    """A .wt.toml left over, a hand-made .workmux.yaml in the main checkout,
+    one on a branch, and workmux's merge skill."""
+    from wtx import doctor
+
+    (wtx_repo / ".wt.toml").write_text("[hooks]\n")
+    (wtx_repo / ".workmux.yaml").write_text("window_prefix: mine-\n")
+    branch = make_worktree(wtx_repo, "feat/own")
+    (branch / ".workmux.yaml").write_text("window_prefix: evil-\n")
+    skill = Path.home() / ".claude" / "skills" / "merge"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("Run workmux merge.\n")
+
+    report = doctor.run(wtx_repo)
+    bad = {c.name: c for c in report.checks if not c.ok}
+    assert not bad["no .wt.toml left"].hard
+    assert bad[".workmux.yaml is the one wtx writes"].hard
+    assert str(branch) in bad["no worktree with its own .workmux.yaml"].detail
+    assert "rm -r" in bad["no workmux merge skill"].fix
+
+
+def test_install_machine_leaves_workmux_setup_to_a_terminal(
+    fake_bin: Path, monkeypatch, capsys
+) -> None:
+    """workmux setup asks a question. Run with no terminal, it would hang or
+    fail: wtx says the line to run instead. Only --hooks: its merge skill
+    goes around wtx land."""
+    import io
+
+    from wtx import machine, workmux
+
+    monkeypatch.setattr("sys.stdin", io.StringIO(""))
+    machine.apply("claude")
+    assert calls_of(fake_bin, "workmux") == []
+    assert f"run `{' '.join(workmux.SETUP_HOOKS)}`" in capsys.readouterr().err
+    assert workmux.SETUP_HOOKS == ("workmux", "setup", "--hooks")
+    assert not (Path.home() / ".config" / "wt").exists()
+
+    settings = Path.home() / ".claude" / "settings.json"
+    settings.write_text(
+        settings.read_text().replace(
+            '"hooks": {', '"x": "workmux set-window-status done", "hooks": {', 1
+        )
+    )
+    assert not machine.workmux_hooks_needed()
 
 
 def test_go_refuses_an_invalid_config(wtx_repo: Path, fake_bin: Path, monkeypatch, capsys) -> None:

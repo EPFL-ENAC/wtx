@@ -41,8 +41,20 @@ HEADER = (
 WINDOW = "dev"
 
 
+# Only the status hooks: the skills workmux also ships include `merge`, which
+# merges locally and removes the worktree, around `wtx land`. It asks a
+# question, so it needs a terminal.
+SETUP_HOOKS = ("workmux", "setup", "--hooks")
+
+
 class WorkmuxError(Exception):
     pass
+
+
+def hooks_installed(settings_text: str) -> bool:
+    """workmux's status hooks, in ~/.claude/settings.json or as its Claude
+    plugin. Without them `workmux dashboard` shows no agent state."""
+    return "workmux set-window-status" in settings_text or '"workmux-status@' in settings_text
 
 
 def available() -> bool:

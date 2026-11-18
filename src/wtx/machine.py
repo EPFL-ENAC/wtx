@@ -11,13 +11,14 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
 from .agents.base import get as get_agent
 from .init import GITIGNORE_LINES
-from .proc import say, warn
+from .proc import run, say, warn, which
 
 BASHRC_LINE = 'eval "$(wtx shell-init bash)"'
 
@@ -96,11 +97,6 @@ def _sets_copy_command(text: str) -> bool:
 # Derived, never typed out again: a file wtx generates has to be in both ignore
 # lists or an untracked file makes the worktree dirty and `wtx land` refuses it.
 GIT_IGNORE_LINES = [f"**/{line}" for line in GITIGNORE_LINES]
-
-WT_CONFIG = """strategy = "custom"
-pattern = "{.repo.Main}/.claude/worktrees/{.branch}"
-separator = "-"
-"""
 
 EXPLORE_AGENT_USER = """---
 name: Explore
@@ -301,12 +297,6 @@ def planned(agent_tool: str = "claude") -> list[Change]:
             "keep per-worktree files out of every repo",
             "\n# wtx\n" + "\n".join(GIT_IGNORE_LINES) + "\n",
         ),
-        Change(
-            home / ".config" / "wt" / "config.toml",
-            "put worktrees under <repo>/.claude/worktrees/<branch>",
-            WT_CONFIG,
-            kind="create",
-        ),
     ]
     if agent_tool == "claude":
         changes.append(
@@ -434,6 +424,35 @@ def _status_line_of(path: Path) -> dict | None:
     return value if isinstance(value, dict) else None
 
 
+def _settings_text() -> str:
+    try:
+        return (Path.home() / ".claude" / "settings.json").read_text()
+    except OSError:
+        return ""
+
+
+def workmux_hooks_needed() -> bool:
+    """workmux's own status hooks, for its dashboard. wtx does not write
+    them: `workmux setup` knows its own hooks better."""
+    from .workmux import hooks_installed
+
+    return which("workmux") is not None and not hooks_installed(_settings_text())
+
+
+def _setup_workmux_hooks() -> int:
+    """Run `workmux setup --hooks` when it can ask its question, else say how."""
+    from .workmux import SETUP_HOOKS
+
+    if not workmux_hooks_needed():
+        if which("workmux"):
+            say("already set: the workmux status hooks")
+        return 0
+    if not sys.stdin.isatty():
+        say(f"run `{' '.join(SETUP_HOOKS)}` from a real terminal: it asks a question")
+        return 0
+    return 1 if run(list(SETUP_HOOKS), check=False) == 0 else 0
+
+
 def show(agent_tool: str = "claude") -> str:
     lines = [
         "wtx needs these machine-level pieces. Run `wtx install-machine --apply`",
@@ -457,6 +476,16 @@ def show(agent_tool: str = "claude") -> str:
     if agent_tool == "claude":
         for name in shipped_skills():
             lines.append(f"--- {Path.home() / '.claude' / 'skills' / name}: the /{name} skill")
+            lines.append("")
+        if which("workmux"):
+            from .workmux import SETUP_HOOKS
+
+            status = "needed" if workmux_hooks_needed() else "already there"
+            lines.append(
+                f"--- {' '.join(SETUP_HOOKS)}  ({status}): workmux's status hooks, so "
+                "`workmux dashboard` shows each agent. Not its skills: its merge "
+                "skill goes around wtx land."
+            )
             lines.append("")
     lines.append(
         "A coding agent cannot write these files, and should not: they decide what "
@@ -508,6 +537,7 @@ def apply(agent_tool: str = "claude") -> int:
                 applied += 1
         except OSError as exc:
             warn(f"could not create {skills}: {exc}")
+        applied += _setup_workmux_hooks()
     if applied:
         say("open a new shell, and run `tmux source-file ~/.tmux.conf` in tmux")
     return applied
