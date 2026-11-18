@@ -10,10 +10,13 @@ ports. A push guard keeps the agent on its own branch, so it never pushes to
 
 ## Install
 
-You need git, [`wt`](https://github.com/timvw/wt), tmux, Python 3.11+,
-Claude Code or opencode, and `gh` for `wtx land`.
+You need git, tmux, [workmux](https://github.com/raine/workmux), Python 3.11+,
+Claude Code or opencode, and `gh` for `wtx land`. workmux makes the worktrees
+and the tmux sessions. wtx gives it its config, and adds the ports, the agent
+settings, the push guard, the plan then build handoff, review and land.
 
 ```sh
+cargo install workmux --locked  # without --locked, cargo fails on a missing feature
 uv tool install git+https://github.com/EPFL-ENAC/wtx
 wtx install-machine --apply     # from a real terminal, not from an agent
 wtx doctor
@@ -34,10 +37,12 @@ wtx init                # or, in a Claude Code session: /wtx-init
 wtx config validate
 ```
 
-`wtx init` writes `wtx.toml` (tracked, your repo's choices live here), a three
-line `.wt.toml`, and the `.gitignore` lines. It then prints the small changes
-to make in the app (every port becomes an env var) and a block to paste into
-`CLAUDE.md`.
+`wtx init` writes `wtx.toml` (tracked, your repo's choices live here) and the
+`.gitignore` lines. It then prints the small changes to make in the app (every
+port becomes an env var) and a block to paste into `CLAUDE.md`.
+
+wtx writes the workmux config itself, from `wtx.toml`, to `.workmux.yaml` in
+the main checkout (ignored by git). Do not edit it, `wtx go` writes it again.
 
 ## Every day
 
@@ -45,7 +50,7 @@ to make in the app (every port becomes an env var) and a block to paste into
 wtx go feat/thing                     # branch, worktree, session, agent, attached
 wtx go feat/thing --prompt brief.md   # same, and the agent starts on that brief
 wtx status                            # every worktree: ports, session, state
-wtx monitor                           # every session on one screen
+workmux dashboard                     # every session on one screen
 wtx review feat/thing                 # the diff in hunk, with the agent's notes
 wtx land feat/thing                   # rebase, PR, merge, clean up (main checkout)
                                       # or prefix+X then l, from the branch session
@@ -63,4 +68,4 @@ instead, or turns this off.
 - [`docs/features.md`](docs/features.md), a short tour of every feature and command
 - [`docs/schema.md`](docs/schema.md), every key in `wtx.toml`
 - [`docs/traps.md`](docs/traps.md), why the rules are what they are (for wtx developers)
-- [`docs/migration.md`](docs/migration.md), moving a repo off the old bash scripts
+- [`docs/migration.md`](docs/migration.md), moving a repo from wt to workmux, or off the old bash scripts

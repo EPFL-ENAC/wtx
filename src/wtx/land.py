@@ -312,7 +312,7 @@ def finish(ctx: Ctx, landed: Landed, *, ask: bool = False) -> None:
     clean up that ran on its own killed the session under the human, and when
     it did not run (a PR merged later, a window closed early) nothing in the
     session said the branch had landed. Until Enter, the session is marked
-    `landed`: in the picker, on the board, and in a desktop banner, since a PR
+    `landed`: in the status line, in `wtx status`, and in a desktop banner, since a PR
     land can take 30 minutes and an auto-land ends while you look elsewhere.
     """
     print(recap(ctx, landed), flush=True)

@@ -176,8 +176,9 @@ def ensure(main: Path, branch: str, base: str) -> tuple[Path | None, bool]:
 def open_session(main: Path, path: Path, branch: str) -> None:
     """Build the session of a worktree that exists, in the background.
 
-    A worktree made by wt can have a folder that is not the handle (upper case,
-    `_`, `.`). --target-name keeps the session name the one wtx computes.
+    A worktree made before workmux can have a folder that is not the handle
+    (upper case, `_`, `.`). --target-name keeps the session name the one wtx
+    computes.
     """
     args = ["open", "--background", "--config", str(config_path(main))]
     name = handle(branch)

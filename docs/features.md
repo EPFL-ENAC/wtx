@@ -9,7 +9,11 @@ A short tour, one section per feature. Every key named here is in
 its agent, then attaches you to the session. The base is
 `origin/<base_branch>` unless you give one, and wtx fetches `origin` first.
 With `land = "merge"` the default base is the local `<base_branch>`, with no
-fetch (see [Local merge](#local-merge)). The worktree is created by `wt` under `<repo>/.claude/worktrees/<branch>`.
+fetch (see [Local merge](#local-merge)). workmux creates the worktree under
+`<repo>/.claude/worktrees/<handle>`. The handle is the branch in lower case,
+with a dash for every other character: `feat/Add_X` gives `feat-add-x`.
+`wtx go` refuses a branch whose handle another worktree already has
+(`feat/x` and `feat-x`).
 
 A protected branch is refused: it stays in the main checkout. Running
 `wtx go` again on a branch that already has a worktree is safe, setup just runs
@@ -23,7 +27,7 @@ wtx done feat/thing              # close the worktree, keep the branch
 ```
 
 `wtx all` (the same as `wtx go all`) brings back the session of every worktree,
-detached, then opens the session picker. `wtx done [branch]` removes the
+detached, then opens `workmux dashboard`. `wtx done [branch]` removes the
 worktree and keeps the branch. It refuses a worktree with uncommitted changes,
 `--force` discards them. Run from inside its own session, it hands the job to
 the tmux server, because removing the worktree kills the shell that runs it.
@@ -33,14 +37,18 @@ checkout you are in.
 
 ## The tmux session
 
-The session is called `<repo>/<branch>` (a `.` or `:` becomes `-`). It has one
-window, `dev`, with the panes listed in `[panes]`. The `agent` pane fills the
-left half, the other panes stack on the right.
+workmux builds the session, from the config wtx writes for it (see
+[workmux](#workmux)). The session is called `<repo>/<handle>` (a `.` or `:`
+in the repo name becomes `-`). It has one window, `dev`, with the panes
+listed in `[panes]`. The `agent` pane fills the left half, the other panes
+stack on the right. With no tmux server running, wtx first starts one, with a
+session `wtx-home` that keeps it up.
 
-Every pane exports `.env.worktree`, so a server started there gets its own
-ports. A pane with `log = true` is copied to `.wt-logs/<name>.log`. This is how
-the agent sees a server: it cannot reach the tmux socket, but it can read a
-file.
+Each pane runs `wtx pane <name>` first. It tags the pane with its role,
+exports `.env.worktree` (so a server started there gets its own ports), then
+runs the command. A pane with `log = true` is copied to `.wt-logs/<name>.log`.
+This is how the agent sees a server: it cannot reach the tmux socket, but it
+can read a file.
 
 `prefix+X` opens a small menu on the session you are in: open the review
 (`r`, same as `prefix+r`), kill the session,
@@ -48,6 +56,26 @@ close the worktree and keep the branch, close it and discard uncommitted
 changes, land the branch (`l`), merge it locally with no push (`m`), or
 auto-land it (`a`, see [Landing](#landing)). `prefix+r` opens the review of the branch in hunk, see
 [Review](#review).
+
+## workmux
+
+[workmux](https://github.com/raine/workmux) makes the worktrees and the tmux
+sessions. wtx writes its config to `.workmux.yaml` in the main checkout, from
+`wtx.toml`: the worktree folder, the session name, the panes, and two hooks
+that call `wtx hook post-create` and `wtx hook pre-remove`. The file is
+ignored by git, and `wtx go` writes it again each time. Do not edit it. wtx
+refuses to overwrite a `.workmux.yaml` it did not write.
+
+wtx passes this file to `workmux add` and `workmux open`, and runs every other
+workmux command from the main checkout. A `.workmux.yaml` on a feature branch
+has no effect on what wtx runs. `wtx doctor` warns when a worktree has one: a
+workmux command you type in that worktree would read it.
+
+You can use workmux next to wtx: `workmux dashboard` and `workmux sidebar`
+show every session and its agent. `workmux remove` runs the same teardown as
+`wtx done`, but it also deletes the branch unless you pass `--keep-branch`. Do
+not use `workmux merge`: `wtx land` runs the checks, posts the plans and
+cleans up.
 
 ## Ports
 
@@ -85,8 +113,8 @@ run, so you can add your own under the "yours" marker.
 
 ## Setup and teardown
 
-`wtx setup` makes a worktree runnable. The `wt` hooks run it when a worktree is
-created, and `wtx go` runs it again each time. You can run it by hand too
+`wtx setup` makes a worktree runnable. The workmux `post_create` hook runs it
+when a worktree is created, and `wtx go` runs it again each time. You can run it by hand too
 (`--path` for another worktree, `--no-tmux` to skip the session). It is safe to
 run many times. The steps, in order:
 
@@ -100,13 +128,15 @@ run many times. The steps, in order:
 7. Run the dependency steps in `[[deps.step]]`, then `post_install` and the
    editable installs.
 8. Install the push guard.
-9. Build the tmux session.
+9. Open the tmux session, through `workmux open` (not from the hook).
 
 Setup reads the config, the templates and the seed files from the main
 checkout. A feature branch cannot change the rules its own agent runs under.
 
 `wtx teardown` runs the `pre_teardown` hook, kills the session and frees the
-ports. The `wt` pre-remove hook calls it, so `wtx done` and `wtx land` do too.
+ports. The workmux `pre_remove` hook calls it, so `wtx done`, `wtx land` and
+`workmux remove` do too. Run inside the session it removes, it leaves the
+session alone: workmux closes it once the worktree is gone.
 It never removes the worktree of a paired repo, which may hold work not pushed.
 
 ## The push guard
@@ -226,9 +256,10 @@ keeps one state file per session under `$XDG_RUNTIME_DIR/wtx` (or a private
 Inside tmux:
 
 - the status line shows the sessions that wait for you (`wtx tmux-status`).
-- `prefix+s` is the session list. A waiting session is coloured: yellow when
-  it asks for a permission, cyan when it asks a question.
-- `prefix+g` shows every agent pane at once (`wtx monitor --grid`).
+- `workmux dashboard` and `workmux sidebar` show every session and its agent,
+  from workmux's own status hooks (`workmux setup --hooks`). They show
+  working, waiting and done. The states only wtx knows (permission, idle,
+  landed) are in the status line and in `wtx status`.
 
 Outside tmux, a desktop notification tells you which session needs you. A click
 brings the terminal to the front, on that session. `WTX_NOTIFY_CLICK=0` turns
@@ -241,17 +272,6 @@ not. `wtx land` refuses uncommitted changes, so an agent that says "ready"
 without a commit is not ready. It happens once per prompt you send, never in a
 loop, and never in the plan phase or in the main checkout. opencode has no
 hooks, it only gets the written rule.
-
-## Monitor
-
-`wtx monitor` opens a board, in a tmux session of its own (`wtx-monitor`):
-one line per session, the waiting ones first, with its state, how long ago it
-changed, its ports and the last message. Press `1` to `9` to jump to a session,
-`r` to refresh, `q` to quit. `--interval` sets how often it redraws.
-
-`wtx monitor --grid` shows up to nine tiles, one per session, each with the
-bottom of that session's agent pane. Enter or `o` on a tile goes to that
-session, `q` closes the tile.
 
 ## Status
 
@@ -311,9 +331,8 @@ says the branch landed, because a PR land can take 30 minutes.
   `landed feat/x into dev, worktree removed, branch deleted`, until you press
   a key. If the worktree could not be removed, it says so and tells you to run
   `wtx done <branch>`.
-- q or Esc keeps everything. The session stays marked `landed`: in green in
-  the picker (`prefix+s`), and in the waiting list of `wtx monitor`. Other keys
-  do nothing.
+- q or Esc keeps everything. The session stays marked `landed`: in the tmux
+  status line and in `wtx status`. Other keys do nothing.
 
 Land a branch that is already in the base (a PR merged on GitHub, a land
 window you closed with q) and it skips the rebase, the checks and the merge.
@@ -495,20 +514,23 @@ If you already have a status line, wtx keeps yours and says so.
 backup of each file. It sets up:
 
 - `~/.bashrc`: `eval "$(wtx shell-init bash)"`.
-- `~/.tmux.conf`: the status line, `prefix+s` and `prefix+g`. Also
+- `~/.tmux.conf`: the status line. An older wtx also wrote `prefix+s` and
+  `prefix+g` lines: they are commented out, tmux's own `prefix+s` is back. Also
   `copy-command` (`pbcopy`, `wl-copy`, `xclip` or `xsel`, the first one
   found), so text you select with the mouse in a pane goes to the system
   clipboard. No shift, no zoom. Double click copies a word, triple click a
   line. This needs tmux 3.2 or later and `set -g mouse on`, which wtx does
   not set for you. If you already set a `copy-command`, wtx keeps yours.
 - the global git ignore, so the generated files never show as untracked.
-- `~/.config/wt/config.toml`: worktrees go under `.claude/worktrees/`.
 - `~/.claude/agents/Explore.md`: the search agent on haiku.
 - `~/.claude/settings.json`: the hooks that call `wtx notify` and
   `wtx handoff`, and the status line (`wtx statusline`).
 - `~/.tmux.conf`, with tmux 3.4 or later: OSC 8 links go through, so the
   branch in the status line can be clicked.
 - the skills `/wtx-init` and `/wtx-create` in `~/.claude/skills`.
+- `workmux setup --hooks`, workmux's own status hooks for its dashboard. Only
+  from a real terminal, it asks a question. Not its skills: its `merge` skill
+  goes around `wtx land`, and `wtx doctor` warns when it is installed.
 
 The hooks and the Explore agent are machine-wide. They also apply to Claude
 Code sessions that are not wtx worktrees.
@@ -517,8 +539,8 @@ Code sessions that are not wtx worktrees.
 each failed check. `--json` for scripts.
 
 `wtx shell-init bash` prints what `~/.bashrc` sources: tab completion for
-`wtx`, and four short aliases: `wtgo` (`wtx go`), `wtdone` (`wtx done`),
-`wtland` (`wtx land`) and `wtmon` (`wtx monitor`).
+`wtx`, and three short aliases: `wtgo` (`wtx go`), `wtdone` (`wtx done`) and
+`wtland` (`wtx land`).
 
 ## Dry run and help
 
@@ -533,7 +555,8 @@ You do not run these yourself. They are listed so nothing is a mystery.
 
 | Command | Called by |
 | --- | --- |
-| `wtx hook post-create`, `post-checkout`, `pre-remove` | `.wt.toml`, when `wt` creates, checks out or removes a worktree |
+| `wtx hook post-create`, `pre-remove` | workmux, when it creates or removes a worktree |
+| `wtx pane <name>` | each pane of a session, when workmux opens it |
 | `wtx notify <state>` | the agent hooks, to record the session state |
 | `wtx handoff` | the `ExitPlanMode` hook, to start the build |
 | `wtx tmux-status` | the tmux status line |
@@ -543,7 +566,7 @@ You do not run these yourself. They are listed so nothing is a mystery.
 
 | Command | What |
 | --- | --- |
-| `wtx init` | write `wtx.toml` and `.wt.toml` for this repo |
+| `wtx init` | write `wtx.toml` for this repo. In a repo set up already: remove the old `.wt.toml`, add the new ignore lines |
 | `wtx config [validate]` | check `wtx.toml` |
 | `wtx go <branch> [base]` | branch, worktree, session, agent. Or `all`. |
 | `wtx all` | bring every worktree's session back, detached |
@@ -557,12 +580,12 @@ You do not run these yourself. They are listed so nothing is a mystery.
 | `wtx teardown` | kill the session and free the ports |
 | `wtx tmux` | create or attach this checkout's session |
 | `wtx brief [branch] --prompt ... [--build]` | send a prompt to a worktree's agent pane. `--build`: continue the conversation, in build mode |
-| `wtx hook <event>` | called by `.wt.toml` |
+| `wtx hook <event>` | called by workmux |
+| `wtx pane <name>` | called by each pane of a session |
 | `wtx notify <state>` | called by the agent's hooks |
 | `wtx handoff` | called by the agent's `ExitPlanMode` hook |
 | `wtx tmux-status` | one line for tmux `status-right` |
 | `wtx statusline` | the Claude Code status line, reads its JSON on stdin |
-| `wtx monitor` | every session on one screen |
 | `wtx doctor` | check this machine |
 | `wtx install-machine` | the shell, tmux and agent hook setup |
 | `wtx shell-init [bash]` | print the shell functions to source |
