@@ -9,6 +9,18 @@ New:
   gets the problem on its own conversation, and the land runs again when it
   stops. It waits while the agent works, and gives up after 3 tries or when the
   agent changed nothing. `--stop-auto` turns it off.
+- wtx keeps accepted plans. It appends every plan that you accept in a
+  worktree to `PLAN.md` at the worktree root, with or without
+  `[agent.orchestration]`. `wtx land` then publishes the brief
+  (`PROMPT.sent.md`) and the plans before it removes the worktree.
+  `[repo].plans` says where: `pr` (default, one comment on the pull request,
+  posted once, split when it is over the GitHub limit), `issue` (on each
+  issue the pull request closes), `docs` (a file in `[repo].plans_dir`,
+  committed on the branch) or `off`.
+  Re-run `wtx install-machine --apply`, because `PLAN.md` is a new ignored
+  file. Until you do, wtx saves no plan: it writes `PLAN.md` only when git
+  ignores it. An unignored `PLAN.md` is an uncommitted change, and `wtx land`
+  refuses the worktree.
 - `[agent.orchestration]`: plan on one model, implement on another. A brief
   starts the agent on `plan_model` in plan mode; accepting the plan carries the
   same conversation on to `build_model` with `claude -r`, at the effort the
