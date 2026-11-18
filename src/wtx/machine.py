@@ -22,38 +22,13 @@ from .proc import say, warn
 BASHRC_LINE = 'eval "$(wtx shell-init bash)"'
 
 
-def picker_format() -> str:
-    """The line choose-tree draws for one session.
-
-    tmux reads the session option itself, so nothing runs per line and the
-    picker stays instant. The colours come from notify so the picker, the
-    board and the grid agree on what waiting looks like.
-    """
-    from .notify import TMUX_STYLE
-    from .tmux import STATE_OPTION
-
-    opt = f"#{{{STATE_OPTION}}}"
-    style = ""
-    for state, colour in TMUX_STYLE.items():
-        style += f"#{{?#{{==:{opt},{state}}},#[{colour}],"
-    style += "}" * len(TMUX_STYLE)
-    return f"{style}#{{session_name}}#{{?{opt}, [{opt}],}}"
-
-
-# -s, not -w: -w expands every session to its windows, so each session takes
-# two lines and moving to the next one is two key presses. There is only ever
-# one window per session here anyway.
+# The picker and the grid of every session are workmux's now (`workmux
+# dashboard`, `workmux sidebar`). The status line stays: it shows the states
+# only wtx knows (permission, idle, landed).
 TMUX_LINES = [
     "# wtx: which session is waiting for you",
     "set -g status-interval 5",
     """set -ag status-right ' #(wtx tmux-status)'""",
-    f"bind s choose-tree -sZ -O name -F '{picker_format()}'",
-    # One command, no `\;` sequence: in a config file tmux reads `\;` as a
-    # literal argument, not as a separator, and a plain `;` would end the
-    # binding and run the rest at load time. wtx monitor does the switch.
-    # -b, or tmux shows whatever the command printed in copy mode, right on
-    # top of the grid it just built.
-    "bind g run-shell -b 'wtx monitor --grid'",
 ]
 
 # Most Linux terminals (GNOME Terminal, Ptyxis, anything on VTE) ignore OSC 52,
@@ -204,16 +179,17 @@ def _is_wtx_hook(entry: dict) -> bool:
 
 
 def _is_old_tmux(line: str) -> bool:
-    """A picker or grid binding an older wtx, or a predecessor, wrote.
+    """The picker or grid binding an older wtx wrote. Both are gone: the
+    monitor does not exist any more, and tmux's own prefix+s comes back.
 
     Matched on what the binding does, not on its exact text: the picker line
-    has changed twice already, and two `bind s` lines in the file means the
-    last one read wins, which is not the one wtx just appended.
+    changed twice. A `bind s` of the user's own, without the wtx state in it,
+    stays.
     """
     s = line.strip()
-    if s.startswith("#") or s in TMUX_LINES:
+    if s.startswith("#"):
         return False
-    if s.startswith("bind s choose-tree"):
+    if s.startswith("bind s choose-tree") and "@wtx_state" in s:
         return True
     return s.startswith("bind g ") and "wtx monitor" in s
 
@@ -290,7 +266,7 @@ def planned(agent_tool: str = "claude") -> list[Change]:
         ),
         Change(
             home / ".tmux.conf",
-            "show which session is waiting, in the status line and the picker",
+            "show which session is waiting, in the status line",
             "\n" + "\n".join(TMUX_LINES) + "\n",
             stale=_is_old_tmux,
         ),

@@ -1208,46 +1208,24 @@ def test_every_text_that_says_ready_also_says_commit() -> None:
     assert "commit it and say so" in init_mod.CLAUDE_SECTION
 
 
-# -- the session picker ------------------------------------------------------
+# -- tmux.conf ---------------------------------------------------------------
 
 
-def test_the_picker_lists_sessions_not_windows() -> None:
-    """-w expands every session to its one "dev" window, so each session takes
-    two lines and moving to the next one is two key presses."""
-    from wtx import machine
-
-    binding = [ln for ln in machine.TMUX_LINES if ln.startswith("bind s ")]
-    assert len(binding) == 1
-    assert "choose-tree -sZ" in binding[0]
-    assert "-wZ" not in binding[0]
-
-
-def test_the_picker_paints_a_waiting_session() -> None:
-    """The state is read by tmux itself from the session option, so the picker
-    stays instant. No #() anywhere in the format."""
-    from wtx import machine, notify
-
-    fmt = machine.picker_format()
-    assert "#(" not in fmt
-    assert "#{session_name}" in fmt
-    for state, style in notify.TMUX_STYLE.items():
-        assert f"#{{==:#{{@wtx_state}},{state}}}" in fmt
-        assert f"#[{style}]" in fmt
-
-
-def test_an_older_picker_binding_is_replaced() -> None:
-    """Two `bind s` lines in .tmux.conf and the last one read wins, which is
-    not the one wtx just appended."""
+def test_the_old_picker_and_grid_bindings_are_commented_out() -> None:
+    """The monitor is gone, and so is the wtx picker: prefix+s is tmux's own
+    again. A `bind s` of the user's own, with no wtx state in it, stays."""
     from wtx import machine
 
     old_wtx = (
         "bind s choose-tree -wZ -O name -F '#{session_name} #{?#{@wtx_state},[#{@wtx_state}],}'"
     )
     assert machine._is_old_tmux(old_wtx)
-    assert machine._is_old_tmux("bind s choose-tree -wZ -O name")
-    assert machine._is_old_tmux("bind g run-shell 'wtx monitor --grid --old'")
+    assert machine._is_old_tmux("bind s choose-tree -sZ -O name -F '#{?#{@wtx_state},x,}'")
+    assert machine._is_old_tmux("bind g run-shell -b 'wtx monitor --grid'")
+    assert not machine._is_old_tmux("bind s choose-tree -wZ -O name")
     for line in machine.TMUX_LINES:
         assert not machine._is_old_tmux(line), line
+        assert "bind" not in line
     assert not machine._is_old_tmux(f"# replaced by wtx: {old_wtx}")
     assert not machine._is_old_tmux("bind g display-popup -E htop")
 
@@ -1453,47 +1431,6 @@ def test_the_banner_carries_no_action(monkeypatch) -> None:
     assert seen[0][seen[0].index("-r") + 1] == "12"
 
 
-# -- one grid tile -----------------------------------------------------------
-
-
-def test_a_clipped_line_keeps_its_colours() -> None:
-    """A plain slice can cut inside an escape sequence, and the leftover then
-    paints the rest of the tile."""
-    from wtx.monitor import clip
-
-    assert clip("\x1b[1;31mHELLO\x1b[0m world", 7) == "\x1b[1;31mHELLO\x1b[0m w"
-    assert clip("abc", 10) == "abc"
-    assert clip("abc", 0) == ""
-    assert clip("\u65e5\u672c\u8a9e", 5) == "\u65e5\u672c", "a wide glyph takes two columns"
-
-
-def test_a_tile_shows_the_bottom_of_the_pane() -> None:
-    """The prompt, and the question it is asking, are at the bottom."""
-    from wtx.monitor import render_peek
-
-    frame = render_peek(
-        ["one", "two", "three", "four"],
-        session="app/feat-x",
-        state="permission",
-        age="3m",
-        rows=3,
-        width=40,
-    )
-    lines = frame.split("\n")
-    assert len(lines) == 3
-    assert "app/feat-x" in lines[0] and "permission" in lines[0]
-    assert lines[0].startswith("\x1b[1;33m"), "a waiting tile is painted"
-    assert "three" in lines[1] and "four" in lines[2]
-    assert all(ln.endswith("\x1b[0m") for ln in lines)
-
-
-def test_a_tile_with_no_room_shows_the_header() -> None:
-    from wtx.monitor import render_peek
-
-    frame = render_peek(["one", "two"], session="s", state="", age="", rows=1, width=20)
-    assert frame.split("\n") == ["s  running"]
-
-
 def test_no_tmux_socket_is_not_a_sandbox(monkeypatch) -> None:
     """After a reboot there is no socket at all, and tmux says "error
     connecting ... (No such file or directory)", not "no server running". wtx
@@ -1660,7 +1597,7 @@ def test_a_sidecar_hunk_would_refuse_is_caught() -> None:
 
 
 def test_review_files_are_not_mistaken_for_states(tmp_path, monkeypatch) -> None:
-    """The monitor and the status line read every *.json in the state dir as
+    """`wtx status` and the status line read every *.json in the state dir as
     a session. A review there would show as a session that does not exist."""
     from wtx import notify, review
 

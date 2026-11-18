@@ -21,7 +21,6 @@ from . import (
     git,
     guard,
     machine,
-    monitor,
     notify,
     orchestrate,
     repos,
@@ -1036,14 +1035,6 @@ def cmd_statusline(args: argparse.Namespace) -> int:
     return statusline.main()
 
 
-def cmd_monitor(args: argparse.Namespace) -> int:
-    if args.peek:
-        return monitor.peek(args.peek)
-    if args.serve:
-        return monitor.serve(interval=args.interval)
-    return monitor.open_board(grid=args.grid, interval=args.interval)
-
-
 def cmd_doctor(args: argparse.Namespace) -> int:
     report = doctor.run()
     print(doctor.as_json(report) if args.json else doctor.render(report))
@@ -1305,13 +1296,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("statusline", help="the Claude Code status line, reads its JSON on stdin")
     s.set_defaults(func=cmd_statusline)
-
-    s = sub.add_parser("monitor", help="every session on one screen")
-    s.add_argument("--grid", action="store_true", help="tile every agent pane")
-    s.add_argument("--serve", action="store_true", help=argparse.SUPPRESS)
-    s.add_argument("--peek", default="", help=argparse.SUPPRESS)
-    s.add_argument("--interval", type=float, default=2.0)
-    s.set_defaults(func=cmd_monitor)
 
     s = sub.add_parser("doctor", help="check this machine")
     s.add_argument("--json", action="store_true")

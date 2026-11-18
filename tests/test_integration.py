@@ -2143,39 +2143,6 @@ def test_a_dead_session_drops_its_notification(wtx_repo: Path, fake_bin: Path, m
     assert not notify.id_file(ctx.session).exists()
 
 
-def test_the_grid_shows_the_waiting_sessions_first(
-    wtx_repo: Path, fake_bin: Path, monkeypatch
-) -> None:
-    """One tile per session, and the one asking for something is tile one."""
-
-    from wtx import monitor, notify
-
-    fake_sessions("app/calm", "app/asking")
-    notify.write_state("app/asking", "permission")
-
-    monitor._build_grid()
-    tmux_calls = calls_of(fake_bin, "tmux")
-    windows = [c for c in tmux_calls if c.startswith("new-window")]
-    splits = [c for c in tmux_calls if c.startswith("split-window")]
-    assert len(windows) == 1 and "app/asking" in windows[0]
-    assert len(splits) == 1 and "app/calm" in splits[0]
-    assert any(c.startswith("select-layout") and c.endswith("tiled") for c in tmux_calls)
-    assert any("pane-border-status top" in c for c in tmux_calls)
-
-
-def test_the_grid_never_tiles_the_monitor_itself(
-    wtx_repo: Path, fake_bin: Path, monkeypatch
-) -> None:
-    """A tile peeking at the monitor session draws the grid inside the grid."""
-
-    from wtx import monitor
-
-    fake_sessions(monitor.SESSION, "app/one")
-    monitor._build_grid()
-    peeked = [c.split("--peek ", 1)[1] for c in calls_of(fake_bin, "tmux") if "--peek " in c]
-    assert peeked == ["app/one"]
-
-
 def test_a_state_file_outlives_its_session_only_until_something_reads_it(
     wtx_repo: Path, fake_bin: Path
 ) -> None:

@@ -6,11 +6,14 @@ is the whole trick: the agent itself cannot talk to tmux, its hooks can.
 
 Two outputs per event:
 
-- a state file under $XDG_RUNTIME_DIR/wtx, read by `wtx tmux-status` and by the
-  monitor board, so the state survives and can be shown for every session at
+- a state file under $XDG_RUNTIME_DIR/wtx, read by `wtx tmux-status` and by
+  `wtx status`, so the state survives and can be shown for every session at
   once;
-- the tmux session option @wtx_state, so tmux format strings can show it in the
-  picker without running anything.
+- the tmux session option @wtx_state, so a tmux format string can show it
+  without running anything.
+
+workmux keeps its own agent state, for its dashboard. wtx never reads it: wtx
+has states workmux does not have (permission, idle, landed, the phase).
 """
 
 from __future__ import annotations
@@ -41,20 +44,6 @@ EMOJI = {
     "idle": "\N{SPEECH BALLOON}",
     "stop": "\N{WHITE HEAVY CHECK MARK}",
     "landed": "\N{WHITE HEAVY CHECK MARK}",
-}
-
-# How a waiting session is painted: a tmux style for the picker, an SGR code
-# for the panes wtx draws itself. Only the states that wait on you get a
-# colour. A picker where every line is coloured says nothing.
-TMUX_STYLE = {
-    "permission": "fg=yellow,bold",
-    "idle": "fg=cyan",
-    "landed": "fg=green,bold",
-}
-SGR = {
-    "permission": "1;33",
-    "idle": "36",
-    "landed": "1;32",
 }
 
 # What the user has to act on. running and start are just noise on a board.
@@ -161,7 +150,7 @@ def write_state(session: str, state: str, message: str = "") -> None:
 
 
 def conversation_file(session: str) -> Path:
-    """Beside the state file, but not *.json: the monitor reads those."""
+    """Beside the state file, but not *.json: those are states."""
     return state_dir() / f"{safe_name(session)}.conversation"
 
 
@@ -195,7 +184,7 @@ PHASES = ("plan", "build")
 
 
 def phase_file(session: str) -> Path:
-    """Beside the state file, but not *.json: the monitor reads those."""
+    """Beside the state file, but not *.json: those are states."""
     return state_dir() / f"{safe_name(session)}.phase"
 
 
@@ -235,7 +224,7 @@ def forget_nudge(session: str) -> None:
 
 
 def busy_file(session: str) -> Path:
-    """Marks an agent in the middle of a turn. Not *.json, the monitor reads those.
+    """Marks an agent in the middle of a turn. Not *.json, those are states.
 
     No state file is not enough to tell: `start` clears the state too, and a
     fresh agent waiting for its first prompt has none either.
