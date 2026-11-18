@@ -5,6 +5,7 @@ from __future__ import annotations
 import fnmatch
 import json
 import os
+import re
 import subprocess
 import tomllib
 from dataclasses import replace
@@ -17,7 +18,7 @@ from wtx.agents.base import RenderContext
 from wtx.agents.claude import ClaudeAgent, protected_branch_rules
 from wtx.cli import UserError, _split_curl_args
 from wtx.config import default_base, parse, validate
-from wtx.context import session_name
+from wtx.context import ContextError, handle, session_name
 from wtx.ports import cksum
 from wtx.repos import parse_with
 from wtx.tmux import _split_percent
@@ -45,9 +46,29 @@ def test_ports_reproduce_a_live_worktree() -> None:
 
 
 def test_session_name_drops_characters_tmux_refuses() -> None:
-    assert session_name("repo", "feat/x") == "repo/feat/x"
+    assert session_name("repo", "feat/x") == "repo/feat-x"
     assert session_name("repo", "release-1.2") == "repo/release-1-2"
     assert session_name("repo", "a:b") == "repo/a-b"
+    assert session_name("my.repo", "x") == "my-repo/x"
+
+
+def test_the_handle_is_what_workmux_slugify_gives_back() -> None:
+    # workmux slugifies --name: a handle it would change is a session name
+    # wtx would never find.
+    assert handle("feat/Add_X") == "feat-add-x"
+    assert handle("--feat//x..y--") == "feat-x-y"
+    assert handle("fix/été") == "fix-t"
+    for name in ("feat/Add_X", "release-1.2", "a:b", "x"):
+        assert re.fullmatch(r"[a-z0-9]+(-[a-z0-9]+)*", handle(name))
+
+
+def test_feat_slash_x_and_feat_dash_x_share_a_handle() -> None:
+    assert handle("feat/x") == handle("feat-x") == "feat-x"
+
+
+def test_a_branch_with_no_letter_has_no_handle() -> None:
+    with pytest.raises(ContextError):
+        handle("///")
 
 
 def test_split_percent_matches_the_old_layout() -> None:

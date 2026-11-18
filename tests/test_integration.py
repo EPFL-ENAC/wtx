@@ -626,7 +626,7 @@ def test_a_session_is_built_with_one_pane_per_config_entry(wtx_repo: Path, fake_
 def test_the_session_name_has_no_dots(wtx_repo: Path, fake_bin: Path) -> None:
     path = make_worktree(wtx_repo, "release/1.2")
     ctx = context.load(root=path)
-    assert ctx.session.endswith("release/1-2")
+    assert ctx.session.endswith("/release-1-2")
 
 
 # -- cli ----------------------------------------------------------------------
@@ -2527,7 +2527,7 @@ def test_a_hook_finds_the_session_of_a_repo_that_renamed_itself(
     setup_mod.run_setup(context.load(root=path), start_tmux=True)
     ctx = context.load(root=path)
 
-    assert ctx.session == "renamed-app/feat/renamed"
+    assert ctx.session == "renamed-app/feat-renamed"
     assert notify.session_for(path) == ctx.session
 
 

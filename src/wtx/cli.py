@@ -375,7 +375,7 @@ def _done_path(args: argparse.Namespace) -> int:
 
     found = _pane_worktree(main, repo, target, session)
     if found is None:
-        if session.startswith(f"{repo}/"):
+        if session.startswith(context.session_prefix(repo)):
             # No worktree has this session any more: wt or git already
             # removed it, only the session is left.
             return _close_gone(main, session, target)
