@@ -142,6 +142,20 @@ def write_config(main: Path, cfg: WtxConfig, repo: str) -> Path:
     return target
 
 
+def _write_config_of(main: Path) -> None:
+    """write_config from the main checkout's own wtx.toml, when it has one."""
+    from . import config as config_mod
+
+    toml = main / config_mod.CONFIG_NAME
+    if not toml.is_file():
+        return
+    try:
+        cfg = config_mod.load(toml)
+    except config_mod.ConfigError as exc:
+        raise WorkmuxError(str(exc)) from exc
+    write_config(main, cfg, cfg.repo.name or git.repo_name(main))
+
+
 def _run(args: list[str], cwd: Path) -> None:
     """Run workmux from the main checkout. Its output never reaches our caller."""
     if is_dry_run():
@@ -195,6 +209,10 @@ def remove(main: Path, branch: str, *, force: bool = False) -> None:
     path = git.worktree_path_for(main, branch)
     if path is None:
         raise WorkmuxError(f"no worktree for {branch}")
+    # remove reads the config from disk. Right after an update, no `wtx go`
+    # wrote it yet, and without it workmux runs no pre_remove hook and looks
+    # for a session named wm-<handle>.
+    _write_config_of(main)
     args = ["remove", "--keep-branch"]
     if force:
         args.append("--force")

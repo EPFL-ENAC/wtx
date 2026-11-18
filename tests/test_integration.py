@@ -951,15 +951,27 @@ def test_workmux_remove_keeps_the_branch_and_runs_from_main(wtx_repo: Path, fake
     the main checkout that is the one wtx wrote, never a branch's own."""
     from wtx import workmux
 
-    workmux.write_config(wtx_repo, config_mod.load(wtx_repo / "wtx.toml"), "app")
     path = make_worktree(wtx_repo, "feat/gone")
     (path / ".workmux.yaml").write_text('{"window_prefix": "evil-"}\n')
-    fake_sessions("app/feat-gone")
+    fake_sessions(context.load(root=path).session)
     workmux.remove(wtx_repo, "feat/gone", force=True)
     [call] = calls_of(fake_bin, "workmux")
     assert call.startswith("remove --keep-branch --force")
     assert not path.exists()
     assert git.branch_exists(wtx_repo, "feat/gone")
+    assert Path(os.environ["WTX_TEST_SESSIONS"]).read_text() == ""
+
+
+def test_a_remove_right_after_the_update_has_its_config(wtx_repo: Path, fake_bin: Path) -> None:
+    """No `wtx go` wrote .workmux.yaml yet. Without it workmux runs no
+    pre_remove hook and looks for the session under the wm- prefix."""
+    from wtx import workmux
+
+    make_worktree(wtx_repo, "feat/early")
+    fake_sessions("remote/feat-early")
+    assert not workmux.config_path(wtx_repo).exists()
+    workmux.remove(wtx_repo, "feat/early", force=True)
+    assert _workmux_config(wtx_repo)["pre_remove"] == ["wtx hook pre-remove"]
     assert Path(os.environ["WTX_TEST_SESSIONS"]).read_text() == ""
 
 
