@@ -612,15 +612,115 @@ def test_opencode_orchestration_writes_a_model_per_agent(wtx_repo: Path, fake_bi
 
 
 def test_a_session_is_built_with_one_pane_per_config_entry(wtx_repo: Path, fake_bin: Path) -> None:
+    """workmux builds the session, each pane then tags itself."""
+    from wtx import pane as pane_mod
+
     path = make_worktree(wtx_repo, "feat/tmux")
     ctx = context.load(root=path)
     setup_mod.run_setup(ctx, start_tmux=True)
-    roles = [c for c in calls_of(fake_bin, "tmux") if "@wt_role" in c]
-    assert len(roles) == len(ctx.cfg.panes.panes)
-    assert any(c.endswith("@wt_role agent") for c in roles)
+    [opened] = calls_of(fake_bin, "workmux")
+    assert opened.startswith("open --background --config ")
+    assert opened.endswith(" feat-tmux") and "--target-name" not in opened
+    assert not [c for c in calls_of(fake_bin, "tmux") if c.startswith(("new-session", "split"))]
     scrub = [c for c in calls_of(fake_bin, "tmux") if "set-environment -gu" in c]
     assert any("ROOT" in c for c in scrub)
     assert any("BACKEND_PORT" in c for c in scrub)
+
+    for index, pane in enumerate(ctx.cfg.panes.panes):
+        pane_mod.script(ctx, pane.name, f"%{index}")
+    roles = [c for c in calls_of(fake_bin, "tmux") if "@wt_role" in c]
+    assert roles == [
+        f"set-option -p -t %{i} @wt_role {p.role}" for i, p in enumerate(ctx.cfg.panes.panes)
+    ]
+
+
+def test_every_tmux_call_of_a_pane_names_the_pane(wtx_repo: Path, fake_bin: Path) -> None:
+    """Without -t, tmux takes the active pane of the session: the roles all
+    landed on the last pane when workmux typed the lines."""
+    from wtx import pane as pane_mod
+
+    ctx = context.load(root=make_worktree(wtx_repo, "feat/target"))
+    for pane in ctx.cfg.panes.panes:
+        pane_mod.script(ctx, pane.name, "%7")
+    calls = calls_of(fake_bin, "tmux")
+    assert calls
+    assert all(" -t %7 " in f"{c} " for c in calls)
+
+
+def test_a_log_pane_mirrors_itself_before_its_command(wtx_repo: Path, fake_bin: Path) -> None:
+    from wtx import pane as pane_mod
+
+    ctx = context.load(root=make_worktree(wtx_repo, "feat/logs"))
+    (ctx.logs_dir).mkdir()
+    (ctx.logs_dir / "backend.log").write_text("old run\n")
+    line = pane_mod.script(ctx, "backend", "%3")
+    assert (ctx.logs_dir / "backend.log").read_text() == ""
+    [pipe] = [c for c in calls_of(fake_bin, "tmux") if c.startswith("pipe-pane")]
+    assert pipe.startswith("pipe-pane -t %3 -o ")
+    assert f"{ctx.logs_dir}/backend.log" in pipe
+    assert line.startswith(f"cd {ctx.root / 'backend'} && {{ set -a; ")
+    assert line.rstrip().endswith("make run; }")
+
+
+def test_the_pane_line_exports_the_worktree_values(wtx_repo: Path, fake_bin: Path) -> None:
+    """The line runs in a real shell: the values of .env.worktree are there
+    when the command starts, in the pane's own folder."""
+    from wtx import pane as pane_mod
+
+    path = make_worktree(wtx_repo, "feat/env")
+    setup_mod.run_setup(context.load(root=path))
+    ctx = context.load(root=path)
+    pane = ctx.cfg.panes.panes[-1]
+    line = pane_mod.script(ctx, pane.name, "").replace("clear", "echo $BACKEND_PORT; pwd")
+    out = subprocess.run(["bash", "-c", line], capture_output=True, text=True, check=True)
+    assert out.stdout.split() == [ctx.env["BACKEND_PORT"], str(path / pane.cwd).rstrip("/.")]
+
+
+def test_the_brief_reaches_the_agent_pane_once(wtx_repo: Path, fake_bin: Path) -> None:
+    """The launch record says the first agent pane starts on PROMPT.md. A
+    session opened again later is a plain one."""
+    from wtx import agents, tmux
+    from wtx import pane as pane_mod
+
+    path = make_worktree(wtx_repo, "feat/brief")
+    ctx = context.load(root=path)
+    (path / "PROMPT.md").write_text("do it\n")
+    agent = agents.base.get(ctx.agent_tool)
+    tmux.ensure_session(ctx, agent, [], attach_after=False, brief=True)
+    assert pane_mod.launch_file(ctx.session).is_file()
+
+    line = pane_mod.script(ctx, "agent", "%1")
+    assert "mv PROMPT.md PROMPT.sent.md && claude" in line
+    assert not pane_mod.launch_file(ctx.session).exists()
+    assert "PROMPT.md" not in pane_mod.script(ctx, "agent", "%1")
+
+
+def test_a_plain_session_drops_an_old_launch_record(wtx_repo: Path, fake_bin: Path) -> None:
+    """A record left by an open that failed must not brief a later session."""
+    from wtx import agents, tmux
+    from wtx import pane as pane_mod
+
+    path = make_worktree(wtx_repo, "feat/stale")
+    ctx = context.load(root=path)
+    (path / "PROMPT.md").write_text("old brief\n")
+    pane_mod.write_launch(ctx.session, brief=True, phase="plan")
+    tmux.ensure_session(ctx, agents.base.get(ctx.agent_tool), [], attach_after=False)
+    assert not pane_mod.launch_file(ctx.session).exists()
+
+
+def test_no_tmux_server_starts_one_holding_session(
+    wtx_repo: Path, fake_bin: Path, monkeypatch
+) -> None:
+    """workmux open refuses to run with no tmux server. wtx starts one, once."""
+    from wtx import agents, tmux
+
+    monkeypatch.setenv("WTX_TEST_NO_SERVER", "1")
+    for branch in ("feat/one", "feat/two"):
+        ctx = context.load(root=make_worktree(wtx_repo, branch))
+        tmux.ensure_session(ctx, agents.base.get(ctx.agent_tool), [], attach_after=False)
+    started = [c for c in calls_of(fake_bin, "tmux") if c.startswith("new-session")]
+    assert started == [f"new-session -d -s {tmux.HOME_SESSION} -c {Path.home()}"]
+    assert len(calls_of(fake_bin, "workmux")) == 2
 
 
 def test_the_session_name_has_no_dots(wtx_repo: Path, fake_bin: Path) -> None:

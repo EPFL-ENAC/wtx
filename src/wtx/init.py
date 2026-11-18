@@ -45,6 +45,7 @@ GITIGNORE_LINES = [
     ".claude/rules/wtx.md",
     ".claude/worktrees/",
     "opencode.json",
+    ".workmux.yaml",
 ]
 
 GITIGNORE_HEADER = "# wtx: per-worktree files, local to one checkout"

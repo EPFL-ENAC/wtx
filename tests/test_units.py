@@ -21,7 +21,7 @@ from wtx.config import default_base, parse, validate
 from wtx.context import ContextError, handle, session_name
 from wtx.ports import cksum
 from wtx.repos import parse_with
-from wtx.tmux import _split_percent
+from wtx.workmux import _split_percent
 
 # -- ports -------------------------------------------------------------------
 

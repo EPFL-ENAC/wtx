@@ -51,7 +51,9 @@ BODIES = {
   kill-session) if [ -f "$WTX_TEST_SESSIONS" ]; then grep -vxF "${3#=}" "$WTX_TEST_SESSIONS" > "$WTX_TEST_SESSIONS.tmp" || true; mv "$WTX_TEST_SESSIONS.tmp" "$WTX_TEST_SESSIONS"; fi;;
   display-message) echo '%0';;
   split-window) echo "%$$";;
-  list-sessions) [ -f "$WTX_TEST_SESSIONS" ] && cat "$WTX_TEST_SESSIONS";;
+  list-sessions) if [ -n "$WTX_TEST_NO_SERVER" ] && [ ! -s "$WTX_TEST_SESSIONS" ]; then
+                   echo "no server running on /tmp/tmux-0/default" >&2; exit 1; fi
+                 [ -f "$WTX_TEST_SESSIONS" ] && cat "$WTX_TEST_SESSIONS";;
   list-panes) echo '%0 agent';;
   show-options) echo '';;
 esac""",

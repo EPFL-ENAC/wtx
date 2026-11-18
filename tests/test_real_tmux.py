@@ -13,6 +13,8 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -28,6 +30,8 @@ SOCKET = "wtx-tests"
 # time, "tmux" was the fake: the probe below never saw a server and every
 # test here was skipped, even with --run-tmux.
 REAL_TMUX = shutil.which("tmux") or "tmux"
+# Same for workmux: fake_bin puts a fake one first.
+REAL_WORKMUX = shutil.which("workmux")
 
 
 def tmux(*args: str) -> subprocess.CompletedProcess:
@@ -62,6 +66,16 @@ def real_tmux(monkeypatch: pytest.MonkeyPatch, fake_bin: Path):
     wrapper = bindir / "tmux"
     wrapper.write_text(f'#!/bin/sh\nexec {REAL_TMUX} -L {SOCKET} "$@"\n')
     wrapper.chmod(0o755)
+    # The panes run `wtx pane`: it must be this code, not the wtx installed on
+    # the machine.
+    src = Path(__file__).resolve().parents[1] / "src"
+    wtx = bindir / "wtx"
+    wtx.write_text(f'#!/bin/sh\nPYTHONPATH={src} exec {sys.executable} -m wtx "$@"\n')
+    wtx.chmod(0o755)
+    if REAL_WORKMUX:
+        real = bindir / "workmux"
+        real.write_text(f'#!/bin/sh\nexec {REAL_WORKMUX} "$@"\n')
+        real.chmod(0o755)
     monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
     monkeypatch.delenv("TMUX", raising=False)
     yield
@@ -69,7 +83,11 @@ def real_tmux(monkeypatch: pytest.MonkeyPatch, fake_bin: Path):
 
 
 def test_a_real_session_gets_its_panes_and_roles(wtx_repo: Path, fake_bin: Path, real_tmux) -> None:
+    """workmux builds the session, then each pane tags itself with `wtx pane`."""
     from wtx import tmux as tmux_mod
+
+    if REAL_WORKMUX is None:
+        pytest.skip("no workmux")
 
     path = wtx_repo / ".claude" / "worktrees" / "feat-real"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -85,7 +103,13 @@ def test_a_real_session_gets_its_panes_and_roles(wtx_repo: Path, fake_bin: Path,
     tmux_mod.ensure_session(ctx, agents.get("claude"), [], attach_after=False)
 
     assert tmux_mod.has_session(ctx.session)
-    roles = tmux("list-panes", "-t", f"={ctx.session}", "-F", "#{@wt_role}").stdout.split()
+    # The panes tag themselves when their shell runs the line workmux typed.
+    roles: list[str] = []
+    for _ in range(100):
+        roles = tmux("list-panes", "-t", f"={ctx.session}", "-F", "#{@wt_role}").stdout.split()
+        if len(roles) == len(ctx.cfg.panes.panes):
+            break
+        time.sleep(0.1)
     assert roles.count("agent") == 1
     assert len(roles) == len(ctx.cfg.panes.panes)
     assert tmux_mod.agent_pane_id(ctx.session)

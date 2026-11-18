@@ -39,6 +39,9 @@ from . import (
     land as land_mod,
 )
 from . import (
+    pane as pane_mod,
+)
+from . import (
     setup as setup_mod,
 )
 from . import (
@@ -992,6 +995,12 @@ def cmd_hook(args: argparse.Namespace) -> int:
     return run_hook(args.event)
 
 
+def cmd_pane(args: argparse.Namespace) -> int:
+    """What a pane of a workmux session runs. Prints shell code, see pane.py."""
+    sys.stdout.write(pane_mod.script(_load(), args.name, pane_mod.pane_id()))
+    return 0
+
+
 def cmd_notify(args: argparse.Namespace) -> int:
     return notify.handle(args.state)
 
@@ -1269,6 +1278,10 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("hook", help="called by .wt.toml")
     s.add_argument("event", choices=["post-create", "post-checkout", "pre-remove"])
     s.set_defaults(func=cmd_hook)
+
+    s = sub.add_parser("pane", help="called by each pane of a workmux session")
+    s.add_argument("name")
+    s.set_defaults(func=cmd_pane)
 
     s = sub.add_parser("notify", help="called by the agent's hooks")
     s.add_argument("state", choices=list(notify.STATES))
