@@ -3,30 +3,77 @@
 Every rule in this tool is here because something went wrong once. This is the
 list, so nobody has to learn them twice.
 
-## git and wt
+## git and workmux
 
-**`$WT_MAIN` lies.** wt calls "main" whichever worktree holds the default
-branch. Reading it puts scripts in the wrong repo. wtx never reads it and
-resolves the main checkout with `git rev-parse --git-common-dir`. A test asserts
-no module reads the variable.
+**The main checkout is what git says.** The old wt tool exported `$WT_MAIN`,
+which named whichever worktree held the default branch, and scripts that read
+it ran in the wrong repo. workmux exports `WM_PROJECT_ROOT`. wtx reads neither
+and resolves the main checkout with `git rev-parse --git-common-dir`. A test
+asserts no module reads `$WT_MAIN`.
 
-**A new branch tracks its base.** `wt create x origin/dev` leaves `x` tracking
-`origin/dev` with git's default `autoSetupMerge`. Then `git pull` rebases the
-work onto dev and the next push is refused. wtx repairs this on every setup, not
-only the first, because a branch can predate the fix.
+**A new branch tracks its base.** `workmux add --base origin/dev x` leaves `x`
+tracking `origin/dev` with git's default `autoSetupMerge`. Then `git pull`
+rebases the work onto dev and the next push is refused. wtx repairs this on
+every setup, not only the first, because a branch can predate the fix.
 
-**A local ref makes a stale base.** `wt create x somebranch` resolves whatever
-that ref pointed at last time it was fetched. `wtx go` defaults to
-`origin/<base>` and fetches first. Except with `land = "merge"`: there the
-local base is the fresh one, because lands go there and are not pushed. So
-`wtx go` and `wtx review` use the local `<base>`, with no fetch.
+**A local ref makes a stale base.** `--base somebranch` resolves whatever that
+ref pointed at last time it was fetched. `wtx go` defaults to `origin/<base>`
+and fetches first. Except with `land = "merge"`: there the local base is the
+fresh one, because lands go there and are not pushed. So `wtx go` and
+`wtx review` use the local `<base>`, with no fetch.
 
-**A hook must be a list in `.wt.toml`.** `post_create = "wtx hook post-create"`
-parses fine and then never runs, so a repo looks set up and has no ports, no
-settings and no guard. It has to be `["wtx hook post-create"]`.
+**`remove` and `close` take no `--config`.** Only `workmux add` and
+`workmux open` do, and workmux does not remember it. The others read the first
+`.workmux.yaml` they find from their working directory up, then the one in the
+main checkout. With none, the session prefix is `wm-` and `remove` leaves the
+session alive. So wtx writes its config to the main checkout and runs every
+workmux command from there. A test removes a worktree that has its own
+`.workmux.yaml` and checks the session went.
 
-**`post_checkout` fires on create too**, in some wt builds. Every setup step
-checks whether its work is already done.
+**A `.workmux.yaml` on a branch must change nothing.** Setup reads everything
+from the main checkout, so a branch cannot change the rules its agent runs
+under. wtx passes its own file to `add` and `open` with `--config`, and runs
+the rest from the main checkout, where the branch file is not on the way up.
+A workmux command typed inside that worktree still reads it: `wtx doctor`
+warns.
+
+**workmux slugifies every name.** `feat/Add_X` becomes `feat-add-x`, and so
+does a name given with `--name`. wtx computes the handle itself (a-z, 0-9 and
+single dashes, which slugify leaves alone) and passes it, so the session name
+it computes is the one workmux makes. `feat/x` and `feat-x` share a handle,
+so one folder and one session: `wtx go` refuses the second.
+
+**`workmux add` on a branch only origin has cuts a new branch.** It starts
+from the base, and the pushed work is not in it. wtx makes the local branch,
+tracking `origin/<branch>`, before it calls workmux.
+
+**`workmux remove` deletes the branch.** And for an unmerged one it asks a
+question, with nobody to answer it. wtx always passes `--keep-branch`, and
+`wtx land` deletes the branch itself, once it knows the base has it.
+
+**`workmux add` and `open` refuse to run with no tmux server.** After a reboot
+there is none, and `wtx all` is the first thing you run. wtx starts a server
+first, with a session `wtx-home` that keeps it up. A test checks it starts
+one, once.
+
+**The hook must not open the session.** When a human runs `workmux add`,
+workmux opens the session after its `post_create` hook. When `wtx go` runs,
+it opens the session once the brief is in place. A session opened by the hook
+too launched the agent twice.
+
+**What differs per worktree cannot go in the workmux config.** The file is
+one per repo, and two `wtx go` can run at once. Whether the agent starts on a
+brief, and in which phase, travels in a one-shot `<session>.launch` record
+that the agent pane reads and deletes.
+
+**`workmux setup` asks a question.** With no terminal it fails or hangs.
+`install-machine` runs it only from a terminal, and prints the line otherwise.
+Only `--hooks`: workmux's `merge` skill merges and removes the worktree around
+`wtx land`, and `wtx doctor` warns when it is installed.
+
+**`cargo install workmux` fails without `--locked`.** A newer version of a
+dependency misses a feature workmux uses. `wtx doctor` and the docs say
+`--locked`.
 
 **A half deleted worktree still shows in `git worktree list`.** Resolving a
 branch to a path then gave the main checkout, where the guard exempts itself,
@@ -201,7 +248,13 @@ returns success, so believing the exit code makes every session look present and
 wtx creates none. Reachability is checked by looking at stderr too.
 
 **A pane cannot be found by its title.** An agent rewrites its own pane title as
-it works. Panes carry a `@wt_role` option instead.
+it works. Panes carry a `@wt_role` option instead. workmux sets nothing on a
+pane, so each pane sets it on itself, in `wtx pane`.
+
+**A tmux command in a pane without `-t` hits the active pane.** It does not
+mean "this pane". When workmux typed the lines, every pane tagged the last one
+it made. `wtx pane` names its pane with `-t $TMUX_PANE` in every call, the log
+too. A test checks every call.
 
 **`list-panes -t <session>` lists the window in front only.** It needs `-s` to
 see every window of the session. Without it, notes sent when hunk quits found
@@ -214,7 +267,10 @@ nowhere, so `prefix+r` only opens the review window and the slow part (asking
 the agent) runs in it, where the human sees it and its errors.
 
 **Closing the session you are sitting in kills the command doing the closing.**
-`wtx done` hands the job to the tmux server with `run-shell -b`.
+`wtx done` hands the job to the tmux server with `run-shell -b`. And when a
+human types `workmux remove` in a pane of the session it removes, the
+`pre_remove` hook runs in that pane: the teardown leaves the session alone,
+and workmux closes it once the worktree is gone.
 
 **The pane's folder can be gone when you press `prefix+X d`.** tmux then adds
 ` (deleted)` to `#{pane_current_path}`. And a folder recreated under
@@ -228,8 +284,7 @@ it prunes, kills the session and exits 0. Tests cover both cases.
 **In a tmux config file `\;` is a literal argument, not a separator.** Only the
 command line splits commands on `\;`. In `.tmux.conf` a plain `;` ends the
 binding and tmux runs the rest at load time, and `\;` becomes an argument of the
-command. A binding that has to do several things calls something that does them,
-so `bind g` just runs `wtx monitor --grid`.
+command. A binding that has to do several things calls something that does them.
 
 **A mouse selection in tmux never reached the clipboard.** tmux sends it to the
 terminal with OSC 52, and GNOME Terminal, Ptyxis and the other VTE terminals
@@ -242,18 +297,6 @@ the copy. On a Mac, XQuartz sets `DISPLAY` too, so `pbcopy` comes first. Before
 tmux 3.2 the option does not exist and tmux complains on every config load, so
 wtx adds nothing there.
 
-**`choose-tree -w` gives every session two lines.** Windows collapsed still
-means the session line plus its window line, so the down arrow moves half a
-session at a time. `-s` is the one that shows one line per session. wtx installs
-`bind s choose-tree -sZ` with a format that paints a waiting session yellow,
-read by tmux from the `@wtx_state` session option (no `#()`, so the picker does
-not shell out per line).
-
-**A nested `tmux attach` in a tile resizes the real session.** With the default
-`window-size latest` the session follows the newest client, so a tile a few
-lines high shrinks the session an agent is working in. It also shows the top of
-the window, while the part worth reading is the prompt at the bottom. The grid
-runs `capture-pane -p -e` on the agent pane instead and prints the tail itself.
 
 ## the plan handoff
 
@@ -266,11 +309,12 @@ process does the restart, the same trick the desktop notification uses.
 pending handoff, and briefing an agent twice throws away the first run. The
 record is claimed by renaming it, so exactly one wins.
 
-**A handoff record must not look like a state file.** `wtx tmux-status` and the
-monitor read every `*.json` in the runtime directory and key them by session. A
-record named `<session>.handoff.json` would sit in that list with no state. It
-is `<session>.handoff`. Same for the review files, `<session>.review` and
-the ones next to it (`.meta`, `.notes`, `.sent`).
+**A handoff record must not look like a state file.** `wtx tmux-status` and
+`wtx status` read every `*.json` in the runtime directory and key them by
+session. A record named `<session>.handoff.json` would sit in that list with
+no state. It is `<session>.handoff`. Same for the launch record
+(`<session>.launch`) and the review files, `<session>.review` and the ones
+next to it (`.meta`, `.notes`, `.sent`).
 
 **A plan brief must not change the worktree's model.** The plan phase runs on
 `plan_model` at `plan_effort`, but `.claude/settings.local.json` and a later
@@ -405,7 +449,7 @@ newer protected branch (stage while dev lags) that would drag stage into dev.
 **A land in the branch's own session kills itself in the clean up.**
 `prefix+X l` runs `wtx land` in a window of the branch session, so you see it.
 But the last step removes the worktree, the `pre_remove` hook kills the
-session, and the kill stops `wt remove` and `wtx land` halfway: the branch is
+session, and the kill stops `workmux remove` and `wtx land` halfway: the branch is
 merged and the worktree is half removed. So when land runs in the session of
 the branch it lands, it hands the clean up to the tmux server with
 `run-shell -b` (`wtx land <branch> --cleanup-only`), like `wtx done` does. The
@@ -433,9 +477,9 @@ read-only file on each path it protects (`.bashrc`, `.mcp.json`,
 file and never deletes it. `git status` sees them, and land refused every
 checkout. So `git.is_clean()` ignores untracked files of 0 bytes, found by
 looking at the files, not by a list of names that changes with each version.
-Then `wt remove` runs `git worktree remove` without `--force`, which refuses
-any untracked file. So `wt.remove()` deletes the empty untracked files first.
-It never passes `--force` for that: real work can arrive after the check.
+Then `workmux remove` refuses a worktree with any untracked file. So
+`workmux.remove()` deletes the empty untracked files first. It never passes
+`--force` for that: real work can arrive after the check.
 
 **An agent that says "ready" has often not committed.** Nothing told it to,
 and `wtx land` refuses a dirty worktree. Every branch worktree gets the rule in

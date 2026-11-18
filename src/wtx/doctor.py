@@ -7,7 +7,7 @@ import os
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from . import git, guard, tmux
+from . import git, guard, tmux, workmux
 from .config import CONFIG_NAME
 from .proc import capture, capture_code, which
 
@@ -40,6 +40,24 @@ class Report:
         }
 
 
+# --locked, or cargo fails on a missing `nix` feature.
+WORKMUX_INSTALL = (
+    "cargo install workmux --locked, or brew install raine/workmux/workmux. "
+    "See https://github.com/raine/workmux"
+)
+WORKMUX_HOOKS = f"{' '.join(workmux.SETUP_HOOKS)}, from a real terminal (it asks a question)"
+
+
+def _workmux_merge_skill() -> Path | None:
+    """workmux's merge skill merges locally and removes the worktree: an agent
+    that runs it goes around `wtx land`, its checks and its plans."""
+    skill = Path("~/.claude/skills/merge/SKILL.md").expanduser()
+    try:
+        return skill.parent if "workmux" in skill.read_text() else None
+    except OSError:
+        return None
+
+
 def _binary(name: str, fix: str, *, hard: bool = True) -> Check:
     path = which(name)
     return Check(name, bool(path), path or "not on PATH", fix, hard=hard)
@@ -50,7 +68,7 @@ def run(cwd: Path | None = None) -> Report:
     checks: list[Check] = []
 
     checks.append(_binary("git", "install git"))
-    checks.append(_binary("wt", "go install github.com/timvw/wt@latest, then wt init"))
+    checks.append(_binary("workmux", WORKMUX_INSTALL))
     checks.append(_binary("tmux", "install tmux"))
     if which("tmux"):
         tmux_state = tmux.server_status()
@@ -90,23 +108,6 @@ def run(cwd: Path | None = None) -> Report:
             hard=False,
         )
     )
-
-    if which("wt"):
-        cfg_file = Path("~/.config/wt/config.toml").expanduser()
-        raw = cfg_file.read_text() if cfg_file.is_file() else ""
-        pattern = ""
-        for line in raw.splitlines():
-            if line.strip().startswith("pattern"):
-                pattern = line.split("=", 1)[-1].strip().strip('"')
-        checks.append(
-            Check(
-                "wt worktree pattern",
-                ".claude/worktrees" in pattern,
-                pattern or "no ~/.config/wt/config.toml",
-                'set pattern = "{.repo.Main}/.claude/worktrees/{.branch}" in ~/.config/wt/config.toml',
-                hard=False,
-            )
-        )
 
     if which("gh"):
         # The exit code, not the text: older gh prints the whole status to
@@ -161,6 +162,26 @@ def run(cwd: Path | None = None) -> Report:
             hard=False,
         )
     )
+    if which("workmux"):
+        checks.append(
+            Check(
+                "workmux status hooks",
+                workmux.hooks_installed(text),
+                str(settings),
+                WORKMUX_HOOKS,
+                hard=False,
+            )
+        )
+    merge_skill = _workmux_merge_skill()
+    checks.append(
+        Check(
+            "no workmux merge skill",
+            merge_skill is None,
+            str(merge_skill or ""),
+            f"rm -r {merge_skill}: it merges and removes the worktree around wtx land",
+            hard=False,
+        )
+    )
 
     merge = capture(["git", "config", "--global", "branch.autoSetupMerge"])
     checks.append(
@@ -196,13 +217,43 @@ def run(cwd: Path | None = None) -> Report:
         )
     )
     wt_toml = main / ".wt.toml"
-    calls_wtx = wt_toml.is_file() and "wtx hook" in wt_toml.read_text()
     checks.append(
         Check(
-            ".wt.toml calls wtx",
-            calls_wtx,
+            "no .wt.toml left",
+            not wt_toml.is_file(),
             str(wt_toml),
-            "wtx init, or add the three hook lines by hand",
+            "wtx init removes it: workmux runs the hooks now, from the config wtx writes",
+            hard=False,
+        )
+    )
+    generated = workmux.config_path(main)
+    try:
+        foreign = generated.is_file() and not generated.read_text().startswith(workmux.MARKER)
+    except OSError:
+        foreign = False
+    checks.append(
+        Check(
+            f"{workmux.CONFIG_NAME} is the one wtx writes",
+            not foreign,
+            str(generated),
+            "move what you need into wtx.toml, then delete it: wtx go writes it again",
+        )
+    )
+    # A config on a branch never reaches what wtx runs (it passes its own with
+    # --config, and runs remove from the main checkout), but a workmux command
+    # typed in that worktree reads it.
+    own = [
+        str(item.path)
+        for item in git.list_worktrees(main)
+        if item.path.resolve() != main.resolve() and (item.path / workmux.CONFIG_NAME).is_file()
+    ]
+    checks.append(
+        Check(
+            f"no worktree with its own {workmux.CONFIG_NAME}",
+            not own,
+            ", ".join(own),
+            "remove it from the branch: a workmux command typed in that worktree reads it",
+            hard=False,
         )
     )
 

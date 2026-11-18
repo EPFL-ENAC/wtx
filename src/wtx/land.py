@@ -36,7 +36,7 @@ import tty
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import git, notify, orchestrate, review, tmux, wt
+from . import git, notify, orchestrate, review, tmux, workmux
 from .agents.base import PROMPT_SENT
 from .config import WtxConfig
 from .context import Ctx, session_name
@@ -150,8 +150,8 @@ def cleanup(ctx: Ctx, branch: str, *, keep_branch: bool = False, remote: bool = 
     """
     if git.worktree_path_for(ctx.main, branch):
         try:
-            wt.remove(ctx.main, branch)
-        except wt.WtError as exc:
+            workmux.remove(ctx.main, branch)
+        except workmux.WorkmuxError as exc:
             warn(f"could not remove the worktree: {exc}")
     if keep_branch:
         return
@@ -240,7 +240,7 @@ def land(
 def outcome(ctx: Ctx, branch: str, *, merge: bool) -> str:
     """How a land ended, read from the repo after the clean up.
 
-    Built from facts, not assumed: a clean up can fail halfway (wt refuses,
+    Built from facts, not assumed: a clean up can fail halfway (workmux refuses,
     a commit arrives late and the branch is kept), and a "landed" that hides
     a worktree still on disk is how the human ended up running land twice.
     """
@@ -312,7 +312,7 @@ def finish(ctx: Ctx, landed: Landed, *, ask: bool = False) -> None:
     clean up that ran on its own killed the session under the human, and when
     it did not run (a PR merged later, a window closed early) nothing in the
     session said the branch had landed. Until Enter, the session is marked
-    `landed`: in the picker, on the board, and in a desktop banner, since a PR
+    `landed`: in the status line, in `wtx status`, and in a desktop banner, since a PR
     land can take 30 minutes and an auto-land ends while you look elsewhere.
     """
     print(recap(ctx, landed), flush=True)
@@ -436,7 +436,7 @@ def _land_remote(
     # even force-pushed to its own name.
     if local and not skip_checks:
         _checks(ctx, path)
-    # Name the ref. A branch cut with wt tracks its base until setup repairs
+    # Name the ref. A new branch tracks its base until setup repairs
     # that, and a bare push then refuses to guess. land must work on a worktree
     # setup never touched. --force-with-lease still guards origin/<branch>.
     run(["git", "push", "--force-with-lease", "origin", branch], cwd=path)

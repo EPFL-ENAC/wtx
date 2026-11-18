@@ -11,49 +11,25 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
 from .agents.base import get as get_agent
 from .init import GITIGNORE_LINES
-from .proc import say, warn
+from .proc import run, say, warn, which
 
 BASHRC_LINE = 'eval "$(wtx shell-init bash)"'
 
 
-def picker_format() -> str:
-    """The line choose-tree draws for one session.
-
-    tmux reads the session option itself, so nothing runs per line and the
-    picker stays instant. The colours come from notify so the picker, the
-    board and the grid agree on what waiting looks like.
-    """
-    from .notify import TMUX_STYLE
-    from .tmux import STATE_OPTION
-
-    opt = f"#{{{STATE_OPTION}}}"
-    style = ""
-    for state, colour in TMUX_STYLE.items():
-        style += f"#{{?#{{==:{opt},{state}}},#[{colour}],"
-    style += "}" * len(TMUX_STYLE)
-    return f"{style}#{{session_name}}#{{?{opt}, [{opt}],}}"
-
-
-# -s, not -w: -w expands every session to its windows, so each session takes
-# two lines and moving to the next one is two key presses. There is only ever
-# one window per session here anyway.
+# The picker and the grid of every session are workmux's now (`workmux
+# dashboard`, `workmux sidebar`). The status line stays: it shows the states
+# only wtx knows (permission, idle, landed).
 TMUX_LINES = [
     "# wtx: which session is waiting for you",
     "set -g status-interval 5",
     """set -ag status-right ' #(wtx tmux-status)'""",
-    f"bind s choose-tree -sZ -O name -F '{picker_format()}'",
-    # One command, no `\;` sequence: in a config file tmux reads `\;` as a
-    # literal argument, not as a separator, and a plain `;` would end the
-    # binding and run the rest at load time. wtx monitor does the switch.
-    # -b, or tmux shows whatever the command printed in copy mode, right on
-    # top of the grid it just built.
-    "bind g run-shell -b 'wtx monitor --grid'",
 ]
 
 # Most Linux terminals (GNOME Terminal, Ptyxis, anything on VTE) ignore OSC 52,
@@ -121,11 +97,6 @@ def _sets_copy_command(text: str) -> bool:
 # Derived, never typed out again: a file wtx generates has to be in both ignore
 # lists or an untracked file makes the worktree dirty and `wtx land` refuses it.
 GIT_IGNORE_LINES = [f"**/{line}" for line in GITIGNORE_LINES]
-
-WT_CONFIG = """strategy = "custom"
-pattern = "{.repo.Main}/.claude/worktrees/{.branch}"
-separator = "-"
-"""
 
 EXPLORE_AGENT_USER = """---
 name: Explore
@@ -204,16 +175,17 @@ def _is_wtx_hook(entry: dict) -> bool:
 
 
 def _is_old_tmux(line: str) -> bool:
-    """A picker or grid binding an older wtx, or a predecessor, wrote.
+    """The picker or grid binding an older wtx wrote. Both are gone: the
+    monitor does not exist any more, and tmux's own prefix+s comes back.
 
     Matched on what the binding does, not on its exact text: the picker line
-    has changed twice already, and two `bind s` lines in the file means the
-    last one read wins, which is not the one wtx just appended.
+    changed twice. A `bind s` of the user's own, without the wtx state in it,
+    stays.
     """
     s = line.strip()
-    if s.startswith("#") or s in TMUX_LINES:
+    if s.startswith("#"):
         return False
-    if s.startswith("bind s choose-tree"):
+    if s.startswith("bind s choose-tree") and "@wtx_state" in s:
         return True
     return s.startswith("bind g ") and "wtx monitor" in s
 
@@ -290,7 +262,7 @@ def planned(agent_tool: str = "claude") -> list[Change]:
         ),
         Change(
             home / ".tmux.conf",
-            "show which session is waiting, in the status line and the picker",
+            "show which session is waiting, in the status line",
             "\n" + "\n".join(TMUX_LINES) + "\n",
             stale=_is_old_tmux,
         ),
@@ -324,12 +296,6 @@ def planned(agent_tool: str = "claude") -> list[Change]:
             home / ".config" / "git" / "ignore",
             "keep per-worktree files out of every repo",
             "\n# wtx\n" + "\n".join(GIT_IGNORE_LINES) + "\n",
-        ),
-        Change(
-            home / ".config" / "wt" / "config.toml",
-            "put worktrees under <repo>/.claude/worktrees/<branch>",
-            WT_CONFIG,
-            kind="create",
         ),
     ]
     if agent_tool == "claude":
@@ -458,6 +424,35 @@ def _status_line_of(path: Path) -> dict | None:
     return value if isinstance(value, dict) else None
 
 
+def _settings_text() -> str:
+    try:
+        return (Path.home() / ".claude" / "settings.json").read_text()
+    except OSError:
+        return ""
+
+
+def workmux_hooks_needed() -> bool:
+    """workmux's own status hooks, for its dashboard. wtx does not write
+    them: `workmux setup` knows its own hooks better."""
+    from .workmux import hooks_installed
+
+    return which("workmux") is not None and not hooks_installed(_settings_text())
+
+
+def _setup_workmux_hooks() -> int:
+    """Run `workmux setup --hooks` when it can ask its question, else say how."""
+    from .workmux import SETUP_HOOKS
+
+    if not workmux_hooks_needed():
+        if which("workmux"):
+            say("already set: the workmux status hooks")
+        return 0
+    if not sys.stdin.isatty():
+        say(f"run `{' '.join(SETUP_HOOKS)}` from a real terminal: it asks a question")
+        return 0
+    return 1 if run(list(SETUP_HOOKS), check=False) == 0 else 0
+
+
 def show(agent_tool: str = "claude") -> str:
     lines = [
         "wtx needs these machine-level pieces. Run `wtx install-machine --apply`",
@@ -481,6 +476,16 @@ def show(agent_tool: str = "claude") -> str:
     if agent_tool == "claude":
         for name in shipped_skills():
             lines.append(f"--- {Path.home() / '.claude' / 'skills' / name}: the /{name} skill")
+            lines.append("")
+        if which("workmux"):
+            from .workmux import SETUP_HOOKS
+
+            status = "needed" if workmux_hooks_needed() else "already there"
+            lines.append(
+                f"--- {' '.join(SETUP_HOOKS)}  ({status}): workmux's status hooks, so "
+                "`workmux dashboard` shows each agent. Not its skills: its merge "
+                "skill goes around wtx land."
+            )
             lines.append("")
     lines.append(
         "A coding agent cannot write these files, and should not: they decide what "
@@ -532,6 +537,7 @@ def apply(agent_tool: str = "claude") -> int:
                 applied += 1
         except OSError as exc:
             warn(f"could not create {skills}: {exc}")
+        applied += _setup_workmux_hooks()
     if applied:
         say("open a new shell, and run `tmux source-file ~/.tmux.conf` in tmux")
     return applied

@@ -89,7 +89,7 @@ Say what was started, and how to reach it:
 
 ```sh
 wtx status                 # ports, sessions, and what each agent is doing
-wtx monitor                # every session on one screen
+workmux dashboard          # every session on one screen
 tmux attach -t <session>   # the session name is printed by wtx go
 ```
 

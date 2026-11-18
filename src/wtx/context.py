@@ -7,6 +7,7 @@ may be the main checkout itself), the branch, the config, and the values from
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -20,13 +21,37 @@ class ContextError(Exception):
     pass
 
 
-def session_name(repo: str, branch: str) -> str:
-    """tmux session name for a checkout.
+def handle(branch: str) -> str:
+    """The worktree folder name and the session name of a branch.
 
-    tmux refuses . and : in a session name, so they become dashes. Slashes are
-    fine and keep <repo>/<branch> readable in the picker.
+    workmux runs every name through slugify: lower case, any other character
+    becomes a dash. This keeps only a-z, 0-9 and single dashes, so slugify
+    gives it back unchanged and wtx and workmux always agree on the name.
+    wtx passes it to workmux with --name, it never guesses what workmux made.
+    Two branches can give the same handle (feat/x and feat-x): `wtx go`
+    refuses the second one.
     """
-    return f"{repo}/{branch}".replace(".", "-").replace(":", "-")
+    out = re.sub(r"[^a-z0-9]+", "-", branch.lower()).strip("-")
+    if not out:
+        raise ContextError(f"the branch name {branch!r} gives an empty worktree name")
+    return out
+
+
+def session_prefix(repo: str) -> str:
+    """What every session of a repo starts with. workmux's window_prefix.
+
+    tmux refuses . and : in a session name, so they become dashes.
+    """
+    return repo.replace(".", "-").replace(":", "-") + "/"
+
+
+def session_name(repo: str, branch: str) -> str:
+    """tmux session name for a checkout: <repo>/<handle>.
+
+    The only place it is computed. workmux builds the same name from the
+    window_prefix wtx writes in its config and the handle wtx gives it.
+    """
+    return session_prefix(repo) + handle(branch)
 
 
 @dataclass

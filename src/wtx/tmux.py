@@ -1,9 +1,13 @@
-"""The tmux session for a checkout.
+"""The tmux session for a checkout, and what wtx still asks tmux itself.
 
-One session per checkout, named "<repo>/<branch>", one window, the agent pane
-filling the left half and the rest stacked on the right. Panes are addressed
-through the @wt_role option, never by title: a coding agent rewrites its own
-pane title as it works, and a title is not a tmux target anyway.
+workmux builds the session: one per checkout, named "<repo>/<handle>", one
+window, the agent pane on the left and the rest stacked on the right (see
+workmux.py). What workmux has no command for stays here: restarting the agent
+pane, the server-wide key bindings, the session state option, attach.
+
+Panes are addressed through the @wt_role option, which each pane sets on
+itself (see pane.py), never by title: a coding agent rewrites its own pane
+title as it works, and a title is not a tmux target anyway.
 """
 
 from __future__ import annotations
@@ -22,6 +26,9 @@ from .proc import capture, capture_code, is_dry_run, run, say, warn
 STATE_OPTION = "@wtx_state"
 ROLE_OPTION = "@wt_role"
 WINDOW = "dev"
+# The session wtx starts when there is no tmux server: workmux refuses to run
+# without one. It stays, it is what keeps the server up.
+HOME_SESSION = "wtx-home"
 
 
 def available() -> bool:
@@ -114,6 +121,16 @@ def kill_session(session: str) -> None:
         cmd(["kill-session", "-t", f"={session}"])
 
 
+def ensure_server() -> None:
+    """Start a tmux server when there is none. workmux add and open refuse to
+    run without one, and wtx go or wtx all after a reboot must still work from
+    a plain terminal. A session is the only way to keep a server up."""
+    if server_status()[0] != "absent":
+        return
+    say(f"no tmux server, starting one with a session {HOME_SESSION}")
+    cmd(["new-session", "-d", "-s", HOME_SESSION, "-c", str(Path.home())])
+
+
 def scrub_environment(keys: Sequence[str]) -> None:
     """Drop wtx values from the tmux server environment.
 
@@ -122,10 +139,10 @@ def scrub_environment(keys: Sequence[str]) -> None:
     including the main checkout's, whose frontend then looks for a backend that
     is not there.
     """
-    from .hooks import GO_AGENT_ENV, GO_DRIVING_ENV, GO_LLM_ENV
+    from .hooks import GO_AGENT_ENV, GO_LLM_ENV
     from .repos import WITH_ENV
 
-    for key in ("ROOT", WITH_ENV, GO_AGENT_ENV, GO_LLM_ENV, GO_DRIVING_ENV, *keys):
+    for key in ("ROOT", WITH_ENV, GO_AGENT_ENV, GO_LLM_ENV, *keys):
         cmd(["set-environment", "-gu", key])
 
 
@@ -201,12 +218,6 @@ def agent_pane_id(session: str) -> str:
     return panes.get("agent") or panes.get("claude", "")
 
 
-def _split_percent(position: int, total: int) -> int:
-    """Size for the new pane so the right column ends up in equal parts."""
-    remaining = total - position + 1
-    return round(100 * remaining / (remaining + 1))
-
-
 def render_ctx(
     ctx: Ctx,
     resolved: list,
@@ -234,8 +245,10 @@ def render_ctx(
     )
 
 
-def pane_command(ctx: Ctx, pane: Pane, agent: Agent, rctx: RenderContext, *, brief: bool) -> str:
-    if pane.role == "agent":
+def pane_command(
+    ctx: Ctx, pane: Pane, agent: Agent | None, rctx: RenderContext, *, brief: bool
+) -> str:
+    if pane.role == "agent" and agent is not None:
         return agent.launch_cmd(rctx, brief=brief)
     if pane.cmd:
         return pane.cmd
@@ -341,11 +354,19 @@ def ensure_session(
     `brief` says whether the agent pane starts on PROMPT.md, `phase` which
     side of the plan/build handoff that brief is on. A pane with no brief has
     no phase: it is a plain session.
+
+    workmux builds the session. The panes ask wtx what to run when they
+    start (pane.py), and the brief travels in a launch record.
     """
+    from . import pane as pane_mod
+    from . import workmux
     from .proc import which
 
     if which("tmux") is None:
         warn("tmux is not installed, no session created")
+        return
+    if not workmux.available():
+        warn("workmux is not installed, no session created. See `wtx doctor`.")
         return
     state, err = server_status()
     if state not in ("up", "absent"):
@@ -355,6 +376,7 @@ def ensure_session(
     if not panes:
         return
 
+    ensure_server()
     scrub_environment(ctx.cfg.owned_env_keys)
     server_options()
     rctx = render_ctx(ctx, resolved, phase=phase if brief else "")
@@ -367,77 +389,26 @@ def ensure_session(
             attach(ctx.session)
         return
 
-    agent_panes = [p for p in panes if p.role == "agent"]
-    others = [p for p in panes if p.role != "agent"]
-    ordered = agent_panes + others
-    first = ordered[0]
-
-    cmd(
-        [
-            "new-session",
-            "-d",
-            "-s",
-            ctx.session,
-            "-n",
-            WINDOW,
-            "-c",
-            str(ctx.root / first.cwd),
-        ]
-    )
-    server_options()  # this run may have just started the server
-
-    ids: list[str] = [
-        out(["display-message", "-p", "-t", f"={ctx.session}:{WINDOW}", "#{pane_id}"])
-    ]
-    rest = ordered[1:]
-    for index, pane in enumerate(rest, start=1):
-        target = ids[-1]
-        direction = "-h" if index == 1 else "-v"
-        size = 50 if index == 1 else _split_percent(index, len(rest))
-        new_id = out(
-            [
-                "split-window",
-                direction,
-                "-l",
-                f"{size}%",
-                "-P",
-                "-F",
-                "#{pane_id}",
-                "-t",
-                target,
-                "-c",
-                str(ctx.root / pane.cwd),
-            ],
-            mutating=True,
-        )
-        ids.append(new_id)
-
-    for pane_id, pane in zip(ids, ordered, strict=False):
-        cmd(["select-pane", "-t", pane_id, "-T", pane.name])
-        cmd(["set-option", "-p", "-t", pane_id, ROLE_OPTION, pane.role])
-    cmd(["set-option", "-w", "-t", f"={ctx.session}:{WINDOW}", "pane-border-status", "top"])
-
-    logs = ctx.logs_dir
-    load = envfile.load_snippet(ctx.cfg.owned_env_keys)
     want_brief = brief and (ctx.root / PROMPT_FILE).is_file()
+    pane_mod.write_launch(ctx.session, brief=want_brief, phase=phase)
     if want_brief:
         from . import notify  # notify imports tmux
 
         notify.remember_phase(ctx.session, brief_phase(rctx))
-    for pane_id, pane in zip(ids, ordered, strict=False):
-        line = pane_command(ctx, pane, agent, rctx, brief=want_brief and pane.role == "agent")
-        cmd(["send-keys", "-t", pane_id, f"{load}; {line}", "C-m"])
-        if pane.log:
-            _pipe_log(logs, pane.name, pane_id)
-    if ids:
-        cmd(["select-pane", "-t", ids[0]])
+    try:
+        workmux.write_config(ctx.main, ctx.cfg, ctx.repo_name)
+        workmux.open_session(ctx.main, ctx.root, ctx.branch)
+    except workmux.WorkmuxError as exc:
+        pane_mod.clear_launch(ctx.session)
+        warn(f"workmux could not open {ctx.session}: {exc}")
+        return
 
     print(urls(ctx))
     if attach_after:
         attach(ctx.session)
 
 
-def _pipe_log(logs: Path, name: str, pane_id: str) -> None:
+def pipe_log(logs: Path, name: str, pane_id: str) -> None:
     """Mirror a server pane to a plain file.
 
     The agent runs sandboxed with no access to the tmux socket, so a log file

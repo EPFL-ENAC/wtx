@@ -21,18 +21,12 @@ from . import git
 from .config import CONFIG_NAME, SCHEMA_VERSION
 from .proc import capture, say, warn
 
+# What an older wtx wrote for the wt tool. workmux runs the hooks now, from the
+# config wtx generates, so `wtx init` removes it.
 WT_TOML = ".wt.toml"
-
-WT_TOML_BODY = """# Hooks for the wt worktree manager (https://github.com/timvw/wt).
-# wt exports WT_PATH and WT_BRANCH to every hook. It also exports WT_MAIN, which
-# wtx ignores: wt calls "main" whichever worktree holds the default branch.
-# Each hook is a list, wt does not run a plain string.
-# All the logic lives in wtx, so an upgrade reaches every repo at once.
-[hooks]
-post_create = ["wtx hook post-create"]
-post_checkout = ["wtx hook post-checkout"]
-pre_remove = ["wtx hook pre-remove"]
-"""
+_WT_HOOK_LINE = re.compile(
+    r'(post_create|post_checkout|pre_remove)\s*=\s*\[?\s*"wtx hook [a-z-]+"\s*\]?'
+)
 
 GITIGNORE_LINES = [
     ".env.worktree",
@@ -45,6 +39,7 @@ GITIGNORE_LINES = [
     ".claude/rules/wtx.md",
     ".claude/worktrees/",
     "opencode.json",
+    ".workmux.yaml",
 ]
 
 GITIGNORE_HEADER = "# wtx: per-worktree files, local to one checkout"
@@ -54,7 +49,8 @@ K8S_ROOT = Path("~/code/enack8s-app-config").expanduser()
 CLAUDE_SECTION = """## Dev servers and worktrees
 
 Every branch has its own git worktree, tmux session and agent. The session is
-`{repo}/<branch>` and its panes are {panes}.
+`{repo}/<branch>`, with the branch in lower case and dashes (`feat/Add_X` gives
+`{repo}/feat-add-x`), and its panes are {panes}.
 
 - Ports are per worktree and live in `.env.worktree`, which every pane exports.
   Never hardcode a port, read {port_keys} from the environment.
@@ -742,6 +738,41 @@ def render_toml(answers: dict[str, Any]) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
+def retire_wt_toml(main: Path) -> Path | None:
+    """Remove the .wt.toml an older wtx wrote. Returns it when it was removed.
+
+    Only when it holds nothing but the wtx hooks. A file with more in it is
+    the user's: it stays, with a hint.
+    """
+    path = main / WT_TOML
+    if not path.is_file():
+        return None
+    lines = [
+        ln.strip()
+        for ln in path.read_text().splitlines()
+        if ln.strip() and not ln.strip().startswith("#")
+    ]
+    if not all(ln == "[hooks]" or _WT_HOOK_LINE.fullmatch(ln) for ln in lines):
+        warn(
+            f"{path} has more than the wtx hooks, left as it is. workmux runs the "
+            "wtx hooks now: remove the `wtx hook` lines, and the file if nothing is left."
+        )
+        return None
+    path.unlink()
+    return path
+
+
+def upgrade(main: Path) -> list[Path]:
+    """What `wtx init` changes in a repo that already has its wtx.toml."""
+    changed = []
+    retired = retire_wt_toml(main)
+    if retired:
+        changed.append(retired)
+    if update_gitignore(main):
+        changed.append(main / ".gitignore")
+    return changed
+
+
 def update_gitignore(main: Path) -> bool:
     f = main / ".gitignore"
     existing = f.read_text() if f.is_file() else ""
@@ -789,16 +820,7 @@ def write_all(main: Path, answers: dict[str, Any], *, force: bool = False) -> li
     cfg_path.write_text(render_toml(answers))
     written.append(cfg_path)
 
-    wt_path = main / WT_TOML
-    if not wt_path.exists() or force:
-        wt_path.write_text(WT_TOML_BODY)
-        written.append(wt_path)
-    elif "wtx hook" not in wt_path.read_text():
-        warn(f"{wt_path} exists and does not call wtx. Merge these lines by hand:")
-        print(WT_TOML_BODY)
-
-    if update_gitignore(main):
-        written.append(main / ".gitignore")
+    written += upgrade(main)
     return written
 
 

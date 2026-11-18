@@ -1,17 +1,99 @@
-# Moving a repo off the bash scripts
+# Migration
+
+Two moves: from wt to workmux (every repo that uses wtx today), and off the
+old bash scripts (a repo that never used wtx).
+
+## From wt to workmux
+
+wtx does not use wt any more. workmux makes the worktrees and the tmux
+sessions, from a config wtx writes for it. What changes for you:
+
+- The session of `feat/x` is `<repo>/feat-x`, not `<repo>/feat/x`. A live
+  session keeps its old name, and the new wtx does not find it.
+- A new branch with upper case, `_` or `.` gets a folder in lower case with
+  dashes: `feat/Add_X` gives `.claude/worktrees/feat-add-x`. Old folders keep
+  their name, and their session still gets the new name.
+- `wtx monitor`, `prefix+s` (the wtx picker) and `prefix+g` (the grid) are
+  gone. Use `workmux dashboard` or `workmux sidebar`. tmux's own `prefix+s`
+  is back.
+- `.wt.toml` is gone. wtx writes `.workmux.yaml` in the main checkout, ignored
+  by git.
+
+The worktrees, their branches, ports and `.env.worktree` do not move.
+
+### 1. Finish what is running
+
+A handoff record and a state file are named after the session. With the new
+name, wtx never reads the old ones. So, before you start:
+
+- Let every plan that is waiting go to its build. `wtx status` shows a handoff
+  that is waiting.
+- Note which sessions wait for you, the status line will forget them.
+
+### 2. Close the old sessions
+
+Kill each session, the worktrees stay: `prefix+X` then `k`, or
+`tmux kill-session -t '=<repo>/feat/x'`. `tmux ls` lists them.
+
+### 3. Update the machine
+
+From a real terminal, not from an agent:
+
+```sh
+cargo install workmux --locked      # without --locked, cargo fails
+uv tool install --reinstall git+https://github.com/EPFL-ENAC/wtx
+wtx install-machine --apply
+wtx doctor
+```
+
+`install-machine` comments out the old `prefix+s` and `prefix+g` lines in
+`~/.tmux.conf`, adds `.workmux.yaml` to the global git ignore, and runs
+`workmux setup --hooks` (the status hooks for the dashboard). If
+`wtx doctor` warns about a workmux `merge` skill in `~/.claude/skills`, remove
+it: it merges and removes the worktree around `wtx land`.
+
+wt and `~/.config/wt/config.toml` can go.
+
+### 4. Update each repo
+
+In the main checkout of each repo that has a `wtx.toml`:
+
+```sh
+wtx init
+```
+
+On a repo set up already, it keeps `wtx.toml` as it is, removes `.wt.toml` and
+adds `.workmux.yaml` to `.gitignore`. Commit the two changes the way that repo
+takes changes to its base branch. A `.wt.toml` with more than the wtx hooks in
+it stays, `wtx init` says so: remove the `wtx hook` lines by hand.
+
+A paired repo with its own `wtx.toml` needs the same.
+
+### 5. Bring the sessions back
+
+```sh
+wtx all
+```
+
+Every worktree gets its session back, under the new name. A Claude agent
+starts on `claude --continue`, so each pane gets its last conversation back.
+The state files of the old names are not read any more, and go at the next
+logout (they live in `$XDG_RUNTIME_DIR`).
+
+## Off the old bash scripts
 
 For a repo that carries `scripts/wt-*.sh`, `scripts/tmux-dev.sh`,
 `scripts/claude-worktree-settings.json` and `scripts/wt-go.bash`.
 
 Do it on a branch, in the main checkout, and land it the usual way.
 
-## 1. Close the worktrees, or leave them
+### 1. Close the worktrees, or leave them
 
 Existing worktrees keep working: the hooks always run the main checkout's copy
 of whatever tooling is there. But their `.env.worktree` was written by the old
 scripts. wtx reads the ports from it and keeps them, so nothing moves.
 
-## 2. Write the config
+### 2. Write the config
 
 ```sh
 wtx init            # or /wtx-init in a Claude Code session
@@ -22,7 +104,7 @@ Compare the generated `wtx.toml` with the old `scripts/wt-lib.sh` constants:
 Then compare the panes with `tmux-dev.sh`, and the allow list with
 `scripts/claude-worktree-settings.json`.
 
-## 3. Move what does not fit
+### 3. Move what does not fit
 
 Anything repo-specific that is not a config key becomes a hook:
 
@@ -40,7 +122,7 @@ over and unset properly:
 computed = ["DB_NAME", "POSTGRES_TEST_DB"]
 ```
 
-## 4. Delete the old files
+### 4. Delete the old files
 
 ```sh
 git rm scripts/wt-lib.sh scripts/wt-setup.sh scripts/wt-teardown.sh \
@@ -66,7 +148,7 @@ wt-done:  ; wtx done $(BRANCH)
 
 Or drop them: `wtx go` and `wtx done` work from any repo.
 
-## 5. Switch the shell
+### 5. Switch the shell
 
 `wtx install-machine --apply` does it for you: it comments out the old
 `source .../scripts/wt-go.bash` line in `~/.bashrc` and adds the new one. By
@@ -80,7 +162,7 @@ eval "$(wtx shell-init bash)"
 One line for every repo, and the completion reads each repo's own
 `protected_branches` instead of a hardcoded list.
 
-## 6. Reinstall the guard and check
+### 6. Reinstall the guard and check
 
 ```sh
 wtx guard
@@ -104,7 +186,7 @@ For a repo whose remote must not receive any of this, put the files in
 
 ```
 wtx.toml
-.wt.toml
+.workmux.yaml
 .env.worktree
 .wt-logs/
 PROMPT.md

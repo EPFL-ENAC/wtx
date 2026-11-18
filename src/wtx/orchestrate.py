@@ -256,7 +256,7 @@ def save_plan(ctx: context.Ctx, plan: str, model: str) -> None:
 
 
 def record_file(session: str) -> Path:
-    """Beside the state files, but not named *.json: the monitor reads those."""
+    """Beside the state files, but not named *.json: those are states."""
     return notify.state_dir() / f"{notify.safe_name(session)}.handoff"
 
 

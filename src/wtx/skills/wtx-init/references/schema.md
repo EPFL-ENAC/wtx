@@ -6,7 +6,7 @@ here. Most keys have a default. The ones marked "required" do not:
 `name`, `[[repos]]` `name` and `path`, and `run` in an `editable_install`.
 
 Check a file with `wtx config validate`. `wtx go` and `wtx setup` refuse a file
-with problems. The `wt` hooks only warn. A key wtx does not know is not a
+with problems. The hooks workmux runs only warn. A key wtx does not know is not a
 problem, but `wtx config validate` names it, so a typo does not go unseen.
 
 A yes or no key takes `true` or `false`, without quotes. `"false"` is an error.
@@ -91,7 +91,8 @@ Anything else already in `.env.worktree` is kept as it is, comments included.
 ## `[panes]` and `[[panes.pane]]`
 
 The pane with `role = "agent"` fills the left half. The rest stack on the right,
-in the order they are listed.
+in the order they are listed. wtx turns this table into the workmux config
+(`.workmux.yaml` in the main checkout, generated, never edited by hand).
 
 | Key | Default | What |
 | --- | --- | --- |
@@ -224,8 +225,10 @@ An external directory the agent needs.
 
 `read`: readable with no prompt, never writable.
 `pair`: the same until someone runs `wtx go <branch> --with <name>=<branch>`,
-which makes a worktree in that repo. `--with <name>` alone pairs it on a branch
-named like the app branch. The agent edits there, and it lands through
+which makes a worktree in that repo, under its `.claude/worktrees/`. A repo
+with its own `wtx.toml` gets it through workmux, so its own setup runs there.
+A plain repo gets it from git, with no setup. `--with <name>` alone pairs it
+on a branch named like the app branch. The agent edits there, and it lands through
 that repo's own pull request. A pairing is remembered, so a later plain
 `wtx go` never un-pairs a worktree, and `wtx done` never removes the paired one.
 

@@ -1,9 +1,10 @@
 """Test fixtures: a real temp git repo, and fake binaries that record calls.
 
 The real git is used because the traps this tool exists for are git behaviours.
-wt, tmux and the agents are faked: a test must never touch the developer's tmux
-server, and must never push anywhere real. The fake wt does what the real one
-does with plain git, minus the .wt.toml hooks.
+workmux, tmux and the agents are faked: a test must never touch the developer's
+tmux server, and must never push anywhere real. The fake workmux does what the
+real one does with plain git, minus the hooks: they would run whatever `wtx`
+is installed on the machine, not the code under test.
 """
 
 from __future__ import annotations
@@ -48,18 +49,13 @@ BODIES = {
   has-session) if [ -f "$WTX_TEST_SESSIONS" ] && grep -qxF "${3#=}" "$WTX_TEST_SESSIONS"; then exit 0; else exit 1; fi;;
   new-session) echo "${4}" >> "$WTX_TEST_SESSIONS";;
   kill-session) if [ -f "$WTX_TEST_SESSIONS" ]; then grep -vxF "${3#=}" "$WTX_TEST_SESSIONS" > "$WTX_TEST_SESSIONS.tmp" || true; mv "$WTX_TEST_SESSIONS.tmp" "$WTX_TEST_SESSIONS"; fi;;
-  display-message) echo '%0';;
+  display-message) echo "${WTX_TEST_DISPLAY:-%0}";;
   split-window) echo "%$$";;
-  list-sessions) [ -f "$WTX_TEST_SESSIONS" ] && cat "$WTX_TEST_SESSIONS";;
+  list-sessions) if [ -n "$WTX_TEST_NO_SERVER" ] && [ ! -s "$WTX_TEST_SESSIONS" ]; then
+                   echo "no server running on /tmp/tmux-0/default" >&2; exit 1; fi
+                 [ -f "$WTX_TEST_SESSIONS" ] && cat "$WTX_TEST_SESSIONS";;
   list-panes) echo '%0 agent';;
   show-options) echo '';;
-esac""",
-    "wt": """slug=$(printf '%s' "$4" | tr / -)
-case "$3" in
-  create) git worktree add -q -b "$4" ".claude/worktrees/$slug" "$5";;
-  checkout) git worktree add -q ".claude/worktrees/$slug" "$4";;
-  remove) p=$(git worktree list --porcelain | awk -v b="refs/heads/$4" '/^worktree /{w=$2} $0=="branch "b{print w}')
-          [ -n "$p" ] && git worktree remove $5 "$p";;
 esac""",
     "npm": 'case "$*" in *ci*) mkdir -p node_modules;; esac',
     "pnpm": 'case "$*" in *install*) mkdir -p node_modules;; esac',
@@ -77,6 +73,110 @@ esac""",
     "ss": "",
     "gh": 'case "$*" in *"pr view"*) exit 1;; esac',
 }
+
+
+# Python, not sh: it reads the JSON config wtx writes. Same call log as the
+# others. Sessions go in the same file the fake tmux reads.
+FAKE_WORKMUX = r"""
+import json, os, subprocess, sys
+from pathlib import Path
+
+args = sys.argv[1:]
+with open(os.environ["WTX_TEST_CALLS"], "a") as log:
+    log.write("workmux\t" + " ".join(args) + "\n")
+
+
+def git(*a):
+    p = subprocess.run(["git", *a], capture_output=True, text=True)
+    if p.returncode != 0:
+        sys.stderr.write(p.stderr)
+        sys.exit(1)
+    return p.stdout.strip()
+
+
+def opt(name):
+    if name in args:
+        i = args.index(name)
+        value = args[i + 1]
+        del args[i : i + 2]
+        return value
+    return None
+
+
+def flag(*names):
+    found = False
+    for name in names:
+        while name in args:
+            args.remove(name)
+            found = True
+    return found
+
+
+def load(path):
+    path = Path(path)
+    if not path.is_file():
+        return {}
+    text = "\n".join(l for l in path.read_text().splitlines() if not l.startswith("#"))
+    return json.loads(text)
+
+
+def sessions(change):
+    f = Path(os.environ["WTX_TEST_SESSIONS"])
+    names = [n for n in f.read_text().splitlines() if n] if f.is_file() else []
+    f.write_text("".join(n + "\n" for n in change(names)))
+
+
+main = Path(git("rev-parse", "--path-format=absolute", "--git-common-dir")).parent
+meta = lambda name, key: f"workmux.worktree.{name}.{key}"
+cmd = args.pop(0) if args else ""
+if cmd == "--version":
+    print("workmux 0.1.282")
+elif cmd == "add":
+    cfg = load(opt("--config"))
+    name, base = opt("--name"), opt("--base")
+    flag("--headless", "--background", "-b")
+    branch = args[-1]
+    path = main / cfg.get("worktree_dir", "..") / name
+    known = subprocess.run(["git", "rev-parse", "--verify", "--quiet", "refs/heads/" + branch],
+                           capture_output=True).returncode == 0
+    if known:
+        git("worktree", "add", "-q", str(path), branch)
+    else:
+        git("worktree", "add", "-q", "-b", branch, str(path), base or "HEAD")
+    git("config", "--local", meta(name, "attachment"), "headless")
+elif cmd == "open":
+    cfg = load(opt("--config"))
+    target = opt("--target-name")
+    flag("--background", "-b")
+    name = args[-1]
+    session = cfg.get("window_prefix", "wm-") + (target or name)
+    sessions(lambda names: names if session in names else names + [session])
+    git("config", "--local", meta(name, "mode"), "session")
+    git("config", "--local", meta(name, "attachment"), "multiplexer")
+    if target:
+        git("config", "--local", meta(name, "target-session"), target)
+elif cmd in ("remove", "close"):
+    # No --config here, like the real one: the config is what it finds from
+    # its cwd. wtx runs it from the main checkout.
+    cfg = load(Path.cwd() / ".workmux.yaml")
+    force = flag("--force", "-f")
+    flag("--keep-branch", "-k")
+    name = args[-1]
+    target = subprocess.run(["git", "config", "--local", "--get", meta(name, "target-session")],
+                            capture_output=True, text=True).stdout.strip() or name
+    session = cfg.get("window_prefix", "wm-") + target
+    if cmd == "remove":
+        path = next((p for p in (l[len("worktree "):] for l in git(
+            "worktree", "list", "--porcelain").splitlines() if l.startswith("worktree "))
+            if Path(p).name == name), None)
+        if path is None:
+            sys.stderr.write(f"Worktree '{name}' not found.\n")
+            sys.exit(1)
+        git("worktree", "remove", *(["--force"] if force else []), path)
+        subprocess.run(["git", "config", "--local", "--remove-section", f"workmux.worktree.{name}"],
+                       capture_output=True)
+    sessions(lambda names: [n for n in names if n != session])
+"""
 
 
 def _git(args: list[str], cwd: Path) -> str:
@@ -108,6 +208,9 @@ def fake_bin(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         f = bindir / name
         f.write_text(FAKE.format(name=name, body=body))
         f.chmod(0o755)
+    workmux = bindir / "workmux"
+    workmux.write_text(f"#!{sys.executable}\n{FAKE_WORKMUX}")
+    workmux.chmod(0o755)
     monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
     monkeypatch.setenv("WTX_TEST_CALLS", str(calls))
     monkeypatch.setenv("WTX_TEST_SESSIONS", str(sessions))

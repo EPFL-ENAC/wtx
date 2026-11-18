@@ -19,10 +19,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import git, wt
+from . import git
 from .config import ExtRepo
-from .context import Ctx
-from .proc import say, warn
+from .context import ContextError, Ctx
+from .proc import CommandError, say, warn
 
 WITH_ENV = "WTX_WITH"
 
@@ -114,23 +114,35 @@ def resolve_all(ctx: Ctx, *, requested: dict[str, str] | None = None) -> list[Re
 def _ensure_pair(main_path: Path, spec: ExtRepo, branch: str) -> Path | None:
     """Worktree for `branch` inside the external repo, created if needed.
 
-    The nested wt call runs inside that repo, so that repo's own .wt.toml hooks
-    fire and it gets its own session. It goes through wt.py, which keeps wt's
-    auto-cd marker away from the caller's shell.
+    A repo set up for wtx gets it through workmux, with its own generated
+    config: its own `wtx hook post-create` fires, as for any worktree there,
+    and it lands in its own .claude/worktrees. A plain repo has no config to
+    give workmux and nothing to fire, so git makes the worktree at the same
+    place.
     """
+    from . import config as config_mod
+    from . import workmux
+
     if git.main_checkout(main_path) is None:
         warn(f"[[repos]] {spec.name}: {main_path} is not a git repo, cannot pair")
         return None
     existing = git.worktree_path_for(main_path, branch)
     if existing:
         return existing
-    if not wt.available():
-        warn(f"[[repos]] {spec.name}: wt is not installed, cannot pair {branch}")
-        return None
     git.fetch(main_path)
+    base = f"origin/{spec.base_branch}"
+    own = main_path / config_mod.CONFIG_NAME
     try:
-        path, _ = wt.ensure(main_path, branch, f"origin/{spec.base_branch}")
-    except wt.WtError as exc:
+        if own.is_file():
+            if not workmux.available():
+                warn(f"[[repos]] {spec.name}: workmux is not installed, cannot pair {branch}")
+                return None
+            cfg = config_mod.load(own)
+            workmux.write_config(main_path, cfg, cfg.repo.name or git.repo_name(main_path))
+            path, _ = workmux.ensure(main_path, branch, base)
+        else:
+            path = git.add_worktree(main_path, branch, base)
+    except (workmux.WorkmuxError, config_mod.ConfigError, ContextError, CommandError) as exc:
         warn(f"[[repos]] {spec.name}: could not pair {branch}: {exc}")
         return None
     if path:

@@ -2,6 +2,30 @@
 
 ## unreleased
 
+Changed, read [docs/migration.md](docs/migration.md#from-wt-to-workmux) before
+you update:
+
+- workmux makes the worktrees and the tmux sessions, not wt and not wtx.
+  Install it with `cargo install workmux --locked`. wtx writes its config to
+  `.workmux.yaml` in the main checkout, from `wtx.toml` (no change to
+  `wtx.toml`). `.wt.toml` is gone: `wtx init` removes it in a repo set up
+  already, and adds `.workmux.yaml` to `.gitignore`.
+- The session of `feat/x` is now `<repo>/feat-x`, not `<repo>/feat/x`. A new
+  branch with upper case, `_` or `.` gets a lower case folder with dashes.
+  `wtx go` refuses a branch whose name gives the same folder as another
+  worktree's (`feat/x` and `feat-x`).
+- `wtx monitor`, `wtmon`, the wtx picker on `prefix+s` and the grid on
+  `prefix+g` are removed, with no alias. Use `workmux dashboard` or
+  `workmux sidebar`. `install-machine` comments out the old bindings, and
+  tmux's own `prefix+s` is back.
+- `install-machine` runs `workmux setup --hooks`, for the dashboard, and stops
+  writing `~/.config/wt/config.toml`. `wtx doctor` checks workmux instead of
+  wt, and warns about workmux's `merge` skill, which goes around `wtx land`.
+- With no tmux server, `wtx go` and `wtx all` start one, with a session
+  `wtx-home`. `wtx all` ends on `workmux dashboard`.
+- A paired repo with its own `wtx.toml` gets its worktree through workmux, and
+  its setup runs there. A plain repo gets it from git.
+
 New:
 
 - Auto-land: `wtx land <branch> --auto`, or `prefix+X a`. When the land stops

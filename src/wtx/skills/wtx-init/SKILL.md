@@ -18,7 +18,7 @@ wtx doctor --json
 ```
 
 If a hard check fails, show the fixes and stop. There is nothing useful to
-configure on a machine where `wt` or `tmux` is missing.
+configure on a machine where `workmux` or `tmux` is missing.
 
 ## 2. Read the repo
 

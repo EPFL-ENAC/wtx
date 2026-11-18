@@ -49,7 +49,7 @@ class GiveUp(Exception):
 
 
 def record_file(session: str) -> Path:
-    """Beside the state files, but not named *.json: the monitor reads those."""
+    """Beside the state files, but not named *.json: those are states."""
     return notify.state_dir() / f"{notify.safe_name(session)}.autoland"
 
 

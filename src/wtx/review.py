@@ -123,7 +123,7 @@ class ReviewError(Exception):
 
 
 def sidecar_file(session: str) -> Path:
-    """The sidecar as hunk reads it. Not named *.json: the monitor and the
+    """The sidecar as hunk reads it. Not named *.json: `wtx status` and the
     status line read every *.json in this dir as a session state."""
     return notify.state_dir() / f"{notify.safe_name(session)}.review"
 

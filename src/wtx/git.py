@@ -1,9 +1,9 @@
 """Git helpers.
 
 The one rule that matters here: the main checkout is always resolved through
-`git rev-parse --git-common-dir`. The wt tool exports $WT_MAIN, but it calls
-"main" whichever worktree happens to hold the default branch, so $WT_MAIN lies
-and is never read anywhere in wtx.
+`git rev-parse --git-common-dir`. Nothing else: the old wt tool exported
+$WT_MAIN, which named whichever worktree held the default branch, and workmux's
+WM_PROJECT_ROOT is a second opinion. $WT_MAIN is never read anywhere in wtx.
 """
 
 from __future__ import annotations
@@ -99,6 +99,26 @@ def worktree_path_for(cwd: Path, branch: str) -> Path | None:
     return None
 
 
+def add_worktree(main: Path, branch: str, base: str) -> Path | None:
+    """A worktree where workmux puts them, made by git alone.
+
+    For a repo with no wtx.toml: there is no workmux config to give, and no
+    hook to fire. A new branch does not track its base: a plain `git push`
+    would then go to the base.
+    """
+    from .context import handle  # context imports this module
+
+    path = main / ".claude" / "worktrees" / handle(branch)
+    if branch_exists(main, branch):
+        args = [str(path), branch]
+    elif branch_exists(main, f"origin/{branch}"):
+        args = ["--track", "-b", branch, str(path), f"origin/{branch}"]
+    else:
+        args = ["--no-track", "-b", branch, str(path), base]
+    run(["git", "worktree", "add", "-q", *args], cwd=main)
+    return worktree_path_for(main, branch)
+
+
 def branch_exists(cwd: Path, ref: str) -> bool:
     code, _, _ = capture_code(
         ["git", "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"], cwd=cwd
@@ -170,8 +190,8 @@ def is_clean(cwd: Path) -> bool:
 
 
 def remove_empty_untracked(cwd: Path) -> None:
-    """Delete the sandbox stubs. `git worktree remove` refuses a worktree
-    with untracked files, and wt calls it without --force."""
+    """Delete the sandbox stubs. workmux refuses to remove a worktree with
+    untracked files, unless --force, which would drop real work too."""
     for path in empty_untracked(cwd):
         if is_dry_run():
             say(f"[dry-run] rm {path}")
@@ -217,15 +237,16 @@ def merge_commit_of(cwd: Path, head: str, ref: str) -> str:
 
 
 def slug(branch: str) -> str:
-    """Worktree directory name for a branch, matching wt's separator."""
+    """The branch with dashes for slashes: WT_SLUG and the plan file names.
+    Not the worktree folder, that is context.handle."""
     return branch.replace("/", "-")
 
 
 def repair_tracking(cwd: Path, branch: str, base_branch: str) -> None:
     """Stop a new branch from tracking the branch it was cut from.
 
-    `wt create x origin/dev` leaves x tracking origin/dev with the default
-    autoSetupMerge. Then `git pull` rebases the work onto dev and the next push
+    A branch cut from origin/dev (`workmux add --base origin/dev`) tracks
+    origin/dev with the default autoSetupMerge. Then `git pull` rebases the work onto dev and the next push
     is refused. Setting these two repo-level keys and clearing a wrong upstream
     is the fix, and it runs on every setup because a branch can predate it.
     """

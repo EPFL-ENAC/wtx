@@ -1,15 +1,12 @@
-"""What .wt.toml calls.
+"""What workmux calls, through the config wtx writes for it.
 
-A consumer repo's .wt.toml is three lines:
+    post_create: ["wtx hook post-create"]
+    pre_remove: ["wtx hook pre-remove"]
 
-    [hooks]
-    post_create = ["wtx hook post-create"]
-    post_checkout = ["wtx hook post-checkout"]
-    pre_remove = ["wtx hook pre-remove"]
-
-wt exports WT_PATH and WT_BRANCH and runs the hook through sh, with its own
-working directory. WT_MAIN is also exported and never used: wt calls "main"
-whichever worktree holds the default branch.
+workmux exports WM_WORKTREE_PATH, WM_HANDLE and WM_PROJECT_ROOT and runs the
+hook in the worktree folder. WM_PROJECT_ROOT is not used: the main checkout
+always comes from `git rev-parse --git-common-dir`. Nor is WM_HANDLE: the
+branch comes from the folder itself.
 """
 
 from __future__ import annotations
@@ -17,13 +14,13 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from . import context, git
+from . import context
 from .proc import warn
 from .repos import WITH_ENV, decode_with
 from .setup import run_setup
 from .teardown import run_teardown
 
-EVENTS = ("post-create", "post-checkout", "pre-remove")
+EVENTS = ("post-create", "pre-remove")
 
 # What `wtx go` passes down to the hook. These are on purpose not the names
 # written to .env.worktree: every pane exports that file, so a `wtx go` run
@@ -33,7 +30,6 @@ GO_AGENT_ENV = "WTX_GO_AGENT"
 GO_LLM_ENV = "WTX_GO_LLM"
 GO_PLAN_MODEL_ENV = "WTX_GO_PLAN_MODEL"
 GO_PLAN_EFFORT_ENV = "WTX_GO_PLAN_EFFORT"
-GO_DRIVING_ENV = "WTX_GO_DRIVING"
 
 # Everything `wtx go` puts in the environment for the hook, so the two places
 # that clear it cannot fall out of step. A leftover key would reach the tmux
@@ -44,12 +40,14 @@ GO_ENV_KEYS = (
     GO_LLM_ENV,
     GO_PLAN_MODEL_ENV,
     GO_PLAN_EFFORT_ENV,
-    GO_DRIVING_ENV,
 )
 
 
+PATH_ENV = "WM_WORKTREE_PATH"
+
+
 def _target() -> Path | None:
-    raw = os.environ.get("WT_PATH", "")
+    raw = os.environ.get(PATH_ENV, "")
     return Path(raw) if raw else None
 
 
@@ -59,17 +57,17 @@ def run_hook(event: str) -> int:
         return 2
     path = _target()
     if path is None or not path.exists():
-        warn(f"WT_PATH is not set or missing ({path}), nothing to do")
+        warn(f"{PATH_ENV} is not set or missing ({path}), nothing to do")
         return 0
 
-    branch = os.environ.get("WT_BRANCH", "") or git.current_branch(path)
+    # The branch comes from the folder (context.load), never from the
+    # environment: a variable exported by the shell that ran the command
+    # can belong to another worktree.
     try:
         ctx = context.load(root=path)
     except context.ContextError as exc:
         warn(str(exc))
         return 0  # a repo without wtx.toml is not ours to set up
-    if branch and branch != ctx.branch:
-        ctx.branch = branch
 
     if event == "pre-remove":
         run_teardown(ctx)
@@ -82,10 +80,10 @@ def run_hook(event: str) -> int:
         llm=os.environ.get(GO_LLM_ENV, ""),
         plan_model=os.environ.get(GO_PLAN_MODEL_ENV, ""),
         plan_effort=os.environ.get(GO_PLAN_EFFORT_ENV, ""),
-        # When wtx go is driving, it creates the session itself once the
-        # brief is in place. Starting it here too meant an agent launched
-        # twice on a briefed worktree.
-        start_tmux=not os.environ.get(GO_DRIVING_ENV),
+        # Never here. workmux opens the session itself after this hook when a
+        # human ran `workmux add`, and `wtx go` opens it once the brief is in
+        # place. A session opened here too launched the agent twice.
+        start_tmux=False,
         attach=False,
         brief=False,
     )

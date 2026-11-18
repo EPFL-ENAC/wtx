@@ -1,4 +1,4 @@
-"""End to end against a real temp git repo, with faked wt, tmux and agents."""
+"""End to end against a real temp git repo, with faked workmux, tmux and agents."""
 
 from __future__ import annotations
 
@@ -31,8 +31,8 @@ def git_out(args: list[str], cwd: Path) -> str:
 
 
 def make_worktree(repo: Path, branch: str, base: str = "origin/dev") -> Path:
-    """A worktree in the layout wt would make, without needing wt installed."""
-    path = repo / ".claude" / "worktrees" / branch.replace("/", "-")
+    """A worktree in the layout workmux makes, without needing workmux."""
+    path = repo / ".claude" / "worktrees" / context.handle(branch)
     path.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(
         ["git", "worktree", "add", "-q", "-b", branch, str(path), base],
@@ -66,10 +66,41 @@ def test_init_finds_the_python_pin_and_the_install_steps(repo: Path) -> None:
     assert any("uv sync" in r and "{python_version}" in r for r in runs)
 
 
-def test_init_writes_a_three_line_wt_toml(wtx_repo: Path) -> None:
-    body = (wtx_repo / ".wt.toml").read_text()
-    for event in ("post-create", "post-checkout", "pre-remove"):
-        assert f"wtx hook {event}" in body
+OLD_WT_TOML = """# Hooks for the wt worktree manager (https://github.com/timvw/wt).
+[hooks]
+post_create = ["wtx hook post-create"]
+post_checkout = ["wtx hook post-checkout"]
+pre_remove = ["wtx hook pre-remove"]
+"""
+
+
+def test_init_writes_no_wt_toml_and_ignores_the_workmux_config(wtx_repo: Path) -> None:
+    assert not (wtx_repo / ".wt.toml").exists()
+    assert ".workmux.yaml" in (wtx_repo / ".gitignore").read_text().splitlines()
+
+
+def test_init_retires_the_wt_toml_an_older_wtx_wrote(
+    wtx_repo: Path, fake_bin: Path, monkeypatch
+) -> None:
+    """The eleven repos have a wtx.toml already. init keeps it, removes the
+    .wt.toml and adds the new ignore line."""
+    (wtx_repo / ".wt.toml").write_text(OLD_WT_TOML)
+    gitignore = wtx_repo / ".gitignore"
+    gitignore.write_text(gitignore.read_text().replace(".workmux.yaml\n", ""))
+    cfg = (wtx_repo / "wtx.toml").read_text()
+    monkeypatch.chdir(wtx_repo)
+
+    assert run(["init"]) == 0
+    assert not (wtx_repo / ".wt.toml").exists()
+    assert ".workmux.yaml" in gitignore.read_text().splitlines()
+    assert (wtx_repo / "wtx.toml").read_text() == cfg
+    assert run(["init"]) == 1, "nothing left to update: the old refusal"
+
+
+def test_init_keeps_a_wt_toml_with_more_than_the_wtx_hooks(wtx_repo: Path) -> None:
+    (wtx_repo / ".wt.toml").write_text(OLD_WT_TOML + 'post_merge = ["make notify"]\n')
+    assert init_mod.retire_wt_toml(wtx_repo) is None
+    assert (wtx_repo / ".wt.toml").is_file()
 
 
 def test_init_does_not_overwrite_without_force(wtx_repo: Path) -> None:
@@ -544,6 +575,40 @@ def test_pairing_makes_a_worktree_in_the_other_repo(
     assert str(path) in settings["sandbox"]["filesystem"]["allowWrite"]
 
 
+def test_a_plain_pair_repo_gets_a_worktree_from_git(
+    wtx_repo: Path, sibling: Path, fake_bin: Path
+) -> None:
+    """No wtx.toml there: no config to give workmux and no hook to fire. The
+    new branch must not track the base, or a plain push goes to main."""
+    _add_repos_block(wtx_repo, sibling)
+    path = make_worktree(wtx_repo, "feat/plain")
+    setup_mod.run_setup(
+        context.load(root=path), with_repos={"model": "feat/Plain_Model"}, start_tmux=False
+    )
+    assert calls_of(fake_bin, "workmux") == []
+    paired = git.worktree_path_for(sibling, "feat/Plain_Model")
+    assert paired == sibling / ".claude" / "worktrees" / "feat-plain-model"
+    assert git_out(["rev-parse", "--abbrev-ref", "feat/Plain_Model@{upstream}"], sibling) == ""
+
+
+def test_a_wtx_pair_repo_gets_its_worktree_from_workmux(
+    wtx_repo: Path, sibling: Path, fake_bin: Path
+) -> None:
+    """A repo set up for wtx: its own config, so its own hook fires there."""
+    _add_repos_block(wtx_repo, sibling)
+    (sibling / "wtx.toml").write_text('[repo]\nname = "model"\nbase_branch = "main"\n')
+    path = make_worktree(wtx_repo, "feat/wpair")
+    setup_mod.run_setup(
+        context.load(root=path), with_repos={"model": "feat/wpair"}, start_tmux=False
+    )
+    [call] = calls_of(fake_bin, "workmux")
+    assert call.startswith(f"add --headless --config {sibling / '.workmux.yaml'} ")
+    assert _workmux_config(sibling)["window_prefix"] == "model/"
+    assert git.worktree_path_for(sibling, "feat/wpair") == (
+        sibling / ".claude" / "worktrees" / "feat-wpair"
+    )
+
+
 def test_a_pairing_is_remembered_on_the_next_setup(
     wtx_repo: Path, sibling: Path, fake_bin: Path
 ) -> None:
@@ -612,21 +677,323 @@ def test_opencode_orchestration_writes_a_model_per_agent(wtx_repo: Path, fake_bi
 
 
 def test_a_session_is_built_with_one_pane_per_config_entry(wtx_repo: Path, fake_bin: Path) -> None:
+    """workmux builds the session, each pane then tags itself."""
+    from wtx import pane as pane_mod
+
     path = make_worktree(wtx_repo, "feat/tmux")
     ctx = context.load(root=path)
     setup_mod.run_setup(ctx, start_tmux=True)
-    roles = [c for c in calls_of(fake_bin, "tmux") if "@wt_role" in c]
-    assert len(roles) == len(ctx.cfg.panes.panes)
-    assert any(c.endswith("@wt_role agent") for c in roles)
+    [opened] = calls_of(fake_bin, "workmux")
+    assert opened.startswith("open --background --config ")
+    assert opened.endswith(" feat-tmux") and "--target-name" not in opened
+    assert not [c for c in calls_of(fake_bin, "tmux") if c.startswith(("new-session", "split"))]
     scrub = [c for c in calls_of(fake_bin, "tmux") if "set-environment -gu" in c]
     assert any("ROOT" in c for c in scrub)
     assert any("BACKEND_PORT" in c for c in scrub)
+
+    for index, pane in enumerate(ctx.cfg.panes.panes):
+        pane_mod.script(ctx, pane.name, f"%{index}")
+    roles = [c for c in calls_of(fake_bin, "tmux") if "@wt_role" in c]
+    assert roles == [
+        f"set-option -p -t %{i} @wt_role {p.role}" for i, p in enumerate(ctx.cfg.panes.panes)
+    ]
+
+
+def test_every_tmux_call_of_a_pane_names_the_pane(wtx_repo: Path, fake_bin: Path) -> None:
+    """Without -t, tmux takes the active pane of the session: the roles all
+    landed on the last pane when workmux typed the lines."""
+    from wtx import pane as pane_mod
+
+    ctx = context.load(root=make_worktree(wtx_repo, "feat/target"))
+    for pane in ctx.cfg.panes.panes:
+        pane_mod.script(ctx, pane.name, "%7")
+    calls = calls_of(fake_bin, "tmux")
+    assert calls
+    assert all(" -t %7 " in f"{c} " for c in calls)
+
+
+def test_a_log_pane_mirrors_itself_before_its_command(wtx_repo: Path, fake_bin: Path) -> None:
+    from wtx import pane as pane_mod
+
+    ctx = context.load(root=make_worktree(wtx_repo, "feat/logs"))
+    (ctx.logs_dir).mkdir()
+    (ctx.logs_dir / "backend.log").write_text("old run\n")
+    line = pane_mod.script(ctx, "backend", "%3")
+    assert (ctx.logs_dir / "backend.log").read_text() == ""
+    [pipe] = [c for c in calls_of(fake_bin, "tmux") if c.startswith("pipe-pane")]
+    assert pipe.startswith("pipe-pane -t %3 -o ")
+    assert f"{ctx.logs_dir}/backend.log" in pipe
+    assert line.startswith(f"cd {ctx.root / 'backend'} && {{ set -a; ")
+    assert line.rstrip().endswith("make run; }")
+
+
+def test_the_pane_line_exports_the_worktree_values(wtx_repo: Path, fake_bin: Path) -> None:
+    """The line runs in a real shell: the values of .env.worktree are there
+    when the command starts, in the pane's own folder."""
+    from wtx import pane as pane_mod
+
+    path = make_worktree(wtx_repo, "feat/env")
+    setup_mod.run_setup(context.load(root=path))
+    ctx = context.load(root=path)
+    pane = ctx.cfg.panes.panes[-1]
+    line = pane_mod.script(ctx, pane.name, "").replace("clear", "echo $BACKEND_PORT; pwd")
+    out = subprocess.run(["bash", "-c", line], capture_output=True, text=True, check=True)
+    assert out.stdout.split() == [ctx.env["BACKEND_PORT"], str(path / pane.cwd).rstrip("/.")]
+
+
+def test_the_brief_reaches_the_agent_pane_once(wtx_repo: Path, fake_bin: Path) -> None:
+    """The launch record says the first agent pane starts on PROMPT.md. A
+    session opened again later is a plain one."""
+    from wtx import agents, tmux
+    from wtx import pane as pane_mod
+
+    path = make_worktree(wtx_repo, "feat/brief")
+    ctx = context.load(root=path)
+    (path / "PROMPT.md").write_text("do it\n")
+    agent = agents.base.get(ctx.agent_tool)
+    tmux.ensure_session(ctx, agent, [], attach_after=False, brief=True)
+    assert pane_mod.launch_file(ctx.session).is_file()
+
+    line = pane_mod.script(ctx, "agent", "%1")
+    assert "mv PROMPT.md PROMPT.sent.md && claude" in line
+    assert not pane_mod.launch_file(ctx.session).exists()
+    assert "PROMPT.md" not in pane_mod.script(ctx, "agent", "%1")
+
+
+def test_a_plain_session_drops_an_old_launch_record(wtx_repo: Path, fake_bin: Path) -> None:
+    """A record left by an open that failed must not brief a later session."""
+    from wtx import agents, tmux
+    from wtx import pane as pane_mod
+
+    path = make_worktree(wtx_repo, "feat/stale")
+    ctx = context.load(root=path)
+    (path / "PROMPT.md").write_text("old brief\n")
+    pane_mod.write_launch(ctx.session, brief=True, phase="plan")
+    tmux.ensure_session(ctx, agents.base.get(ctx.agent_tool), [], attach_after=False)
+    assert not pane_mod.launch_file(ctx.session).exists()
+
+
+def test_no_tmux_server_starts_one_holding_session(
+    wtx_repo: Path, fake_bin: Path, monkeypatch
+) -> None:
+    """workmux open refuses to run with no tmux server. wtx starts one, once."""
+    from wtx import agents, tmux
+
+    monkeypatch.setenv("WTX_TEST_NO_SERVER", "1")
+    for branch in ("feat/one", "feat/two"):
+        ctx = context.load(root=make_worktree(wtx_repo, branch))
+        tmux.ensure_session(ctx, agents.base.get(ctx.agent_tool), [], attach_after=False)
+    started = [c for c in calls_of(fake_bin, "tmux") if c.startswith("new-session")]
+    assert started == [f"new-session -d -s {tmux.HOME_SESSION} -c {Path.home()}"]
+    assert len(calls_of(fake_bin, "workmux")) == 2
 
 
 def test_the_session_name_has_no_dots(wtx_repo: Path, fake_bin: Path) -> None:
     path = make_worktree(wtx_repo, "release/1.2")
     ctx = context.load(root=path)
-    assert ctx.session.endswith("release/1-2")
+    assert ctx.session.endswith("/release-1-2")
+
+
+def test_go_refuses_a_branch_with_the_handle_of_another(
+    wtx_repo: Path, fake_bin: Path, monkeypatch
+) -> None:
+    """feat/x and feat-x share a folder and a session name."""
+    make_worktree(wtx_repo, "feat/x")
+    monkeypatch.chdir(wtx_repo)
+    assert run(["go", "feat-x", "--no-attach"]) == 1
+    assert calls_of(fake_bin, "workmux") == []
+
+
+def test_a_dry_run_go_shows_workmux_and_builds_nothing(
+    wtx_repo: Path, fake_bin: Path, monkeypatch, capsys
+) -> None:
+    monkeypatch.chdir(wtx_repo)
+    assert run(["--dry-run", "go", "feat/x", "--no-attach"]) == 0
+    out = capsys.readouterr().out
+    assert "workmux add --headless --config" in out and "--name feat-x" in out
+    assert "workmux open --background --config" in out
+    assert "new-session" not in out
+    assert calls_of(fake_bin, "workmux") == []
+    assert git.worktree_path_for(wtx_repo, "feat/x") is None
+
+
+def test_the_hook_never_opens_a_session(wtx_repo: Path, fake_bin: Path, monkeypatch) -> None:
+    """workmux opens the session after its post_create when a human ran
+    `workmux add`, and wtx go opens it after the brief. A third one here
+    launched the agent twice."""
+    from wtx.hooks import run_hook
+
+    path = make_worktree(wtx_repo, "feat/hooked")
+    monkeypatch.setenv("WM_WORKTREE_PATH", str(path))
+    assert run_hook("post-create") == 0
+    assert (path / envfile.ENV_FILE).is_file()
+    assert calls_of(fake_bin, "workmux") == []
+    assert not [c for c in calls_of(fake_bin, "tmux") if c.startswith("new-session")]
+
+
+def test_a_remove_typed_in_the_session_does_not_kill_it(
+    wtx_repo: Path, fake_bin: Path, monkeypatch
+) -> None:
+    """`workmux remove` typed in a pane runs the pre_remove hook in that pane.
+    Killing the session there kills workmux before it removed anything.
+    workmux closes the session itself once it is done."""
+    from wtx.hooks import run_hook
+
+    path = make_worktree(wtx_repo, "feat/inside")
+    ctx = context.load(root=path)
+    fake_sessions(ctx.session)
+    monkeypatch.setenv("WM_WORKTREE_PATH", str(path))
+    monkeypatch.setenv("TMUX", "/tmp/tmux-0/default,1,0")
+    monkeypatch.setenv("TMUX_PANE", "%4")
+    monkeypatch.setenv("WTX_TEST_DISPLAY", ctx.session)
+    assert run_hook("pre-remove") == 0
+    assert not [c for c in calls_of(fake_bin, "tmux") if c.startswith("kill-session")]
+
+    # From a run-shell job, which has no pane, the hook closes it.
+    monkeypatch.delenv("TMUX_PANE")
+    assert run_hook("pre-remove") == 0
+    assert f"kill-session -t ={ctx.session}" in calls_of(fake_bin, "tmux")
+
+
+def test_done_removes_through_workmux_and_keeps_the_branch(
+    wtx_repo: Path, fake_bin: Path, monkeypatch
+) -> None:
+    path = make_worktree(wtx_repo, "feat/closing")
+    monkeypatch.chdir(wtx_repo)
+    assert run(["done", "feat/closing"]) == 0
+    [call] = calls_of(fake_bin, "workmux")
+    assert call == "remove --keep-branch feat-closing"
+    assert not path.exists()
+    assert git.branch_exists(wtx_repo, "feat/closing")
+
+
+# -- workmux ------------------------------------------------------------------
+
+
+def _workmux_config(main: Path) -> dict:
+    from wtx import workmux
+
+    text = workmux.config_path(main).read_text()
+    assert text.startswith(workmux.MARKER)
+    return json.loads("\n".join(x for x in text.splitlines() if not x.startswith("#")))
+
+
+def test_the_workmux_config_comes_from_wtx_toml(wtx_repo: Path) -> None:
+    from wtx import workmux
+
+    cfg = config_mod.load(wtx_repo / "wtx.toml")
+    workmux.write_config(wtx_repo, cfg, "my.app")
+    data = _workmux_config(wtx_repo)
+    assert data["worktree_dir"] == ".claude/worktrees"
+    assert data["mode"] == "session"
+    assert data["window_prefix"] == "my-app/"
+    assert data["main_branch"] == "dev"
+    assert data["post_create"] == ["wtx hook post-create"]
+    assert data["pre_remove"] == ["wtx hook pre-remove"]
+    [window] = data["windows"]
+    assert window["name"] == "dev"
+    panes = window["panes"]
+    names = [p.name for p in cfg.panes.panes if p.role == "agent"]
+    names += [p.name for p in cfg.panes.panes if p.role != "agent"]
+    assert [p["command"] for p in panes] == [f'eval "$(wtx pane {n})"' for n in names]
+    assert panes[0] == {"command": panes[0]["command"], "focus": True}
+    assert panes[1]["split"] == "horizontal" and panes[1]["percentage"] == 50
+    assert all(p["split"] == "vertical" for p in panes[2:])
+
+
+def test_wtx_never_overwrites_a_workmux_config_it_did_not_write(wtx_repo: Path) -> None:
+    from wtx import workmux
+
+    cfg = config_mod.load(wtx_repo / "wtx.toml")
+    workmux.config_path(wtx_repo).write_text("window_prefix: mine-\n")
+    with pytest.raises(workmux.WorkmuxError, match="not written by wtx"):
+        workmux.write_config(wtx_repo, cfg, "app")
+    assert workmux.config_path(wtx_repo).read_text() == "window_prefix: mine-\n"
+
+
+def test_a_new_worktree_is_named_by_its_handle(wtx_repo: Path, fake_bin: Path) -> None:
+    from wtx import workmux
+
+    cfg = config_mod.load(wtx_repo / "wtx.toml")
+    workmux.write_config(wtx_repo, cfg, "app")
+    path, existed = workmux.ensure(wtx_repo, "feat/Add_X", "origin/dev")
+    assert not existed
+    assert path == wtx_repo / ".claude" / "worktrees" / "feat-add-x"
+    [call] = calls_of(fake_bin, "workmux")
+    assert "--headless" in call and "--name feat-add-x" in call
+    assert "--base origin/dev" in call
+    assert workmux.ensure(wtx_repo, "feat/Add_X", "origin/dev") == (path, True)
+    assert len(calls_of(fake_bin, "workmux")) == 1
+
+
+def test_a_branch_only_on_origin_keeps_its_work(wtx_repo: Path, fake_bin: Path) -> None:
+    """workmux cuts a new branch from the base when only origin has the
+    branch. The local branch is made first, so the pushed work is there."""
+    from wtx import workmux
+
+    git_out(["switch", "-q", "-c", "feat/pushed"], wtx_repo)
+    commit(wtx_repo, "pushed work")
+    git_out(["push", "-q", "origin", "feat/pushed"], wtx_repo)
+    pushed = git_out(["rev-parse", "HEAD"], wtx_repo)
+    git_out(["switch", "-q", "dev"], wtx_repo)
+    git_out(["branch", "-D", "feat/pushed"], wtx_repo)
+    workmux.write_config(wtx_repo, config_mod.load(wtx_repo / "wtx.toml"), "app")
+
+    path, _ = workmux.ensure(wtx_repo, "feat/pushed", "origin/dev")
+    assert path is not None
+    assert git_out(["rev-parse", "HEAD"], path) == pushed
+    [call] = calls_of(fake_bin, "workmux")
+    assert "--base" not in call
+
+
+def test_workmux_remove_keeps_the_branch_and_runs_from_main(wtx_repo: Path, fake_bin: Path) -> None:
+    """remove has no --config: it reads the file it finds from its cwd. From
+    the main checkout that is the one wtx wrote, never a branch's own."""
+    from wtx import workmux
+
+    path = make_worktree(wtx_repo, "feat/gone")
+    (path / ".workmux.yaml").write_text('{"window_prefix": "evil-"}\n')
+    fake_sessions(context.load(root=path).session)
+    workmux.remove(wtx_repo, "feat/gone", force=True)
+    [call] = calls_of(fake_bin, "workmux")
+    assert call.startswith("remove --keep-branch --force")
+    assert not path.exists()
+    assert git.branch_exists(wtx_repo, "feat/gone")
+    assert Path(os.environ["WTX_TEST_SESSIONS"]).read_text() == ""
+
+
+def test_a_remove_right_after_the_update_has_its_config(wtx_repo: Path, fake_bin: Path) -> None:
+    """No `wtx go` wrote .workmux.yaml yet. Without it workmux runs no
+    pre_remove hook and looks for the session under the wm- prefix."""
+    from wtx import workmux
+
+    make_worktree(wtx_repo, "feat/early")
+    fake_sessions("remote/feat-early")
+    assert not workmux.config_path(wtx_repo).exists()
+    workmux.remove(wtx_repo, "feat/early", force=True)
+    assert _workmux_config(wtx_repo)["pre_remove"] == ["wtx hook pre-remove"]
+    assert Path(os.environ["WTX_TEST_SESSIONS"]).read_text() == ""
+
+
+def test_an_old_wt_folder_keeps_the_session_name_wtx_computes(
+    wtx_repo: Path, fake_bin: Path
+) -> None:
+    from wtx import workmux
+
+    workmux.write_config(wtx_repo, config_mod.load(wtx_repo / "wtx.toml"), "app")
+    path = wtx_repo / ".claude" / "worktrees" / "feat-Old_One"
+    subprocess.run(
+        ["git", "worktree", "add", "-q", "-b", "feat/Old_One", str(path)],
+        cwd=wtx_repo,
+        check=True,
+        capture_output=True,
+    )
+    workmux.open_session(wtx_repo, path, "feat/Old_One")
+    [call] = calls_of(fake_bin, "workmux")
+    assert "--target-name feat-old-one" in call and call.endswith(" feat-Old_One")
+    assert Path(os.environ["WTX_TEST_SESSIONS"]).read_text() == (
+        context.session_name("app", "feat/Old_One") + "\n"
+    )
 
 
 # -- cli ----------------------------------------------------------------------
@@ -924,11 +1291,11 @@ def test_a_cleanup_that_leaves_the_worktree_says_so(
 ) -> None:
     """A "landed" that hides a worktree still on disk is why the human ran
     land twice to see what happened."""
-    from wtx import wt
+    from wtx import workmux
 
     path = make_worktree(wtx_repo, "feat/stuck")
     commit(path)
-    monkeypatch.setattr(wt, "remove", lambda *a, **kw: None)
+    monkeypatch.setattr(workmux, "remove", lambda *a, **kw: None)
     monkeypatch.chdir(wtx_repo)
 
     assert run(["land", "feat/stuck", "--cleanup-only", "--keep-branch"]) == 0
@@ -1611,6 +1978,57 @@ def test_doctor_runs_and_reports(wtx_repo: Path, fake_bin: Path, monkeypatch, ca
     names = {c.name for c in report.checks}
     assert "push guard installed" in names
     assert "config is valid" in names
+    assert "workmux" in names and "wt" not in names
+    [workmux_check] = [c for c in report.checks if c.name == "workmux"]
+    assert workmux_check.hard
+    assert "--locked" in workmux_check.fix
+
+
+def test_doctor_sees_what_goes_around_wtx(wtx_repo: Path, fake_bin: Path) -> None:
+    """A .wt.toml left over, a hand-made .workmux.yaml in the main checkout,
+    one on a branch, and workmux's merge skill."""
+    from wtx import doctor
+
+    (wtx_repo / ".wt.toml").write_text("[hooks]\n")
+    (wtx_repo / ".workmux.yaml").write_text("window_prefix: mine-\n")
+    branch = make_worktree(wtx_repo, "feat/own")
+    (branch / ".workmux.yaml").write_text("window_prefix: evil-\n")
+    skill = Path.home() / ".claude" / "skills" / "merge"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("Run workmux merge.\n")
+
+    report = doctor.run(wtx_repo)
+    bad = {c.name: c for c in report.checks if not c.ok}
+    assert not bad["no .wt.toml left"].hard
+    assert bad[".workmux.yaml is the one wtx writes"].hard
+    assert str(branch) in bad["no worktree with its own .workmux.yaml"].detail
+    assert "rm -r" in bad["no workmux merge skill"].fix
+
+
+def test_install_machine_leaves_workmux_setup_to_a_terminal(
+    fake_bin: Path, monkeypatch, capsys
+) -> None:
+    """workmux setup asks a question. Run with no terminal, it would hang or
+    fail: wtx says the line to run instead. Only --hooks: its merge skill
+    goes around wtx land."""
+    import io
+
+    from wtx import machine, workmux
+
+    monkeypatch.setattr("sys.stdin", io.StringIO(""))
+    machine.apply("claude")
+    assert calls_of(fake_bin, "workmux") == []
+    assert f"run `{' '.join(workmux.SETUP_HOOKS)}`" in capsys.readouterr().err
+    assert workmux.SETUP_HOOKS == ("workmux", "setup", "--hooks")
+    assert not (Path.home() / ".config" / "wt").exists()
+
+    settings = Path.home() / ".claude" / "settings.json"
+    settings.write_text(
+        settings.read_text().replace(
+            '"hooks": {', '"x": "workmux set-window-status done", "hooks": {', 1
+        )
+    )
+    assert not machine.workmux_hooks_needed()
 
 
 def test_go_refuses_an_invalid_config(wtx_repo: Path, fake_bin: Path, monkeypatch, capsys) -> None:
@@ -1819,39 +2237,6 @@ def test_a_dead_session_drops_its_notification(wtx_repo: Path, fake_bin: Path, m
     assert not notify.id_file(ctx.session).exists()
 
 
-def test_the_grid_shows_the_waiting_sessions_first(
-    wtx_repo: Path, fake_bin: Path, monkeypatch
-) -> None:
-    """One tile per session, and the one asking for something is tile one."""
-
-    from wtx import monitor, notify
-
-    fake_sessions("app/calm", "app/asking")
-    notify.write_state("app/asking", "permission")
-
-    monitor._build_grid()
-    tmux_calls = calls_of(fake_bin, "tmux")
-    windows = [c for c in tmux_calls if c.startswith("new-window")]
-    splits = [c for c in tmux_calls if c.startswith("split-window")]
-    assert len(windows) == 1 and "app/asking" in windows[0]
-    assert len(splits) == 1 and "app/calm" in splits[0]
-    assert any(c.startswith("select-layout") and c.endswith("tiled") for c in tmux_calls)
-    assert any("pane-border-status top" in c for c in tmux_calls)
-
-
-def test_the_grid_never_tiles_the_monitor_itself(
-    wtx_repo: Path, fake_bin: Path, monkeypatch
-) -> None:
-    """A tile peeking at the monitor session draws the grid inside the grid."""
-
-    from wtx import monitor
-
-    fake_sessions(monitor.SESSION, "app/one")
-    monitor._build_grid()
-    peeked = [c.split("--peek ", 1)[1] for c in calls_of(fake_bin, "tmux") if "--peek " in c]
-    assert peeked == ["app/one"]
-
-
 def test_a_state_file_outlives_its_session_only_until_something_reads_it(
     wtx_repo: Path, fake_bin: Path
 ) -> None:
@@ -1885,19 +2270,6 @@ def test_a_worktrees_own_wtx_toml_does_not_change_its_rules(wtx_repo: Path, fake
     assert "Bash(git push *--force*)" not in settings["permissions"]["allow"]
 
 
-def test_wt_toml_hooks_are_lists(wtx_repo: Path) -> None:
-    """wt runs a hook given as a list. A plain string is accepted by the TOML
-    parser and then silently never runs, so a whole repo looks set up and is
-    not."""
-    import tomllib
-
-    data = tomllib.loads((wtx_repo / ".wt.toml").read_text())
-    for event in ("post_create", "post_checkout", "pre_remove"):
-        value = data["hooks"][event]
-        assert isinstance(value, list), f"{event} must be a list, got {type(value)}"
-        assert value[0].startswith("wtx hook ")
-
-
 def test_with_alone_pairs_on_the_app_branch(wtx_repo: Path, sibling: Path, fake_bin: Path) -> None:
     _add_repos_block(wtx_repo, sibling)
     path = make_worktree(wtx_repo, "feat/same")
@@ -1914,17 +2286,16 @@ def test_hook_ignores_another_worktrees_exported_values(
     from wtx.hooks import GO_LLM_ENV, run_hook
 
     path = make_worktree(wtx_repo, "feat/leak")
-    monkeypatch.setenv("WT_PATH", str(path))
-    monkeypatch.setenv("WT_BRANCH", "feat/leak")
+    monkeypatch.setenv("WM_WORKTREE_PATH", str(path))
     monkeypatch.setenv("WTX_LLM", "sonnet-from-elsewhere")
     monkeypatch.setenv("WTX_AGENT", "opencode")
-    assert run_hook("post-checkout") == 0
+    assert run_hook("post-create") == 0
     values = envfile.read_worktree(path)
     assert values["WTX_LLM"] == "opus"  # the config's own value, not the leaked one
     assert values["WTX_AGENT"] == "claude"
 
     monkeypatch.setenv(GO_LLM_ENV, "haiku")
-    assert run_hook("post-checkout") == 0
+    assert run_hook("post-create") == 0
     assert envfile.read_worktree(path)["WTX_LLM"] == "haiku"
 
 
@@ -2527,7 +2898,7 @@ def test_a_hook_finds_the_session_of_a_repo_that_renamed_itself(
     setup_mod.run_setup(context.load(root=path), start_tmux=True)
     ctx = context.load(root=path)
 
-    assert ctx.session == "renamed-app/feat/renamed"
+    assert ctx.session == "renamed-app/feat-renamed"
     assert notify.session_for(path) == ctx.session
 
 

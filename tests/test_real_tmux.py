@@ -13,6 +13,8 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -28,12 +30,28 @@ SOCKET = "wtx-tests"
 # time, "tmux" was the fake: the probe below never saw a server and every
 # test here was skipped, even with --run-tmux.
 REAL_TMUX = shutil.which("tmux") or "tmux"
+# Same for workmux: fake_bin puts a fake one first.
+REAL_WORKMUX = shutil.which("workmux")
 
 
 def tmux(*args: str) -> subprocess.CompletedProcess:
+    # -f /dev/null: the developer's tmux.conf (plugins, hooks) stays out of it.
     return subprocess.run(
-        [REAL_TMUX, "-L", SOCKET, *args], capture_output=True, text=True, check=False
+        [REAL_TMUX, "-L", SOCKET, "-f", "/dev/null", *args],
+        capture_output=True,
+        text=True,
+        check=False,
     )
+
+
+def _wait_until_no_server() -> None:
+    """kill-server returns before the server is gone. A new-session sent in
+    that moment lands on the dying server and goes away with it: the next
+    command then says "no server running"."""
+    for _ in range(50):
+        if tmux("list-sessions").returncode != 0:
+            return
+        time.sleep(0.1)
 
 
 @pytest.fixture
@@ -46,6 +64,9 @@ def real_tmux(monkeypatch: pytest.MonkeyPatch, fake_bin: Path):
     """
     if shutil.which(REAL_TMUX) is None:
         pytest.skip("no tmux")
+    # A server left by the test before, or by a run that crashed.
+    tmux("kill-server")
+    _wait_until_no_server()
     # "no server running" and "cannot reach the socket" look alike from the
     # outside, so prove a server can actually start before promising to test one.
     probe = tmux("new-session", "-d", "-s", "wtx-probe")
@@ -54,22 +75,38 @@ def real_tmux(monkeypatch: pytest.MonkeyPatch, fake_bin: Path):
         tmux("kill-server")
         why = (probe.stderr or probe.stdout or listed.stderr).strip() or "unknown"
         pytest.skip(f"no usable tmux server here: {why}")
-    tmux("kill-session", "-t", "=wtx-probe")
+    # The probe session stays: killing the last session makes the server exit,
+    # with the same race as kill-server.
     # Every tmux call in wtx goes through the binary, so a wrapper on PATH is
     # enough to keep these tests off the developer's own server.
     bindir = Path(os.environ["WTX_TEST_CALLS"]).parent / "realbin"
     bindir.mkdir(exist_ok=True)
     wrapper = bindir / "tmux"
-    wrapper.write_text(f'#!/bin/sh\nexec {REAL_TMUX} -L {SOCKET} "$@"\n')
+    wrapper.write_text(f'#!/bin/sh\nexec {REAL_TMUX} -L {SOCKET} -f /dev/null "$@"\n')
     wrapper.chmod(0o755)
+    # The panes run `wtx pane`: it must be this code, not the wtx installed on
+    # the machine.
+    src = Path(__file__).resolve().parents[1] / "src"
+    wtx = bindir / "wtx"
+    wtx.write_text(f'#!/bin/sh\nPYTHONPATH={src} exec {sys.executable} -m wtx "$@"\n')
+    wtx.chmod(0o755)
+    if REAL_WORKMUX:
+        real = bindir / "workmux"
+        real.write_text(f'#!/bin/sh\nexec {REAL_WORKMUX} "$@"\n')
+        real.chmod(0o755)
     monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
     monkeypatch.delenv("TMUX", raising=False)
     yield
     tmux("kill-server")
+    _wait_until_no_server()
 
 
 def test_a_real_session_gets_its_panes_and_roles(wtx_repo: Path, fake_bin: Path, real_tmux) -> None:
+    """workmux builds the session, then each pane tags itself with `wtx pane`."""
     from wtx import tmux as tmux_mod
+
+    if REAL_WORKMUX is None:
+        pytest.skip("no workmux")
 
     path = wtx_repo / ".claude" / "worktrees" / "feat-real"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -85,7 +122,13 @@ def test_a_real_session_gets_its_panes_and_roles(wtx_repo: Path, fake_bin: Path,
     tmux_mod.ensure_session(ctx, agents.get("claude"), [], attach_after=False)
 
     assert tmux_mod.has_session(ctx.session)
-    roles = tmux("list-panes", "-t", f"={ctx.session}", "-F", "#{@wt_role}").stdout.split()
+    # The panes tag themselves when their shell runs the line workmux typed.
+    roles: list[str] = []
+    for _ in range(100):
+        roles = tmux("list-panes", "-t", f"={ctx.session}", "-F", "#{@wt_role}").stdout.split()
+        if len(roles) == len(ctx.cfg.panes.panes):
+            break
+        time.sleep(0.1)
     assert roles.count("agent") == 1
     assert len(roles) == len(ctx.cfg.panes.panes)
     assert tmux_mod.agent_pane_id(ctx.session)
@@ -104,9 +147,10 @@ def test_a_real_tmux_takes_the_land_result_message(fake_bin: Path, real_tmux) ->
     """The end of an in-session land: a message that stays until a key, on a
     named client. A client that left in the meantime must not be an error, the
     clean up job has nobody to tell."""
-    tmux("new-session", "-d", "-s", "wtx-land")
+    made = tmux("new-session", "-d", "-s", "wtx-land")
+    assert made.returncode == 0, made.stderr
     client = tmux("display-message", "-p", "#{client_name}")
-    assert client.returncode == 0
+    assert client.returncode == 0, client.stderr
 
     shown = tmux("display-message", "-d", "0", "-c", "/dev/pts/999", "wtx: landed")
     assert shown.returncode == 0, shown.stderr
