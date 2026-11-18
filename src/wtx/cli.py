@@ -168,9 +168,17 @@ def cmd_init(args: argparse.Namespace) -> int:
     try:
         written = init_mod.write_all(main, answers, force=args.force)
     except FileExistsError as exc:
-        raise UserError(str(exc)) from exc
+        # A repo set up by an older wtx: retire its .wt.toml and add the new
+        # ignore lines, keep its wtx.toml as it is.
+        changed = init_mod.upgrade(main)
+        if not changed:
+            raise UserError(str(exc)) from exc
+        for path in changed:
+            say(f"{'updated' if path.exists() else 'removed'} {path}")
+        say(f"kept {config_mod.CONFIG_NAME} as it is. Commit the changes above.")
+        return 0
     for path in written:
-        say(f"wrote {path}")
+        say(f"{'wrote' if path.exists() else 'removed'} {path}")
     print()
     init_mod.print_next_steps(answers)
     return 0
@@ -1087,7 +1095,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = p.add_subparsers(dest="command", required=True)
 
-    s = sub.add_parser("init", help="write wtx.toml and .wt.toml for this repo")
+    s = sub.add_parser("init", help="write wtx.toml for this repo, or update an older setup")
     s.add_argument("--lab", default="", help="EPFL lab short name, fills {lab} in paths")
     # Three ways in, and they are exclusive: guess, guess on top of the file
     # that is already there, or take answers back from the skill.

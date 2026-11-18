@@ -66,10 +66,41 @@ def test_init_finds_the_python_pin_and_the_install_steps(repo: Path) -> None:
     assert any("uv sync" in r and "{python_version}" in r for r in runs)
 
 
-def test_init_writes_a_three_line_wt_toml(wtx_repo: Path) -> None:
-    body = (wtx_repo / ".wt.toml").read_text()
-    for event in ("post-create", "post-checkout", "pre-remove"):
-        assert f"wtx hook {event}" in body
+OLD_WT_TOML = """# Hooks for the wt worktree manager (https://github.com/timvw/wt).
+[hooks]
+post_create = ["wtx hook post-create"]
+post_checkout = ["wtx hook post-checkout"]
+pre_remove = ["wtx hook pre-remove"]
+"""
+
+
+def test_init_writes_no_wt_toml_and_ignores_the_workmux_config(wtx_repo: Path) -> None:
+    assert not (wtx_repo / ".wt.toml").exists()
+    assert ".workmux.yaml" in (wtx_repo / ".gitignore").read_text().splitlines()
+
+
+def test_init_retires_the_wt_toml_an_older_wtx_wrote(
+    wtx_repo: Path, fake_bin: Path, monkeypatch
+) -> None:
+    """The eleven repos have a wtx.toml already. init keeps it, removes the
+    .wt.toml and adds the new ignore line."""
+    (wtx_repo / ".wt.toml").write_text(OLD_WT_TOML)
+    gitignore = wtx_repo / ".gitignore"
+    gitignore.write_text(gitignore.read_text().replace(".workmux.yaml\n", ""))
+    cfg = (wtx_repo / "wtx.toml").read_text()
+    monkeypatch.chdir(wtx_repo)
+
+    assert run(["init"]) == 0
+    assert not (wtx_repo / ".wt.toml").exists()
+    assert ".workmux.yaml" in gitignore.read_text().splitlines()
+    assert (wtx_repo / "wtx.toml").read_text() == cfg
+    assert run(["init"]) == 1, "nothing left to update: the old refusal"
+
+
+def test_init_keeps_a_wt_toml_with_more_than_the_wtx_hooks(wtx_repo: Path) -> None:
+    (wtx_repo / ".wt.toml").write_text(OLD_WT_TOML + 'post_merge = ["make notify"]\n')
+    assert init_mod.retire_wt_toml(wtx_repo) is None
+    assert (wtx_repo / ".wt.toml").is_file()
 
 
 def test_init_does_not_overwrite_without_force(wtx_repo: Path) -> None:
@@ -2225,19 +2256,6 @@ def test_a_worktrees_own_wtx_toml_does_not_change_its_rules(wtx_repo: Path, fake
 
     settings = json.loads((path / ".claude" / "settings.local.json").read_text())
     assert "Bash(git push *--force*)" not in settings["permissions"]["allow"]
-
-
-def test_wt_toml_hooks_are_lists(wtx_repo: Path) -> None:
-    """wt runs a hook given as a list. A plain string is accepted by the TOML
-    parser and then silently never runs, so a whole repo looks set up and is
-    not."""
-    import tomllib
-
-    data = tomllib.loads((wtx_repo / ".wt.toml").read_text())
-    for event in ("post_create", "post_checkout", "pre_remove"):
-        value = data["hooks"][event]
-        assert isinstance(value, list), f"{event} must be a list, got {type(value)}"
-        assert value[0].startswith("wtx hook ")
 
 
 def test_with_alone_pairs_on_the_app_branch(wtx_repo: Path, sibling: Path, fake_bin: Path) -> None:
