@@ -1,8 +1,8 @@
 """Make a worktree runnable. Idempotent, because it runs more than once.
 
-wt fires post_create when a worktree is made and post_checkout when a branch is
-checked out, and some builds fire both on create. Every step here checks whether
-its work is already done, so running it twice changes nothing.
+workmux fires post_create when a worktree is made, then `wtx go` runs it again
+on a worktree that exists. Every step here checks whether its work is already
+done, so running it twice changes nothing.
 
 Everything it reads comes from the main checkout: the config, the templates, the
 seed files. A feature branch must not be able to change the rules the agent
@@ -187,7 +187,7 @@ def run_setup(
     if not ctx.is_worktree:
         warn(f"{ctx.root} is the main checkout, setting it up as one")
 
-    # 0. Tracking repair. `wt create x origin/dev` leaves x tracking origin/dev,
+    # 0. Tracking repair. A branch cut from origin/dev tracks origin/dev,
     #    then `git pull` rebases the work onto dev and the next push is refused.
     git.repair_tracking(ctx.root, ctx.branch, cfg.repo.base_branch)
 

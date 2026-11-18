@@ -139,10 +139,10 @@ def scrub_environment(keys: Sequence[str]) -> None:
     including the main checkout's, whose frontend then looks for a backend that
     is not there.
     """
-    from .hooks import GO_AGENT_ENV, GO_DRIVING_ENV, GO_LLM_ENV
+    from .hooks import GO_AGENT_ENV, GO_LLM_ENV
     from .repos import WITH_ENV
 
-    for key in ("ROOT", WITH_ENV, GO_AGENT_ENV, GO_LLM_ENV, GO_DRIVING_ENV, *keys):
+    for key in ("ROOT", WITH_ENV, GO_AGENT_ENV, GO_LLM_ENV, *keys):
         cmd(["set-environment", "-gu", key])
 
 

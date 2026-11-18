@@ -544,6 +544,40 @@ def test_pairing_makes_a_worktree_in_the_other_repo(
     assert str(path) in settings["sandbox"]["filesystem"]["allowWrite"]
 
 
+def test_a_plain_pair_repo_gets_a_worktree_from_git(
+    wtx_repo: Path, sibling: Path, fake_bin: Path
+) -> None:
+    """No wtx.toml there: no config to give workmux and no hook to fire. The
+    new branch must not track the base, or a plain push goes to main."""
+    _add_repos_block(wtx_repo, sibling)
+    path = make_worktree(wtx_repo, "feat/plain")
+    setup_mod.run_setup(
+        context.load(root=path), with_repos={"model": "feat/Plain_Model"}, start_tmux=False
+    )
+    assert calls_of(fake_bin, "workmux") == []
+    paired = git.worktree_path_for(sibling, "feat/Plain_Model")
+    assert paired == sibling / ".claude" / "worktrees" / "feat-plain-model"
+    assert git_out(["rev-parse", "--abbrev-ref", "feat/Plain_Model@{upstream}"], sibling) == ""
+
+
+def test_a_wtx_pair_repo_gets_its_worktree_from_workmux(
+    wtx_repo: Path, sibling: Path, fake_bin: Path
+) -> None:
+    """A repo set up for wtx: its own config, so its own hook fires there."""
+    _add_repos_block(wtx_repo, sibling)
+    (sibling / "wtx.toml").write_text('[repo]\nname = "model"\nbase_branch = "main"\n')
+    path = make_worktree(wtx_repo, "feat/wpair")
+    setup_mod.run_setup(
+        context.load(root=path), with_repos={"model": "feat/wpair"}, start_tmux=False
+    )
+    [call] = calls_of(fake_bin, "workmux")
+    assert call.startswith(f"add --headless --config {sibling / '.workmux.yaml'} ")
+    assert _workmux_config(sibling)["window_prefix"] == "model/"
+    assert git.worktree_path_for(sibling, "feat/wpair") == (
+        sibling / ".claude" / "worktrees" / "feat-wpair"
+    )
+
+
 def test_a_pairing_is_remembered_on_the_next_setup(
     wtx_repo: Path, sibling: Path, fake_bin: Path
 ) -> None:
@@ -727,6 +761,79 @@ def test_the_session_name_has_no_dots(wtx_repo: Path, fake_bin: Path) -> None:
     path = make_worktree(wtx_repo, "release/1.2")
     ctx = context.load(root=path)
     assert ctx.session.endswith("/release-1-2")
+
+
+def test_go_refuses_a_branch_with_the_handle_of_another(
+    wtx_repo: Path, fake_bin: Path, monkeypatch
+) -> None:
+    """feat/x and feat-x share a folder and a session name."""
+    make_worktree(wtx_repo, "feat/x")
+    monkeypatch.chdir(wtx_repo)
+    assert run(["go", "feat-x", "--no-attach"]) == 1
+    assert calls_of(fake_bin, "workmux") == []
+
+
+def test_a_dry_run_go_shows_workmux_and_builds_nothing(
+    wtx_repo: Path, fake_bin: Path, monkeypatch, capsys
+) -> None:
+    monkeypatch.chdir(wtx_repo)
+    assert run(["--dry-run", "go", "feat/x", "--no-attach"]) == 0
+    out = capsys.readouterr().out
+    assert "workmux add --headless --config" in out and "--name feat-x" in out
+    assert "workmux open --background --config" in out
+    assert "new-session" not in out
+    assert calls_of(fake_bin, "workmux") == []
+    assert git.worktree_path_for(wtx_repo, "feat/x") is None
+
+
+def test_the_hook_never_opens_a_session(wtx_repo: Path, fake_bin: Path, monkeypatch) -> None:
+    """workmux opens the session after its post_create when a human ran
+    `workmux add`, and wtx go opens it after the brief. A third one here
+    launched the agent twice."""
+    from wtx.hooks import run_hook
+
+    path = make_worktree(wtx_repo, "feat/hooked")
+    monkeypatch.setenv("WM_WORKTREE_PATH", str(path))
+    assert run_hook("post-create") == 0
+    assert (path / envfile.ENV_FILE).is_file()
+    assert calls_of(fake_bin, "workmux") == []
+    assert not [c for c in calls_of(fake_bin, "tmux") if c.startswith("new-session")]
+
+
+def test_a_remove_typed_in_the_session_does_not_kill_it(
+    wtx_repo: Path, fake_bin: Path, monkeypatch
+) -> None:
+    """`workmux remove` typed in a pane runs the pre_remove hook in that pane.
+    Killing the session there kills workmux before it removed anything.
+    workmux closes the session itself once it is done."""
+    from wtx.hooks import run_hook
+
+    path = make_worktree(wtx_repo, "feat/inside")
+    ctx = context.load(root=path)
+    fake_sessions(ctx.session)
+    monkeypatch.setenv("WM_WORKTREE_PATH", str(path))
+    monkeypatch.setenv("TMUX", "/tmp/tmux-0/default,1,0")
+    monkeypatch.setenv("TMUX_PANE", "%4")
+    monkeypatch.setenv("WTX_TEST_DISPLAY", ctx.session)
+    assert run_hook("pre-remove") == 0
+    assert not [c for c in calls_of(fake_bin, "tmux") if c.startswith("kill-session")]
+
+    # From a run-shell job, which has no pane, the hook closes it.
+    monkeypatch.delenv("TMUX_PANE")
+    assert run_hook("pre-remove") == 0
+    assert f"kill-session -t ={ctx.session}" in calls_of(fake_bin, "tmux")
+
+
+def test_done_removes_through_workmux_and_keeps_the_branch(
+    wtx_repo: Path, fake_bin: Path, monkeypatch
+) -> None:
+    path = make_worktree(wtx_repo, "feat/closing")
+    monkeypatch.chdir(wtx_repo)
+    assert run(["done", "feat/closing"]) == 0
+    [call] = calls_of(fake_bin, "workmux")
+    assert call == "remove --keep-branch feat-closing"
+    assert not path.exists()
+    assert git.branch_exists(wtx_repo, "feat/closing")
 
 
 # -- workmux ------------------------------------------------------------------
@@ -1141,11 +1248,11 @@ def test_a_cleanup_that_leaves_the_worktree_says_so(
 ) -> None:
     """A "landed" that hides a worktree still on disk is why the human ran
     land twice to see what happened."""
-    from wtx import wt
+    from wtx import workmux
 
     path = make_worktree(wtx_repo, "feat/stuck")
     commit(path)
-    monkeypatch.setattr(wt, "remove", lambda *a, **kw: None)
+    monkeypatch.setattr(workmux, "remove", lambda *a, **kw: None)
     monkeypatch.chdir(wtx_repo)
 
     assert run(["land", "feat/stuck", "--cleanup-only", "--keep-branch"]) == 0
@@ -2131,17 +2238,16 @@ def test_hook_ignores_another_worktrees_exported_values(
     from wtx.hooks import GO_LLM_ENV, run_hook
 
     path = make_worktree(wtx_repo, "feat/leak")
-    monkeypatch.setenv("WT_PATH", str(path))
-    monkeypatch.setenv("WT_BRANCH", "feat/leak")
+    monkeypatch.setenv("WM_WORKTREE_PATH", str(path))
     monkeypatch.setenv("WTX_LLM", "sonnet-from-elsewhere")
     monkeypatch.setenv("WTX_AGENT", "opencode")
-    assert run_hook("post-checkout") == 0
+    assert run_hook("post-create") == 0
     values = envfile.read_worktree(path)
     assert values["WTX_LLM"] == "opus"  # the config's own value, not the leaked one
     assert values["WTX_AGENT"] == "claude"
 
     monkeypatch.setenv(GO_LLM_ENV, "haiku")
-    assert run_hook("post-checkout") == 0
+    assert run_hook("post-create") == 0
     assert envfile.read_worktree(path)["WTX_LLM"] == "haiku"
 
 

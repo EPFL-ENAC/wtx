@@ -27,7 +27,7 @@ from . import (
     repos,
     review,
     tmux,
-    wt,
+    workmux,
 )
 from . import (
     config as config_mod,
@@ -50,8 +50,8 @@ from . import (
 from .agents import base as agents
 from .agents.base import PROMPT_FILE
 from .hooks import (
+    EVENTS,
     GO_AGENT_ENV,
-    GO_DRIVING_ENV,
     GO_ENV_KEYS,
     GO_LLM_ENV,
     GO_PLAN_EFFORT_ENV,
@@ -215,17 +215,18 @@ def cmd_go(args: argparse.Namespace) -> int:
             f"{branch} is protected. It stays in the main checkout, "
             "worktrees are for feature branches."
         )
-    if not wt.available():
-        raise UserError("wt is not installed. See `wtx doctor`.")
+    if not workmux.available():
+        raise UserError("workmux is not installed. See `wtx doctor`.")
+    _refuse_same_handle(main, branch)
 
     base = args.base or config_mod.default_base(cfg)
     if base.startswith("origin/"):
         git.fetch(main)
 
     with_repos = repos.parse_with(args.with_repo or [])
-    # The hook runs in a fresh process, so what wtx go decided travels in the
-    # environment, the way wt passes everything else to its hooks. Under names
-    # no pane exports: see hooks.py.
+    # The hook runs in a fresh process started by workmux, so what wtx go
+    # decided travels in the environment. Under names no pane exports: see
+    # hooks.py.
     for key in GO_ENV_KEYS:
         os.environ.pop(key, None)
     if with_repos:
@@ -238,19 +239,23 @@ def cmd_go(args: argparse.Namespace) -> int:
         os.environ[GO_PLAN_MODEL_ENV] = args.plan_model
     if args.plan_effort:
         os.environ[GO_PLAN_EFFORT_ENV] = args.plan_effort
-    os.environ[GO_DRIVING_ENV] = "1"
 
     try:
-        path, _existed = wt.ensure(main, branch, base)
-    except wt.WtError as exc:
+        workmux.write_config(main, cfg, cfg.repo.name or git.repo_name(main))
+        path, _existed = workmux.ensure(main, branch, base)
+    except workmux.WorkmuxError as exc:
         raise UserError(str(exc)) from exc
-    # The hook has run. Drop what was meant for it: a tmux server started
-    # below would inherit these, and every later pane would pass them on.
-    for key in GO_ENV_KEYS:
-        os.environ.pop(key, None)
+    finally:
+        # The hook has run. Drop what was meant for it: a tmux server started
+        # below would inherit these, and every later pane would pass them on.
+        for key in GO_ENV_KEYS:
+            os.environ.pop(key, None)
     if path is None:
         if is_dry_run():
             say(f"dry run: the worktree for {branch} would be created and set up")
+            # What would come next, so the dry run shows the whole flow.
+            new = main / ".claude" / "worktrees" / context.handle(branch)
+            workmux.open_session(main, new, branch)
             return 0
         raise UserError(f"could not find the worktree for {branch} after creating it")
 
@@ -265,8 +270,7 @@ def cmd_go(args: argparse.Namespace) -> int:
         llm=args.llm,
         plan_model=args.plan_model,
         plan_effort=args.plan_effort,
-        # The session is created once, below. On a brand new worktree the
-        # post_create hook already made it and this call is a no-op re-run.
+        # The session is created once, below, when the brief is in place.
         start_tmux=False,
         attach=False,
     )
@@ -294,6 +298,23 @@ def cmd_go(args: argparse.Namespace) -> int:
     return 0
 
 
+def _refuse_same_handle(main: Path, branch: str) -> None:
+    """feat/x and feat-x get the same folder and the same session name."""
+    try:
+        name = context.handle(branch)
+    except context.ContextError as exc:
+        raise UserError(str(exc)) from exc
+    for item in git.list_worktrees(main):
+        if not item.branch or item.branch == branch or item.path.resolve() == main.resolve():
+            continue
+        with contextlib.suppress(context.ContextError):
+            if context.handle(item.branch) == name:
+                raise UserError(
+                    f"{branch} and {item.branch} give the same worktree name {name}, and "
+                    f"{item.branch} already has one at {item.path}. Pick another branch name."
+                )
+
+
 def _go_all(main: Path, cfg: config_mod.WtxConfig) -> int:
     """Bring every worktree's session back, detached. After a reboot."""
     count = 0
@@ -312,21 +333,10 @@ def _go_all(main: Path, cfg: config_mod.WtxConfig) -> int:
         tmux.ensure_session(ctx, agent, resolved, attach_after=False)
         count += 1
     say(f"{count} session(s) up")
-    if tmux.available() and count:
+    if count and sys.stdin.isatty() and sys.stdout.isatty() and workmux.available():
         from .proc import run
 
-        run(
-            [
-                "tmux",
-                "choose-tree",
-                "-sZ",
-                "-O",
-                "name",
-                "-F",
-                machine.picker_format(),
-            ],
-            check=False,
-        )
+        run(["workmux", "dashboard"], check=False)
     return 0
 
 
@@ -379,7 +389,7 @@ def _done_path(args: argparse.Namespace) -> int:
     found = _pane_worktree(main, repo, target, session)
     if found is None:
         if session.startswith(context.session_prefix(repo)):
-            # No worktree has this session any more: wt or git already
+            # No worktree has this session any more: workmux or git already
             # removed it, only the session is left.
             return _close_gone(main, session, target)
         raise UserError(f"{target} is not in a worktree of {repo}")
@@ -469,8 +479,8 @@ def _done(args: argparse.Namespace, main: Path, repo: str, branch: str, target: 
         return 0
 
     try:
-        wt.remove(main, branch, force=args.force)
-    except wt.WtError as exc:
+        workmux.remove(main, branch, force=args.force)
+    except workmux.WorkmuxError as exc:
         raise UserError(str(exc)) from exc
     say(f"closed {branch}, the branch is kept")
     return 0
@@ -1275,8 +1285,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--from-tmux", action="store_true", help=argparse.SUPPRESS)
     s.set_defaults(func=cmd_review)
 
-    s = sub.add_parser("hook", help="called by .wt.toml")
-    s.add_argument("event", choices=["post-create", "post-checkout", "pre-remove"])
+    s = sub.add_parser("hook", help="called by workmux, from the config wtx writes")
+    s.add_argument("event", choices=list(EVENTS))
     s.set_defaults(func=cmd_hook)
 
     s = sub.add_parser("pane", help="called by each pane of a workmux session")
@@ -1361,7 +1371,7 @@ def _guarded(func, args: argparse.Namespace) -> int:
         setup_mod.SetupError,
         context.ContextError,
         config_mod.ConfigError,
-        wt.WtError,
+        workmux.WorkmuxError,
     ) as exc:
         print(f"wtx: {exc}", file=sys.stderr)
         return 1

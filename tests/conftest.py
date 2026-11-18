@@ -49,21 +49,13 @@ BODIES = {
   has-session) if [ -f "$WTX_TEST_SESSIONS" ] && grep -qxF "${3#=}" "$WTX_TEST_SESSIONS"; then exit 0; else exit 1; fi;;
   new-session) echo "${4}" >> "$WTX_TEST_SESSIONS";;
   kill-session) if [ -f "$WTX_TEST_SESSIONS" ]; then grep -vxF "${3#=}" "$WTX_TEST_SESSIONS" > "$WTX_TEST_SESSIONS.tmp" || true; mv "$WTX_TEST_SESSIONS.tmp" "$WTX_TEST_SESSIONS"; fi;;
-  display-message) echo '%0';;
+  display-message) echo "${WTX_TEST_DISPLAY:-%0}";;
   split-window) echo "%$$";;
   list-sessions) if [ -n "$WTX_TEST_NO_SERVER" ] && [ ! -s "$WTX_TEST_SESSIONS" ]; then
                    echo "no server running on /tmp/tmux-0/default" >&2; exit 1; fi
                  [ -f "$WTX_TEST_SESSIONS" ] && cat "$WTX_TEST_SESSIONS";;
   list-panes) echo '%0 agent';;
   show-options) echo '';;
-esac""",
-    # Goes in step 4, when nothing calls wt any more.
-    "wt": """slug=$(printf '%s' "$4" | tr / -)
-case "$3" in
-  create) git worktree add -q -b "$4" ".claude/worktrees/$slug" "$5";;
-  checkout) git worktree add -q ".claude/worktrees/$slug" "$4";;
-  remove) p=$(git worktree list --porcelain | awk -v b="refs/heads/$4" '/^worktree /{w=$2} $0=="branch "b{print w}')
-          [ -n "$p" ] && git worktree remove $5 "$p";;
 esac""",
     "npm": 'case "$*" in *ci*) mkdir -p node_modules;; esac',
     "pnpm": 'case "$*" in *install*) mkdir -p node_modules;; esac',
