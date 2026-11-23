@@ -4177,3 +4177,23 @@ def test_plans_docs_writes_nothing_in_a_dry_run_and_undoes_a_failed_commit(
         land_mod._commit_plans(ctx, "feat/undo", path)
     assert git.is_clean(path)
     assert git_out(["rev-parse", "HEAD"], path) == head
+
+
+def test_dashboard_from_a_plain_terminal_runs_in_its_own_session(fake_bin: Path) -> None:
+    """The dashboard jumps with switch-client. From a plain terminal tmux would
+    move another attached terminal, so wtx makes this one a client first."""
+    from wtx import tmux
+
+    assert run(["dashboard"]) == 0
+    assert calls_of(fake_bin, "workmux") == []
+    opened = [c for c in calls_of(fake_bin, "tmux") if c.startswith("new-session")]
+    assert opened == [
+        f"new-session -A -s {tmux.DASHBOARD_SESSION} -c {Path.home()} workmux dashboard"
+    ]
+
+
+def test_dashboard_inside_tmux_runs_in_place(fake_bin: Path, monkeypatch) -> None:
+    monkeypatch.setenv("TMUX", "/tmp/tmux-1000/default,1,0")
+    assert run(["dashboard"]) == 0
+    assert calls_of(fake_bin, "workmux") == ["dashboard"]
+    assert not [c for c in calls_of(fake_bin, "tmux") if c.startswith("new-session")]

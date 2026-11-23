@@ -341,10 +341,18 @@ def _go_all(main: Path, cfg: config_mod.WtxConfig) -> int:
         count += 1
     say(f"{count} session(s) up")
     if count and sys.stdin.isatty() and sys.stdout.isatty() and workmux.available():
-        from .proc import run
-
-        run(["workmux", "dashboard"], check=False)
+        tmux.open_dashboard()
     return 0
+
+
+def cmd_dashboard(args: argparse.Namespace) -> int:
+    """workmux's dashboard, from inside tmux, so a jump works (see open_dashboard)."""
+    if not workmux.available():
+        raise UserError("workmux is not installed: cargo install workmux --locked")
+    state, err = tmux.server_status()
+    if state not in ("up", "absent"):
+        raise UserError(tmux.server_remedy(state, err))
+    return tmux.open_dashboard()
 
 
 def cmd_done(args: argparse.Namespace) -> int:
@@ -1163,6 +1171,9 @@ def build_parser() -> argparse.ArgumentParser:
             )
         )
     )
+
+    s = sub.add_parser("dashboard", help="workmux dashboard, inside tmux so Enter jumps here")
+    s.set_defaults(func=cmd_dashboard)
 
     s = sub.add_parser("done", help="close a worktree, keep the branch")
     s.add_argument("branch", nargs="?", default="")

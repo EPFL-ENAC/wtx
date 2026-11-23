@@ -27,7 +27,7 @@ wtx done feat/thing              # close the worktree, keep the branch
 ```
 
 `wtx all` (the same as `wtx go all`) brings back the session of every worktree,
-detached, then opens `workmux dashboard`. `wtx done [branch]` removes the
+detached, then opens `wtx dashboard`. `wtx done [branch]` removes the
 worktree and keeps the branch. It refuses a worktree with uncommitted changes,
 `--force` discards them. Run from inside its own session, it hands the job to
 the tmux server, because removing the worktree kills the shell that runs it.
@@ -72,7 +72,10 @@ has no effect on what wtx runs. `wtx doctor` warns when a worktree has one: a
 workmux command you type in that worktree would read it.
 
 You can use workmux next to wtx: `workmux dashboard` and `workmux sidebar`
-show every session and its agent. `workmux remove` runs the same teardown as
+show every session and its agent. `wtx dashboard` runs `workmux dashboard`
+inside tmux. From a plain terminal it opens a session `wtx-dashboard` for it
+and attaches, so `Enter` jumps to the agent in this terminal. The session
+goes away with the dashboard. `workmux remove` runs the same teardown as
 `wtx done`, but it also deletes the branch unless you pass `--keep-branch`. Do
 not use `workmux merge`: `wtx land` runs the checks, posts the plans and
 cleans up.
@@ -570,6 +573,7 @@ You do not run these yourself. They are listed so nothing is a mystery.
 | `wtx config [validate]` | check `wtx.toml` |
 | `wtx go <branch> [base]` | branch, worktree, session, agent. Or `all`. |
 | `wtx all` | bring every worktree's session back, detached |
+| `wtx dashboard` | `workmux dashboard`, inside tmux so a jump lands in this terminal |
 | `wtx done [branch]` | close a worktree, keep the branch |
 | `wtx land [branch]` | rebase, pull request, merge, clean up. `--merge`: local merge, nothing pushed. `--auto`: the agent fixes what stops the land |
 | `wtx review [branch]` | the agent's notes beside the diff, in hunk. `--notes` sends yours back |

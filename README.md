@@ -50,7 +50,7 @@ the main checkout (ignored by git). Do not edit it, `wtx go` writes it again.
 wtx go feat/thing                     # branch, worktree, session, agent, attached
 wtx go feat/thing --prompt brief.md   # same, and the agent starts on that brief
 wtx status                            # every worktree: ports, session, state
-workmux dashboard                     # every session on one screen
+wtx dashboard                         # every session on one screen, Enter jumps
 wtx review feat/thing                 # the diff in hunk, with the agent's notes
 wtx land feat/thing                   # rebase, PR, merge, clean up (main checkout)
                                       # or prefix+X then l, from the branch session

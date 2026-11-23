@@ -56,6 +56,12 @@ there is none, and `wtx all` is the first thing you run. wtx starts a server
 first, with a session `wtx-home` that keeps it up. A test checks it starts
 one, once.
 
+**`workmux dashboard` jumps with `tmux switch-client`.** From a plain
+terminal there is no client to switch. tmux moves another terminal that is
+attached somewhere, and the dashboard quits as if it worked. `wtx dashboard`
+(and `wtx all`) run it in place inside tmux, and from a plain terminal in a
+session `wtx-dashboard` this terminal attaches to. A test checks both.
+
 **The hook must not open the session.** When a human runs `workmux add`,
 workmux opens the session after its `post_create` hook. When `wtx go` runs,
 it opens the session once the brief is in place. A session opened by the hook

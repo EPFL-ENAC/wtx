@@ -29,6 +29,9 @@ WINDOW = "dev"
 # The session wtx starts when there is no tmux server: workmux refuses to run
 # without one. It stays, it is what keeps the server up.
 HOME_SESSION = "wtx-home"
+# The session `wtx dashboard` opens from a plain terminal. It runs only the
+# dashboard and dies with it.
+DASHBOARD_SESSION = "wtx-dashboard"
 
 
 def available() -> bool:
@@ -275,6 +278,34 @@ def attach(session: str) -> None:
         cmd(["switch-client", "-t", f"={session}"])
     else:
         run(["tmux", "attach-session", "-t", f"={session}"], check=False)
+
+
+def open_dashboard() -> int:
+    """Run `workmux dashboard` so that its jump lands in this terminal.
+
+    The dashboard jumps with `tmux switch-client`, then quits. From a plain
+    terminal there is no client to switch: tmux moves another terminal that
+    is attached somewhere, and this one is left in its shell. So outside tmux
+    this terminal becomes a client first, of a session that runs only the
+    dashboard. After the jump that session dies and the client stays on the
+    agent. `-A` attaches to a dashboard that already runs.
+    """
+    line = ["workmux", "dashboard"]
+    if os.environ.get("TMUX"):
+        return run(line, check=False)
+    return run(
+        [
+            "tmux",
+            "new-session",
+            "-A",
+            "-s",
+            DASHBOARD_SESSION,
+            "-c",
+            str(Path.home()),
+            shlex.join(line),
+        ],
+        check=False,
+    )
 
 
 def focus_session(session: str) -> bool:

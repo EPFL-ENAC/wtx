@@ -14,7 +14,7 @@ sessions, from a config wtx writes for it. What changes for you:
   dashes: `feat/Add_X` gives `.claude/worktrees/feat-add-x`. Old folders keep
   their name, and their session still gets the new name.
 - `wtx monitor`, `prefix+s` (the wtx picker) and `prefix+g` (the grid) are
-  gone. Use `workmux dashboard` or `workmux sidebar`. tmux's own `prefix+s`
+  gone. Use `wtx dashboard` or `workmux sidebar`. tmux's own `prefix+s`
   is back.
 - `.wt.toml` is gone. wtx writes `.workmux.yaml` in the main checkout, ignored
   by git.
